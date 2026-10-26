@@ -45,11 +45,11 @@ Send bytes: `Content-Range: bytes <start>-<end>/<total>` (inclusive end), body =
 
 Responses:
 
-| Status            | Meaning                                                                                                                                         |
-| ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| `308`             | Stored so far, not complete. `Range: bytes=0-<last stored byte>`; no `Range` header means 0 bytes. Not a redirect: no `Location`.              |
-| `200` / `201`     | All `<total>` bytes stored. JSON `{ "name": "mic.m4a", "bytes": 29360128, "sha256": "<sha256 of the stored file>" }`. Also the answer to a `*/<total>` query once complete. |
-| `409` / `416`     | `<start>` is not the server's offset. The client asks for the offset again.                                                                    |
+| Status        | Meaning                                                                                                                                                                     |
+| ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `308`         | Stored so far, not complete. `Range: bytes=0-<last stored byte>`; no `Range` header means 0 bytes. Not a redirect: no `Location`.                                           |
+| `200` / `201` | All `<total>` bytes stored. JSON `{ "name": "mic.m4a", "bytes": 29360128, "sha256": "<sha256 of the stored file>" }`. Also the answer to a `*/<total>` query once complete. |
+| `409` / `416` | `<start>` is not the server's offset. The client asks for the offset again.                                                                                                 |
 
 The server must keep the bytes it received before a connection dropped and report them in the next `308`; the client always resumes from the server's offset, never from its own.
 

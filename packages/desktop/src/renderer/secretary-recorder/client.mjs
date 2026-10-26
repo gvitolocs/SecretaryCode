@@ -105,9 +105,9 @@ function render(snapshot) {
   $("unavailable").hidden = snapshot.available
   const permissions = snapshot.permissions
   $("permission-screen").hidden = !snapshot.available || !permissions || permissions.screen === "granted"
+  // An undetermined microphone needs no callout: macOS asks when the first recording starts.
   $("permission-mic").hidden =
-    !snapshot.available || !permissions || !snapshot.settings.microphoneEnabled || permissions.microphone === "granted"
-  $("mic-allow").hidden = permissions?.microphone !== "undetermined"
+    !snapshot.available || !snapshot.settings.microphoneEnabled || permissions?.microphone !== "denied"
 
   preferSource(snapshot.preferredSource)
   prefillTitle(snapshot.calendar)
@@ -510,6 +510,7 @@ function selectTab(tab) {
   $("view-record").hidden = tab !== "record"
   $("view-recordings").hidden = tab !== "recordings"
   $("view-settings").hidden = tab !== "settings"
+  $("record-footer").hidden = tab !== "record"
 
   if (tab !== "recordings") $("transcript").hidden = true
 }

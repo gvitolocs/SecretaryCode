@@ -2,11 +2,11 @@
 
 The native meeting recorder bundled in Secretary Code's `Contents/Resources`. It records one app, window or display with ScreenCaptureKit and writes separate files into the folder Electron gives it:
 
-| File         | Contents                                                                                  |
-| ------------ | ----------------------------------------------------------------------------------------- |
+| File         | Contents                                                                                   |
+| ------------ | ------------------------------------------------------------------------------------------ |
 | `video.mp4`  | Optional. HEVC or H.264, chosen resolution, frame rate and bitrate. Fragmented every 10 s. |
-| `system.m4a` | AAC 48 kHz. The recorded app's audio, or all system audio.                                  |
-| `mic.m4a`    | AAC 48 kHz. The owner's microphone. The server treats it as the owner's voice.              |
+| `system.m4a` | AAC 48 kHz. The recorded app's audio, or all system audio.                                 |
+| `mic.m4a`    | AAC 48 kHz. The owner's microphone. The server treats it as the owner's voice.             |
 
 All three start their timeline at the same host-clock instant and pauses are removed from all of them, so the server can line the tracks up sample for sample. The microphone comes from `SCStreamConfiguration.captureMicrophone` on macOS 15 and later, and from AVAudioEngine on macOS 13 and 14.
 

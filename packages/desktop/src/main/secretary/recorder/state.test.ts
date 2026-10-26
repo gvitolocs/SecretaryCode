@@ -99,6 +99,7 @@ describe("recording state machine", () => {
   }
 
   const run = (events: RecorderEvent[]) => events.reduce<ActiveRecording>(reduce, IDLE)
+
   const begin: RecorderEvent = {
     type: "start",
     id: ID,
@@ -215,10 +216,19 @@ describe("settings page input", () => {
   // The settings page sends one changed field per `saveSettings` request.
   test.each([
     [{ video: false }, { ...DEFAULT_SETTINGS, video: false }],
-    [{ resolution: "720p", fps: 60, codec: "h264", bitrateKbps: 4000 }, { ...DEFAULT_SETTINGS, resolution: "720p", fps: 60, codec: "h264", bitrateKbps: 4000 }],
+    [
+      { resolution: "720p", fps: 60, codec: "h264", bitrateKbps: 4000 },
+      { ...DEFAULT_SETTINGS, resolution: "720p", fps: 60, codec: "h264", bitrateKbps: 4000 },
+    ],
     [{ microphone: "BuiltInMicrophoneDevice" }, { ...DEFAULT_SETTINGS, microphone: "BuiltInMicrophoneDevice" }],
-    [{ microphone: null, microphoneEnabled: false }, { ...DEFAULT_SETTINGS, microphone: null, microphoneEnabled: false }],
-    [{ systemAudio: "system", keepDays: 0, suggest: false }, { ...DEFAULT_SETTINGS, systemAudio: "system", keepDays: 0, suggest: false }],
+    [
+      { microphone: null, microphoneEnabled: false },
+      { ...DEFAULT_SETTINGS, microphone: null, microphoneEnabled: false },
+    ],
+    [
+      { systemAudio: "system", keepDays: 0, suggest: false },
+      { ...DEFAULT_SETTINGS, systemAudio: "system", keepDays: 0, suggest: false },
+    ],
   ] as const)("applies %j", (input, expected) => {
     expect(parseSettings(parseRequest("saveSettings", input).settings, DEFAULT_SETTINGS)).toEqual(expected)
   })
