@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, copyFileSync } from "node:fs"
 import { homedir } from "node:os"
 import path from "node:path"
+import { engineConfig } from "./secretary/engine-config"
 
 // Set roots before the service/client modules evaluate. The fork owns its database and
 // service registration, so it cannot replace the owner's existing OpenCode service.
@@ -14,23 +15,21 @@ if (!process.env.OPENCODE_DESKTOP_TEST_ROOT && process.env.OPENCODE_TEST_ONBOARD
   const config = path.join(root, "config", "opencode", "opencode.json")
   const source = path.join(homedir(), ".config", "opencode", "opencode.json")
   if (!existsSync(config)) {
-    let imported: Record<string, unknown> = {}
+    let previous: unknown
     if (existsSync(source)) {
       try {
-        const previous = JSON.parse(readFileSync(source, "utf8"))
-        // Import provider settings only. Old executable plugins need an explicit v2
-        // migration; loading them blindly prevents the entire engine from starting.
-        for (const key of ["model", "provider", "providers", "disabled_providers", "enabled_providers", "mcp"])
-          if (previous[key] !== undefined) imported[key] = previous[key]
+        previous = JSON.parse(readFileSync(source, "utf8"))
       } catch (error) {
         console.error("Secretary Code could not import provider settings", error instanceof SyntaxError ? "Invalid JSON" : "Read failed")
       }
     }
-    writeFileSync(config, JSON.stringify({ ...imported, update: "disable", share: "disabled" }, null, 2), { mode: 0o600 })
+    writeFileSync(config, JSON.stringify(engineConfig(previous), null, 2), { mode: 0o600 })
     const credentials = path.join(homedir(), ".local", "share", "opencode", "auth.json")
     const destination = path.join(root, "data", "opencode", "auth.json")
     if (existsSync(credentials) && !existsSync(destination)) copyFileSync(credentials, destination)
   }
-  // GUI-launched programs do not inherit the login shell's development tool PATH.
+  // GUI-launched programs do not inherit the login shell's development tool PATH. The rest of the login
+  // shell environment, including LUCINA_MCP_TOKEN, is merged by preferApplicationEnvironment before the
+  // engine starts, and the engine inherits it.
   process.env.PATH = [path.join(homedir(), ".local", "bin"), path.join(homedir(), ".bun", "bin"), "/opt/homebrew/bin", process.env.PATH].join(":")
 }

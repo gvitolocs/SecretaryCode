@@ -1,3 +1,4 @@
+import { homedir } from 'node:os'
 import { posix } from 'node:path'
 
 export const LANES = [
@@ -23,6 +24,25 @@ export class LaneError extends Error {
 
 const MOUNT = '/Users/giuseppe/mnt/nezopt/Projects'
 const REMOTE = '/home/nez/Projects'
+const DEFAULT_HOSTS = ['nezopt', 'nezopt-remote']
+// An SSH destination: an ssh_config alias or [user@]host. A leading '-' would read as an option.
+const HOST = /^[A-Za-z0-9_][A-Za-z0-9._@-]{0,252}$/
+
+/** Remote lanes try SECRETARY_SSH_HOST, then SECRETARY_SSH_FALLBACK_HOST (defaults: nezopt, nezopt-remote). */
+export function sshHosts(): string[] {
+  const hosts = [process.env.SECRETARY_SSH_HOST || DEFAULT_HOSTS[0], process.env.SECRETARY_SSH_FALLBACK_HOST || DEFAULT_HOSTS[1]]
+  const invalid = hosts.find(host => !HOST.test(host))
+  if (invalid !== undefined) throw new LaneError('invalid_host', `SSH host ${JSON.stringify(invalid)} is not a valid host name or ssh_config alias`)
+  return [...new Set(hosts)]
+}
+
+/** SECRETARY_CLAUDE_PATH overrides the native installer location, ~/.local/bin/claude. */
+export function claudeExecutable(): string {
+  const configured = process.env.SECRETARY_CLAUDE_PATH
+  if (!configured) return posix.join(homedir(), '.local', 'bin', 'claude')
+  if (!configured.startsWith('/')) throw new LaneError('invalid_path', 'SECRETARY_CLAUDE_PATH must be absolute')
+  return configured
+}
 
 function text(value: unknown, label: string, multiline = false): string {
   const controls = multiline ? /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u : /[\u0000-\u001f\u007f]/u
@@ -63,7 +83,7 @@ export interface LaunchPlan {
   args: string[]
   cwd: string
   stdin?: string
-  remote?: { host: 'nezopt'; executable: string; args: string[]; project: string }
+  remote?: { host: string; executable: string; args: string[]; project: string }
 }
 
 export interface LaunchOptions {
@@ -72,15 +92,17 @@ export interface LaunchOptions {
   prompt?: string
   interactive?: boolean
   qwenSlot?: QwenSlot
+  /** SSH destination for remote lanes; defaults to the first of sshHosts(). */
+  host?: string
 }
 
-function sshPlan(cwd: string, project: string, executable: string, args: string[], interactive: boolean, stdin?: string): LaunchPlan {
+function sshPlan(host: string, cwd: string, project: string, executable: string, args: string[], interactive: boolean, stdin?: string): LaunchPlan {
   // SSH passes its final argument to a remote shell. Quote every fixed and variable argument here.
   const command = [executable, ...args].map(quotePosix).join(' ')
   return {
-    executable: '/usr/bin/ssh', args: [...(interactive ? ['-t'] : []), '-o', 'ConnectTimeout=15', '--', 'nezopt', command], cwd,
+    executable: '/usr/bin/ssh', args: [...(interactive ? ['-t'] : []), '-o', 'ConnectTimeout=15', '--', host, command], cwd,
     ...(stdin !== undefined ? { stdin } : {}),
-    remote: { host: 'nezopt', executable, args, project },
+    remote: { host, executable, args, project },
   }
 }
 
@@ -89,17 +111,23 @@ export function launchPlan(lane: LaneID | string, options: LaunchOptions): Launc
   const cwd = projectPath(options.project)
   if (lane === 'orchestra') throw new LaneError('mcp_required', 'Use orchestraRequest to dispatch through the existing authenticated bridge')
   if (lane === 'claude') {
-    return { executable: '/Users/giuseppe/.local/bin/claude', args: options.prompt === undefined ? [] : ['-p', text(options.prompt, 'Prompt', true)], cwd }
+    // `-p` is a boolean flag and the prompt a positional argument, so a prompt in argv that looks like a
+    // flag (`--dangerously-skip-permissions`) would be parsed as one. Print mode reads the prompt from stdin.
+    const executable = claudeExecutable()
+    return options.prompt === undefined ? { executable, args: [], cwd } : { executable, args: ['-p'], cwd, stdin: text(options.prompt, 'Prompt', true) }
   }
   const remote = remoteProject(cwd, options.remoteProject)
+  const host = options.host ?? sshHosts()[0]!
   if (lane === 'zcode') {
     if (options.interactive !== false && options.prompt === undefined)
-      return sshPlan(cwd, remote, '/usr/bin/node', ['/home/nez/opt/zcode-appimage/resources/glm/zcode.cjs', '--cwd', remote], true)
-    // Invoke the CLI directly so its normal permission defaults remain under user control.
-    return sshPlan(cwd, remote, '/usr/bin/node', ['/home/nez/opt/zcode-appimage/resources/glm/zcode.cjs', '--cwd', remote, '--prompt', text(options.prompt, 'Prompt', true), '--json', '--no-color'], false)
+      return sshPlan(host, cwd, remote, '/usr/bin/node', ['/home/nez/opt/zcode-appimage/resources/glm/zcode.cjs', '--cwd', remote], true)
+    // Invoke the CLI directly so its normal permission defaults remain under user control. The attached
+    // `--prompt=` form keeps a prompt that starts with `-` from being read as another option.
+    return sshPlan(host, cwd, remote, '/usr/bin/node', ['/home/nez/opt/zcode-appimage/resources/glm/zcode.cjs', '--cwd', remote, `--prompt=${text(options.prompt, 'Prompt', true)}`, '--json', '--no-color'], false)
   }
-  if (options.qwenSlot !== 'free') throw new LaneError(options.qwenSlot === 'busy' ? 'qwen_busy' : 'qwen_status_unknown', 'Qwen has one shared slot. Wait for a confirmed free slot before launching')
-  return sshPlan(cwd, remote, '/home/nez/.local/bin/qcode-run', ['-d', remote, '-t', '30m', '-n', '60', '-'], false, text(options.prompt, 'Prompt', true))
+  if (options.qwenSlot === 'busy') throw new LaneError('qwen_busy', 'Qwen is busy with another task. It has one shared slot, so try again when that task finishes')
+  if (options.qwenSlot !== 'free') throw new LaneError('qwen_status_unknown', 'Could not confirm that the shared Qwen slot is free, so Qwen was not started')
+  return sshPlan(host, cwd, remote, '/home/nez/.local/bin/qcode-run', ['-d', remote, '-t', '30m', '-n', '60', '-'], false, text(options.prompt, 'Prompt', true))
 }
 
 export function orchestraRequest(options: {

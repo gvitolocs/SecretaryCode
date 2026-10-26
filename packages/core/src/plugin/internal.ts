@@ -93,6 +93,7 @@ import BrowserPlugin from "@opencode/plugin-browser"
 import { CommandPlugin } from "./command.js"
 import { IdentityPlugin } from "./identity.js"
 import { PlanPlugin } from "./plan.js"
+import { LucinaPlugin } from "./lucina.js"
 import { ModelsDevPlugin } from "./models-dev.js"
 import { McpCodeModeDefaultsPlugin } from "./mcp-codemode-defaults.js"
 import { ProviderPlugins } from "./provider.js"
@@ -226,6 +227,8 @@ const pre = [
   VcsGitPlugin.Plugin,
   AgentPlugin.Plugin,
   PlanPlugin.Plugin,
+  // After ConfigMcpPlugin so a user-configured `lucina` server is visible and wins.
+  LucinaPlugin.Plugin,
   CommandPlugin.Plugin,
   SkillPlugin.Plugin,
   VcsHgPlugin.Plugin,

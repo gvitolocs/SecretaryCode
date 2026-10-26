@@ -1,6 +1,23 @@
-import { describe, expect, test } from 'bun:test'
+import { afterEach, describe, expect, test } from 'bun:test'
 import { spawnSync } from 'node:child_process'
-import { LANES, ORCHESTRA_WORKERS, launchPlan, orchestraRequest, projectPath, quotePosix, remoteProject } from './lanes'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
+import { LANES, LaneError, ORCHESTRA_WORKERS, launchPlan, orchestraRequest, projectPath, quotePosix, remoteProject, sshHosts } from './lanes'
+
+const configured = ['SECRETARY_SSH_HOST', 'SECRETARY_SSH_FALLBACK_HOST', 'SECRETARY_CLAUDE_PATH'] as const
+const saved = Object.fromEntries(configured.map(key => [key, process.env[key]]))
+afterEach(() => {
+  for (const key of configured) {
+    if (saved[key] === undefined) delete process.env[key]
+    else process.env[key] = saved[key]
+  }
+})
+for (const key of configured) delete process.env[key]
+
+function code(run: () => unknown) {
+  try { run() } catch (error) { return error instanceof LaneError ? error.code : 'not_a_lane_error' }
+  return undefined
+}
 
 const mounted = '/Users/giuseppe/mnt/nezopt/Projects/SecretaryIOS'
 describe('project boundaries', () => {
@@ -27,21 +44,37 @@ describe('process construction', () => {
     expect(result.status).toBe(0)
     expect(result.stdout.toString().split('\0').slice(0, -1)).toEqual(suspicious)
   })
-  test('Claude uses argv plus local cwd with no shell', () => {
+  test('Claude uses argv plus local cwd with no shell and reads the prompt from stdin', () => {
     const plan = launchPlan('claude', { project: '/Users/giuseppe/Projects/My Project', prompt: 'Review; $(id)' })
-    expect(plan).toEqual({ executable: '/Users/giuseppe/.local/bin/claude', args: ['-p', 'Review; $(id)'], cwd: '/Users/giuseppe/Projects/My Project' })
+    expect(plan).toEqual({ executable: join(homedir(), '.local', 'bin', 'claude'), args: ['-p'], cwd: '/Users/giuseppe/Projects/My Project', stdin: 'Review; $(id)' })
+    process.env.SECRETARY_CLAUDE_PATH = '/opt/claude/bin/claude'
+    expect(launchPlan('claude', { project: '/x', prompt: 'Review' }).executable).toBe('/opt/claude/bin/claude')
+    process.env.SECRETARY_CLAUDE_PATH = 'claude'
+    expect(code(() => launchPlan('claude', { project: '/x', prompt: 'Review' }))).toBe('invalid_path')
+  })
+  test('a prompt shaped like a flag never becomes an option', () => {
+    const prompt = '--dangerously-skip-permissions'
+    expect(launchPlan('claude', { project: '/x', prompt }).args).toEqual(['-p'])
+    expect(launchPlan('zcode', { project: mounted, prompt }).remote?.args).toContain('--prompt=--dangerously-skip-permissions')
+    expect(launchPlan('qwen', { project: mounted, prompt, qwenSlot: 'free' }).remote?.args).not.toContain(prompt)
+    for (const lane of ['claude', 'zcode', 'qwen'] as const) {
+      const plan = launchPlan(lane, { project: mounted, prompt: 'Review', qwenSlot: 'free' })
+      for (const flag of ['--dangerously-skip-permissions', '--yolo', '--permission-mode', '--approval-mode'])
+        expect([...plan.args, ...plan.remote?.args ?? []].some(arg => arg.startsWith(flag))).toBe(false)
+    }
   })
   test('ZCode uses real remote CLI, not Electron launcher', () => {
     const interactive = launchPlan('zcode', { project: mounted })
     expect(interactive.args[0]).toBe('-t')
     expect(interactive.remote?.args).toEqual(['/home/nez/opt/zcode-appimage/resources/glm/zcode.cjs', '--cwd', '/home/nez/Projects/SecretaryIOS'])
     const headless = launchPlan('zcode', { project: mounted, prompt: 'Review' })
-    expect(headless.remote?.args).toContain('--prompt')
+    expect(headless.remote?.args).toContain('--prompt=Review')
     expect(headless.remote?.args).not.toContain('--mode')
   })
-  test('Qwen refuses occupied and unknown slot, uses existing serialized wrapper', () => {
-    for (const qwenSlot of ['busy', 'unknown', undefined] as const)
-      expect(() => launchPlan('qwen', { project: mounted, prompt: 'Review', qwenSlot })).toThrow('one shared slot')
+  test('Qwen reports a busy slot, refuses an unknown one, uses existing serialized wrapper', () => {
+    expect(code(() => launchPlan('qwen', { project: mounted, prompt: 'Review', qwenSlot: 'busy' }))).toBe('qwen_busy')
+    for (const qwenSlot of ['unknown', undefined] as const)
+      expect(code(() => launchPlan('qwen', { project: mounted, prompt: 'Review', qwenSlot }))).toBe('qwen_status_unknown')
     const plan = launchPlan('qwen', { project: mounted, prompt: 'Review', qwenSlot: 'free' })
     expect(plan.remote?.executable).toBe('/home/nez/.local/bin/qcode-run')
     expect(plan.stdin).toBe('Review')
@@ -53,6 +86,26 @@ describe('process construction', () => {
     expect(() => launchPlan('qwen', { project: mounted, qwenSlot: 'free' })).toThrow()
     expect(() => launchPlan('zcode', { project: mounted, interactive: false })).toThrow()
     expect(() => quotePosix('x\u0000whoami')).toThrow()
+  })
+})
+
+describe('SSH hosts', () => {
+  test('default to nezopt with a nezopt-remote fallback and follow configuration', () => {
+    expect(sshHosts()).toEqual(['nezopt', 'nezopt-remote'])
+    expect(launchPlan('zcode', { project: mounted, prompt: 'Review' }).args.slice(-2, -1)).toEqual(['nezopt'])
+    process.env.SECRETARY_SSH_HOST = 'nez@10.0.0.4'
+    expect(sshHosts()).toEqual(['nez@10.0.0.4', 'nezopt-remote'])
+    process.env.SECRETARY_SSH_FALLBACK_HOST = 'nez@10.0.0.4'
+    expect(sshHosts()).toEqual(['nez@10.0.0.4'])
+    const plan = launchPlan('qwen', { project: mounted, prompt: 'Review', qwenSlot: 'free', host: 'nezopt-remote' })
+    expect(plan.args.slice(-3, -1)).toEqual(['--', 'nezopt-remote'])
+    expect(plan.remote?.host).toBe('nezopt-remote')
+  })
+  test('reject destinations that SSH would read as options or that carry shell syntax', () => {
+    for (const host of ['-oProxyCommand=id', 'nez opt', 'nezopt;id', '$(id)', 'a\nb']) {
+      process.env.SECRETARY_SSH_HOST = host
+      expect(code(sshHosts)).toBe('invalid_host')
+    }
   })
 })
 
