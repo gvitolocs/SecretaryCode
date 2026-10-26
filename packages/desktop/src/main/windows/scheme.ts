@@ -38,6 +38,10 @@ export function isRendererUrl(value?: string, html = false) {
 // before it loads anything else.
 export function registerRendererScheme() {
   protocol.registerSchemesAsPrivileged([
+    ...["secretary-companion", "secretary-coding"].map(scheme => ({
+      scheme,
+      privileges: { secure: true, standard: true, supportFetchAPI: true, corsEnabled: true, stream: true },
+    })),
     {
       scheme: rendererProtocol,
       privileges: {

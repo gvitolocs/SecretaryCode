@@ -137,7 +137,7 @@ export const makeMainWindows = Effect.fn("Window.make")(function* () {
 
   const create = (id: string = randomUUID(), early?: EarlyWindow) => {
     const stateFile = path.join(app.getPath("userData"), windowStateFile(id))
-    const state = early?.state ?? resolveWindowState(readWindowState(stateFile), { width: 1280, height: 800 }, displays)
+    const state = early?.state ?? resolveWindowState(readWindowState(stateFile), { width: 1440, height: 900 }, displays)
     const appearance = windowAppearance(path, paths)
 
     const win =

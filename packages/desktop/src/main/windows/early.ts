@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { app, BrowserWindow, screen, shell } from "electron"
+import { APP_NAME } from "../constants"
 import { resolveExternalURL } from "../files/external-url"
 import { windowArguments } from "./bootstrap"
 import { WINDOW_IDS_KEY } from "../storage/keys"
@@ -10,7 +11,13 @@ import { storedBackgroundColor, titlebarOverlay } from "./defaults"
 import { registerRendererProtocol } from "./protocol"
 import { loadWindow } from "./scheme"
 import { allowRendererPermissions, wireNavigationPolicy, wireRendererHeaders } from "./security"
-import { manageWindowState, readWindowState, resolveWindowState, windowStateFile, type WindowState } from "./window-state"
+import {
+  manageWindowState,
+  readWindowState,
+  resolveWindowState,
+  windowStateFile,
+  type WindowState,
+} from "./window-state"
 
 export type EarlyWindow = {
   id: string
@@ -38,7 +45,7 @@ export function createEarlyWindow() {
   const id = Array.isArray(ids) && typeof ids[0] === "string" ? ids[0] : randomUUID()
   const root = path.dirname(fileURLToPath(import.meta.url))
   const file = path.join(app.getPath("userData"), windowStateFile(id))
-  const state = resolveWindowState(readWindowState(file), { width: 1280, height: 800 }, displays)
+  const state = resolveWindowState(readWindowState(file), { width: 1440, height: 900 }, displays)
   const icons = app.isPackaged ? path.join(process.resourcesPath, "icons") : path.join(root, "../../resources/icons")
 
   const win = new BrowserWindow({
@@ -48,11 +55,15 @@ export function createEarlyWindow() {
     height: state.height,
     show: true,
     autoHideMenuBar: true,
-    title: "OpenCode",
+    title: APP_NAME,
     icon: path.join(icons, `icon.${process.platform === "win32" ? "ico" : "png"}`),
     backgroundColor: storedBackgroundColor(),
-    ...(process.platform === "darwin" ? { titleBarStyle: "hidden" as const, trafficLightPosition: { x: 14, y: 14 } } : {}),
-    ...(process.platform === "win32" ? { frame: false, titleBarStyle: "hidden" as const, titleBarOverlay: titlebarOverlay() } : {}),
+    ...(process.platform === "darwin"
+      ? { titleBarStyle: "hidden" as const, trafficLightPosition: { x: 14, y: 14 } }
+      : {}),
+    ...(process.platform === "win32"
+      ? { frame: false, titleBarStyle: "hidden" as const, titleBarOverlay: titlebarOverlay() }
+      : {}),
     webPreferences: {
       preload: path.join(root, "../preload/index.cjs"),
       contextIsolation: true,

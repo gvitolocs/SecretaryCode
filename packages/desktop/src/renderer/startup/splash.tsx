@@ -1,5 +1,4 @@
-import { Splash } from "@opencode/ui/logo"
-import { Wordmark } from "@opencode/ui/wordmark"
+import lucinaIcon from "../../../../ui/src/assets/images/secretary-lucina.png"
 import type { Platform } from "@opencode/app/desktop"
 import { onCleanup, onMount, Show } from "solid-js"
 import { createStore } from "solid-js/store"
@@ -58,7 +57,7 @@ export function LoadingSplash(props: {
             "bg-v2-background-bg-base": !props.deep,
           }}
         >
-          <Splash class="w-16 h-20 opacity-50 animate-pulse" />
+          <img class="secretary-startup-mark animate-pulse" src={lucinaIcon} alt="" />
         </div>
       }
     >
@@ -80,12 +79,10 @@ export function LoadingSplash(props: {
         <div class="relative size-full">
           <div class="absolute inset-x-0 top-[25.375%]">
             <div class="mx-auto w-full max-w-[720px]">
-              <Wordmark
-                outline
-                fade={false}
-                muted={false}
-                class="mx-auto block h-auto w-4/5 text-v2-icon-icon-faint opacity-50"
-              />
+              <div class="secretary-startup-brand">
+                <img class="secretary-startup-mark" src={lucinaIcon} alt="" />
+                <div>Secretary Code</div>
+              </div>
             </div>
           </div>
         </div>

@@ -1,4 +1,5 @@
 // Imported first so its evaluation stamps the moment Electron handed control to this module.
+import "./secretary-environment"
 import { marks } from "./lifecycle/marks"
 import { app } from "electron"
 import { acquireApplicationLock, configureApplication } from "./lifecycle/configure"
@@ -7,12 +8,16 @@ import { registerStorageSnapshotHandler } from "./storage/snapshot"
 import { createEarlyWindow } from "./windows/early"
 import { rendererAssetsServed } from "./windows/protocol"
 import { registerRendererScheme } from "./windows/scheme"
+import { setupSecretary, openSecretaryWindow } from "./secretary"
+import { setupCodingLanes } from "./secretary/lane-window"
 
 // This module stays small on purpose. Electron holds the ready event until the entry module has
 // finished, and the first window should be on screen before the rest of the main process — a few
 // hundred milliseconds of module evaluation and layers — loads. Configuration and the scheme must
 // precede ready; the window is created the moment ready fires; everything else is imported after.
 configureApplication()
+setupSecretary()
+setupCodingLanes()
 
 if (acquireApplicationLock()) {
   registerRendererScheme()
@@ -24,6 +29,7 @@ if (acquireApplicationLock()) {
     createEarlyWindow()
     marks.window = Date.now()
     startSidecarProbe()
+    if (process.argv.includes("--lucina")) void openSecretaryWindow()
 
     // The window's renderer is already loading. Its HTML and preloaded chunks are served from this
     // thread, so the bundle waits for that burst to be answered (or a cap) before it evaluates.

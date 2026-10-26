@@ -4,6 +4,7 @@ import { consoleReturnWindow } from "./deep-link"
 describe("Console return deep links", () => {
   test("reads the originating Desktop window", () => {
     expect(consoleReturnWindow("opencode://console/authorized?window=window-a")).toBe("window-a")
+    expect(consoleReturnWindow("secretary-code://console/authorized?window=window-a")).toBe("window-a")
     expect(consoleReturnWindow("opencode://console/authorized?window=window%20b")).toBe("window b")
   })
 

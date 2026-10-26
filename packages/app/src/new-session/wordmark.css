@@ -1,52 +1,68 @@
 [data-component="new-session-wordmark"] {
-  --icon-strong-base: var(--icon-base);
-  --wordmark-shimmer-opacity: 0.45;
-
-  .wordmark-shimmer {
-    --icon-base: white;
-    --icon-strong-base: white;
-    --icon-weak-base: transparent;
-
-    /* Blend above the base logo's opacity so the sweep only adds light in either theme. */
-    color: white;
-    mix-blend-mode: screen;
-    opacity: 0;
-    mask-image: linear-gradient(to right, transparent 40%, black 50%, transparent 60%);
-    mask-size: 300% 100%;
-    mask-repeat: no-repeat;
-    animation: new-session-wordmark-shimmer 800ms linear both;
-  }
+  text-align: center;
+  color: var(--v2-text-text-base);
 }
 
-[data-color-scheme="light"] [data-component="new-session-wordmark"] {
-  --icon-weak-base: color-mix(in srgb, var(--icon-base) 30%, transparent);
+.secretary-home-brand {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  animation: secretary-home-reveal 650ms ease-out both;
 }
 
-[data-color-scheme="dark"] [data-component="new-session-wordmark"] {
-  /* Preserve the previous dark highlight strength: 0.16 × 0.7 × 0.6. */
-  --wordmark-shimmer-opacity: 0.0672;
+.secretary-home-symbol {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 64px;
+  height: 64px;
+  margin-bottom: 10px;
+  border-radius: 18px;
+  object-fit: cover;
+  color: white;
+  box-shadow: 0 8px 24px #4a5bb51f;
+  font:
+    600 38px/1.25 -apple-system,
+    BlinkMacSystemFont,
+    sans-serif;
+  letter-spacing: -3px;
 }
 
-/* Oversizing the mask moves its highlight physically left to right, including in RTL. */
-@keyframes new-session-wordmark-shimmer {
-  0% {
-    mask-position: 100% 0;
+.secretary-home-symbol span {
+  opacity: 0.65;
+  font-weight: 300;
+}
+
+.secretary-home-brand h1 {
+  margin: 0;
+  font:
+    500 36px/1.25 -apple-system,
+    BlinkMacSystemFont,
+    sans-serif;
+  letter-spacing: -1.15px;
+}
+
+.secretary-home-brand p {
+  margin: 0;
+  color: var(--v2-text-text-weak);
+  font-size: 13px;
+  line-height: var(--line-height-base);
+}
+
+@keyframes secretary-home-reveal {
+  from {
     opacity: 0;
+    transform: translateY(6px);
   }
-  20%,
-  80% {
-    opacity: var(--wordmark-shimmer-opacity);
-  }
-  100% {
-    mask-position: 0% 0;
-    opacity: 0;
+  to {
+    opacity: 1;
+    transform: translateY(0);
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  [data-component="new-session-wordmark"] {
-    .wordmark-shimmer {
-      animation: none;
-    }
+  .secretary-home-brand {
+    animation: none;
   }
 }

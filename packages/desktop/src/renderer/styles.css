@@ -40,3 +40,43 @@
 .settings-extension-link {
   cursor: pointer;
 }
+
+.secretary-companion-button {
+  position: fixed;
+  z-index: 100;
+  right: 16px;
+  bottom: 16px;
+  border: 1px solid #7f8fe066;
+  border-radius: 18px;
+  padding: 8px 17px;
+  background: #4a5bb5;
+  color: white;
+  font: 500 13px/20px -apple-system, BlinkMacSystemFont, sans-serif;
+  box-shadow: 0 4px 20px #0002;
+  -webkit-app-region: no-drag;
+}
+.secretary-companion-button:focus-visible { outline: 2px solid #7f8fe0; outline-offset: 3px; }
+
+#root { width: calc(100% - var(--secretary-dock-width, 0px)); }
+.secretary-companion-button { right: calc(16px + var(--secretary-dock-width, 0px)); }
+
+/* Secretary's iOS accent, applied to matching semantic roles in the Mac shell. */
+:root[data-color-scheme] {
+  --secretary-accent: #4a5bb5;
+  --v2-background-bg-accent: var(--secretary-accent);
+  --v2-text-text-accent: var(--secretary-accent);
+  --v2-text-text-accent-hover: #3c4b9b;
+  --v2-border-border-focus: #7f8fe0;
+}
+
+:root[data-theme="light"],
+:root[data-color-scheme="light"] {
+  --v2-background-bg-base: #f4f5fa;
+  --v2-background-bg-deep: #eceef6;
+  --background-base: #f4f5fa;
+}
+
+:root[data-theme="dark"],
+:root[data-color-scheme="dark"] {
+  --secretary-accent: #7f8fe0;
+}

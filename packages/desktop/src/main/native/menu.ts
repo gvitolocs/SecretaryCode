@@ -1,4 +1,4 @@
-import { BrowserWindow, Menu } from "electron"
+import { BrowserWindow, Menu, MenuItem } from "electron"
 import type { MenuItemConstructorOptions } from "electron"
 import {
   DESKTOP_MENU,
@@ -14,6 +14,9 @@ import { emitIpcEvent } from "../ipc-events"
 
 import { runDesktopMenuAction } from "./menu-actions"
 import { nativeT } from "./translations"
+import { openSecretaryWindow } from "../secretary"
+import secretaryCopy from "../../renderer/secretary/en.json"
+import { openCodingLanes } from "../secretary/lane-window"
 
 type Deps = {
   trigger: (id: string) => void
@@ -65,6 +68,10 @@ export function createMenu(deps: Deps) {
   )
 
   const built = Menu.buildFromTemplate(template)
+  built.append(new MenuItem({ label: secretaryCopy.menu, submenu: [
+    { label: secretaryCopy.openLucina, accelerator: "CmdOrCtrl+Shift+L", click: () => void openSecretaryWindow() },
+    { label: "Coding agents…", accelerator: "CmdOrCtrl+Shift+A", click: () => void openCodingLanes() },
+  ] }))
 
   // Electron freezes a built item's state; contributions re-read theirs whenever a menu opens.
   const refresh = () =>

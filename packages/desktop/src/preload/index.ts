@@ -7,6 +7,8 @@ import {
   type WindowSnapshot,
 } from "../shared/ipc-transport"
 import { windowBootstrapFromArguments } from "../shared/window-bootstrap"
+import { secretaryBridge } from "./secretary"
+import { codingLanesBridge } from "./secretary-lanes"
 
 ipcRenderer.on(IpcTransportPort, (event) => {
   const port = event.ports[0]
@@ -24,6 +26,8 @@ const snapshot: Promise<WindowSnapshot> = ipcRenderer
   .catch(() => ({ storage: {} }))
 
 contextBridge.exposeInMainWorld("electron", {
+  secretary: secretaryBridge,
+  codingLanes: codingLanesBridge,
   windowID: bootstrap.id,
   bootstrap,
   storageSnapshot: snapshot.then((snapshot) => snapshot.storage),

@@ -19,7 +19,7 @@ const signScript = path.join(rootDir, "script", "sign-windows.ps1")
 
 // The Electron 42 packaging update briefly installed Linux launchers/icons under
 // "opencode-desktop". Keep that hidden desktop entry around so existing GNOME/KDE
-// pins still resolve after the canonical app id changes back to ai.opencode.desktop.
+// pins still resolve after the canonical app id changes back to app.secretary.code.
 const legacyDesktopEntry = path.join(packageDir, "resources", "linux", "opencode-desktop.desktop")
 
 const legacyDesktopEntryFpm = `${legacyDesktopEntry}=/usr/share/applications/opencode-desktop.desktop`
@@ -71,20 +71,12 @@ function resolveChannel() {
 }
 
 const APP_IDS = {
-  dev: "ai.opencode.desktop.dev",
-  beta: "ai.opencode.desktop.beta",
-  prod: "ai.opencode.desktop",
+  dev: "app.secretary.code.dev",
+  beta: "app.secretary.code.beta",
+  prod: "app.secretary.code",
 } as const
 
-// libappimage (used by AppImageLauncher) resolves the .desktop entry inside an
-// AppImage by globbing `*.desktop` at the squashfs root. If the main
-// executable itself ends in `.desktop` (prod appId `ai.opencode.desktop`), the
-// ELF binary matches the glob and is parsed as a desktop entry, so
-// integration fails with `Malformed desktop entry: Unexpected char '\x7f' at 0`
-// (0x7F is the first byte of the ELF magic).
-// https://github.com/anomalyco/opencode/issues/51867
-// Strip a trailing `.desktop` so the executable can never collide with the
-// desktop-entry glob. Beta/dev appIds end in `.beta`/`.dev` and are unaffected.
+// Preserve the upstream Linux launcher guard for any future app ID ending in `.desktop`.
 function linuxExecutableName(appId: string): string {
   return appId.replace(/\.desktop$/, "")
 }
@@ -93,14 +85,14 @@ const getBase = (appId: string): Configuration => {
   const target = getCurrentCli()
 
   return {
-    artifactName: "opencode-desktop-${os}-${arch}.${ext}",
+    artifactName: "secretary-code-${os}-${arch}.${ext}",
     directories: {
       output: "dist",
       buildResources: "resources",
     },
     // Linux launchers are .desktop files, so this is the desktop file name,
-    // not just the app id. For prod, app id "ai.opencode.desktop" becomes
-    // "ai.opencode.desktop.desktop".
+    // not just the app id. For prod, app id "app.secretary.code" becomes
+    // "app.secretary.code.desktop".
     // https://developer.gnome.org/documentation/guidelines/maintainer/integrating.html
     // https://www.electron.build/docs/linux/
     extraMetadata: {
@@ -133,7 +125,7 @@ const getBase = (appId: string): Configuration => {
       {
         from: "resources/",
         to: "",
-        filter: ["opencode-cli", "opencode-cli.exe", "opencode-cli.version"],
+        filter: ["opencode-cli", "opencode-cli.exe", "opencode-cli.version", "secretary-code.png"],
       },
     ],
     afterPack: async (context) => {
@@ -181,7 +173,8 @@ const getBase = (appId: string): Configuration => {
     },
     mac: {
       category: "public.app-category.developer-tools",
-      icon: `resources/icons/icon.icns`,
+      icon: "resources/secretary-code.icns",
+      identity: "-",
       extendInfo: {
         NSAutoFillRequiresTextContentTypeForOneTimeCodeOnMac: true,
       },
@@ -193,12 +186,12 @@ const getBase = (appId: string): Configuration => {
         const { sign } = await import("app-builder-lib/out/codeSign/macCodeSign")
         await sign(macSignOptions(options))
       },
-      notarize: true,
+      notarize: false,
       target: ["dmg", "zip"],
     },
     protocols: {
-      name: "OpenCode",
-      schemes: ["opencode"],
+      name: "Secretary Code",
+      schemes: ["secretary-code"],
     },
     win: {
       icon: `resources/icons/icon.ico`,
@@ -220,7 +213,7 @@ const getBase = (appId: string): Configuration => {
       category: "Development",
       executableName: linuxExecutableName(appId),
       // Derive the installed `.desktop` filename from `desktopName`
-      // (`ai.opencode.desktop.desktop` for prod) instead of `executableName`,
+      // (`app.secretary.code.desktop` for prod) instead of `executableName`,
       // so window association is unaffected by the executable rename above.
       syncDesktopName: true,
       desktop: {
@@ -245,7 +238,8 @@ export function getConfig() {
       return {
         ...base,
         appId,
-        productName: "OpenCode Dev",
+        productName: "Secretary Code Dev",
+        protocols: { name: "Secretary Code Dev", schemes: ["secretary-code"] },
         deb: { fpm: [metainfoFpm(appId)] },
         rpm: { packageName: "opencode-dev", fpm: [rpmNoBuildIdLinksFpm, metainfoFpm(appId)] },
       }
@@ -255,13 +249,10 @@ export function getConfig() {
       return {
         ...base,
         appId,
-        productName: "OpenCode Beta",
-        protocols: { name: "OpenCode Beta", schemes: ["opencode"] },
-        publish: {
-          provider: "generic",
-          url: "https://opencode.ai/update/api/beta/desktop/opencode/",
-          channel: "latest",
-        },
+        productName: "Secretary Code Beta",
+        protocols: { name: "Secretary Code Beta", schemes: ["secretary-code"] },
+        // This fork is updated from its own source builds.
+        publish: null,
         deb: { fpm: [metainfoFpm(appId)] },
         rpm: { packageName: "opencode-beta", fpm: [rpmNoBuildIdLinksFpm, metainfoFpm(appId)] },
       }
@@ -271,13 +262,10 @@ export function getConfig() {
       return {
         ...base,
         appId,
-        productName: "OpenCode",
-        protocols: { name: "OpenCode", schemes: ["opencode"] },
-        publish: {
-          provider: "generic",
-          url: "https://opencode.ai/update/api/latest/desktop/opencode/",
-          channel: "latest",
-        },
+        productName: "Secretary Code",
+        protocols: { name: "Secretary Code", schemes: ["secretary-code"] },
+        // This fork is updated from its own source builds.
+        publish: null,
         deb: { fpm: [metainfoFpm(appId), legacyDesktopEntryFpm] },
         rpm: { packageName: "opencode", fpm: [rpmNoBuildIdLinksFpm, metainfoFpm(appId), legacyDesktopEntryFpm] },
       }

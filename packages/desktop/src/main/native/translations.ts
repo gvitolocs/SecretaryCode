@@ -26,7 +26,7 @@ export function setNativeTranslations(next: DesktopNativeBundle) {
 }
 
 export function nativeT(key: DesktopNativeKey, params?: Record<string, string | number>) {
-  return formatDesktopNativeMessage(bundle.messages[key], params)
+  return formatDesktopNativeMessage(bundle.messages[key], params).replaceAll("OpenCode", "Secretary Code")
 }
 
 /** The app locale the renderer last pushed. GUI extension catalogs resolve against it. */
