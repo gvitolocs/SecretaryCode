@@ -8,11 +8,21 @@ import { useI18n } from "../../context/i18n"
 import "../../actions/button/button.css"
 import "./toast.css"
 
-export interface ToastRegionProps extends ToasterProps {}
+export interface ToastRegionProps extends ToasterProps {
+  /** Extra room on the inline end, for a panel docked on that side of the window. */
+  inlineEnd?: number
+}
 
 function ToastRegion(props: ToastRegionProps) {
   const i18n = useI18n()
-  const [local, rest] = splitProps(props, ["class", "className", "style", "toastOptions", "swipeDirections"])
+  const [local, rest] = splitProps(props, [
+    "class",
+    "className",
+    "style",
+    "toastOptions",
+    "swipeDirections",
+    "inlineEnd",
+  ])
   onMount(() => {
     const sync = () => {
       document.querySelectorAll<HTMLElement>(".toast-v2-region .toast-v2").forEach((element) => {
@@ -55,7 +65,11 @@ function ToastRegion(props: ToastRegionProps) {
     <Portal>
       <Toaster
         position={isRTL(i18n.locale()) ? "bottom-left" : "bottom-right"}
-        offset={isRTL(i18n.locale()) ? { left: 32, bottom: 48 } : { right: 32, bottom: 48 }}
+        offset={
+          isRTL(i18n.locale())
+            ? { left: 32 + (local.inlineEnd ?? 0), bottom: 48 }
+            : { right: 32 + (local.inlineEnd ?? 0), bottom: 48 }
+        }
         mobileOffset={16}
         gap={12}
         duration={5000}

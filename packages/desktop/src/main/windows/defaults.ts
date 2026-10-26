@@ -36,3 +36,6 @@ export function titlebarOverlay(mode: "light" | "dark" = tone(), zoom = 1) {
     height: Math.max(titlebarHeight, Math.round(titlebarHeight * zoom)),
   }
 }
+
+// Room for the workspace sidebar, a usable session column and the companion panel side by side.
+export const WINDOW_MIN_SIZE = { minWidth: 960, minHeight: 600 }

@@ -201,7 +201,7 @@ export function HomeSessionsView(props: HomeSessionsViewProps) {
   )
 }
 
-function HomeSessionLeadingController(props: {
+export function HomeSessionLeadingController(props: {
   server: HomeSessionsViewProps["server"]
   isOpenTab: HomeSessionsViewProps["isOpenTab"]
   record: HomeSessionRecord

@@ -258,6 +258,8 @@ export const DESKTOP_NATIVE_ENGLISH = {
   "desktop.menu.delete": "Delete",
   "desktop.menu.selectAll": "Select All",
   "desktop.menu.toggleSidebar": "Toggle Sidebar",
+  "desktop.menu.toggleLucina": "Toggle Lucina",
+  "desktop.menu.codingAgents": "Coding Agents",
   "desktop.menu.toggleTerminal": "Toggle Terminal",
   "desktop.menu.toggleFileTree": "Toggle File Tree",
   "desktop.menu.reload": "Reload",

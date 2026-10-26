@@ -5,3 +5,6 @@ body:has(>canvas#stage){height:100vh;background:transparent;overflow:hidden;touc
 .brand-orb{border:0;overflow:hidden}.brand-orb img{width:100%;height:100%;object-fit:cover}.lucina-title{display:flex;align-items:center;gap:10px}.lucina-title img{width:32px;height:32px;border-radius:10px}.wave-button{overflow:hidden;padding:0}.wave-button img{width:100%;height:100%;object-fit:cover}
 
 .titlebar{height:42px;padding:0 18px;border-bottom:1px solid #38383a77;-webkit-app-region:no-drag}.titlebar>div{display:flex;align-items:center;gap:14px}.close-dock{font-size:22px;color:var(--secondary)}main{height:calc(100vh - 42px);border-left:1px solid #38383a77}.heading{padding:16px 20px 0}h1{font-size:26px}.stage-wrap{height:clamp(180px,30vh,290px);flex-shrink:0}.chat-heading{padding-left:18px;padding-right:14px;font-size:10px}.login{padding:20px 24px}.brand-orb{margin:12px auto 24px;width:86px;height:86px}
+
+/* Docked in the workspace's right panel: the host draws the panel chrome, so the page fills it edge to edge. */
+main{height:100vh;border-left:0}.heading-actions{display:flex;align-items:center;gap:12px}#wardrobe{top:64px}

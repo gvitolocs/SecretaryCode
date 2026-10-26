@@ -6,8 +6,9 @@ type AppToastOptions = Omit<ToastOptions, "icon"> & {
   icon?: IconProps["name"]
 }
 
-export function ToastRegion() {
-  return <Toast.Region />
+/** `inlineEnd` keeps toasts clear of a region docked on the window's inline end, such as the companion panel. */
+export function ToastRegion(props: { inlineEnd?: number }) {
+  return <Toast.Region inlineEnd={props.inlineEnd} />
 }
 
 function showAppToast(options: AppToastOptions | string) {

@@ -7,7 +7,6 @@ let copy = {}
 const t = key => copy[key] || copy.serverError || key
 function notice(key) { $("notice").textContent = t(key); $("notice").hidden = false }
 function clearNotice() { $("notice").hidden = true }
-$("close-dock").addEventListener("click", () => window.electron.secretary.close())
 $("notice").addEventListener("click", clearNotice)
 async function api(action, input) {
   const result = await window.electron.secretary.request(action, input)

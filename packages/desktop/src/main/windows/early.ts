@@ -7,7 +7,7 @@ import { resolveExternalURL } from "../files/external-url"
 import { windowArguments } from "./bootstrap"
 import { WINDOW_IDS_KEY } from "../storage/keys"
 import { getStore } from "../storage/store"
-import { storedBackgroundColor, titlebarOverlay } from "./defaults"
+import { storedBackgroundColor, titlebarOverlay, WINDOW_MIN_SIZE } from "./defaults"
 import { registerRendererProtocol } from "./protocol"
 import { loadWindow } from "./scheme"
 import { allowRendererPermissions, wireNavigationPolicy, wireRendererHeaders } from "./security"
@@ -53,6 +53,7 @@ export function createEarlyWindow() {
     y: state.y,
     width: state.width,
     height: state.height,
+    ...WINDOW_MIN_SIZE,
     show: true,
     autoHideMenuBar: true,
     title: APP_NAME,

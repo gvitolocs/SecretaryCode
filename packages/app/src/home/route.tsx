@@ -9,9 +9,13 @@ import { createHomeScrollController } from "./scroll"
 import { createHomeSessionSearchController } from "./sessions/search"
 import { createHomeSessionsController } from "./sessions/controller"
 import { HomeSessions } from "./sessions/region"
+import { useWorkspace } from "@/shell/workspace/workspace"
 
 export function Home() {
   const mobile = createMediaQuery("(max-width: 767px)")
+  const workspace = useWorkspace()
+  // The workspace sidebar already lists the projects beside Home.
+  const projectsColumn = () => !mobile() && !workspace.sidebar.visible()
   const home = createHomeController()
   const projects = createHomeProjectsController(home)
   const sessions = createHomeSessionsController(home)
@@ -41,24 +45,27 @@ export function Home() {
       >
         <div
           class={`
-            mx-auto grid min-h-full w-full max-w-[1080px] grid-rows-[auto_minmax(0,1fr)] gap-4 px-3
-            max-md:grid-rows-[minmax(0,1fr)] lg:grid-cols-[280px_minmax(0,720px)] lg:grid-rows-1 lg:gap-8 lg:px-6
+            mx-auto grid min-h-full w-full grid-rows-[auto_minmax(0,1fr)] gap-4 px-3
+            max-md:grid-rows-[minmax(0,1fr)] lg:grid-rows-1 lg:gap-8 lg:px-6
+            ${projectsColumn() ? "max-w-[1080px] lg:grid-cols-[280px_minmax(0,720px)]" : "max-w-[768px] md:grid-rows-[minmax(0,1fr)]"}
           `}
         >
-          <Show when={!mobile()}>
+          <Show when={projectsColumn()}>
             <HomeProjects projects={projects} scroll={scroll} />
           </Show>
           <HomeSessions sessions={sessions} search={search} scroll={scroll} />
         </div>
       </ScrollView>
-      <div class="hidden shrink-0 px-3 py-2 md:block lg:hidden">
-        <HomeUtilityNav
-          class="flex"
-          onOpenSettings={projects.utility.settings}
-          onOpenHelp={projects.utility.help}
-          language={projects.copy.language}
-        />
-      </div>
+      <Show when={projectsColumn()}>
+        <div class="hidden shrink-0 px-3 py-2 md:block lg:hidden">
+          <HomeUtilityNav
+            class="flex"
+            onOpenSettings={projects.utility.settings}
+            onOpenHelp={projects.utility.help}
+            language={projects.copy.language}
+          />
+        </div>
+      </Show>
     </div>
   )
 }

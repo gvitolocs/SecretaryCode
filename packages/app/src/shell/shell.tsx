@@ -11,9 +11,21 @@ import { useSettingsSurface } from "@/settings/surface"
 import { useSettings } from "@/settings/model"
 import { ExtensionServerCover } from "@/runtime/extension/server-shell"
 import { ExtensionSlot } from "@/runtime/extension/render"
+import { useWorkspace, WorkspaceProvider } from "@/shell/workspace/workspace"
+import { WorkspaceSidebar } from "@/shell/workspace/sidebar"
+import { CompanionRegion } from "@/shell/workspace/companion"
 
 export default function Layout(props: ParentProps) {
+  return (
+    <WorkspaceProvider>
+      <Workspace>{props.children}</Workspace>
+    </WorkspaceProvider>
+  )
+}
+
+function Workspace(props: ParentProps) {
   const platform = usePlatform()
+  const workspace = useWorkspace()
   const settings = useSettingsSurface()
   const preferences = useSettings()
   const mobile = createMediaQuery("(max-width: 767px)")
@@ -47,6 +59,9 @@ export default function Layout(props: ParentProps) {
       >
         <Titlebar verticalTabs={verticalTabs() ? { mount: state.tabsMount } : undefined} />
         <div class="flex flex-1 min-h-0 min-w-0 flex-row">
+          <Show when={workspace.sidebar.visible()}>
+            <WorkspaceSidebar />
+          </Show>
           <Show when={verticalTabs()}>
             <aside
               ref={(element) => setState("tabsMount", element)}
@@ -85,9 +100,12 @@ export default function Layout(props: ParentProps) {
               <Suspense>{props.children}</Suspense>
             </ExtensionServerCover>
           </main>
+          <Show when={workspace.companion.visible()}>
+            <CompanionRegion />
+          </Show>
         </div>
         <ExtensionSlot at="window.bottom" input={{}} />
-        <ToastRegion />
+        <ToastRegion inlineEnd={workspace.companion.width()} />
         <UploadToastHost />
       </div>
     </TitlebarRightProvider>

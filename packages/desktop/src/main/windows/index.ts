@@ -23,6 +23,7 @@ import {
   wireZoom,
 } from "./appearance"
 import { registerRendererProtocol, setProtocolReporter } from "./protocol"
+import { WINDOW_MIN_SIZE } from "./defaults"
 import { loadWindow } from "./scheme"
 import { createWindowRegistry } from "./registry"
 import { makeWindowRecovery } from "./recovery"
@@ -147,6 +148,7 @@ export const makeMainWindows = Effect.fn("Window.make")(function* () {
         y: state.y,
         width: state.width,
         height: state.height,
+        ...WINDOW_MIN_SIZE,
         show: false,
         autoHideMenuBar: true,
         ...appearance,
