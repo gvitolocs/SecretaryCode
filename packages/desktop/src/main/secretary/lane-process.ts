@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process"
 import { quotePosix } from "./lanes"
 
 /** Keep raw output in memory only; redact the whole snapshot so split chunks cannot expose tokens. */
@@ -51,6 +52,23 @@ finally:
         except FileNotFoundError: pass
 `
 
-export function supervisedSSH() {
-  return { executable: "/usr/bin/ssh", args: ["-o", "BatchMode=yes", "-o", "ConnectTimeout=15", "--", "nezopt", ["/usr/bin/python3", "-u", "-c", REMOTE_SUPERVISOR].map(quotePosix).join(" ")] }
+export function supervisedSSH(host: string) {
+  return { executable: "/usr/bin/ssh", args: ["-o", "BatchMode=yes", "-o", "ConnectTimeout=15", "--", host, ["/usr/bin/python3", "-u", "-c", REMOTE_SUPERVISOR].map(quotePosix).join(" ")] }
+}
+
+/**
+ * Runs one fixed remote check on each host in order and returns the first host that answered with its exit
+ * code. SSH reserves exit 255 for its own connection failures, so only that moves on to the fallback host.
+ */
+export async function reach(hosts: readonly string[], command: string) {
+  for (const host of hosts) {
+    const code = await new Promise<number | null>(resolve => {
+      const child = spawn("/usr/bin/ssh", ["-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "--", host, command], { stdio: "ignore", shell: false })
+      const timer = setTimeout(() => child.kill(), 12_000)
+      child.on("error", () => { clearTimeout(timer); resolve(255) })
+      child.on("close", code => { clearTimeout(timer); resolve(code) })
+    })
+    if (code !== 255) return { host, code }
+  }
+  return undefined
 }

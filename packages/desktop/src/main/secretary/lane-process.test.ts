@@ -10,8 +10,9 @@ test("redacts credentials from combined streaming output and keeps useful errors
 })
 
 test("SSH supervisor uses batch connection and one safely quoted Python command", () => {
-  const plan = supervisedSSH()
+  const plan = supervisedSSH("nezopt-remote")
   expect(plan.executable).toBe("/usr/bin/ssh")
+  expect(plan.args.slice(-3, -1)).toEqual(["--", "nezopt-remote"])
   expect(plan.args).toContain("BatchMode=yes")
   expect(plan.args.at(-1)).toContain("'/usr/bin/python3' '-u' '-c'")
 })
