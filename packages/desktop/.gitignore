@@ -25,5 +25,7 @@ dist-ssr
 out/
 
 resources/opencode-cli*
+resources/secretary-recorder
+native/secretary-recorder/.build
 resources/icons
 resources/*.metainfo.xml

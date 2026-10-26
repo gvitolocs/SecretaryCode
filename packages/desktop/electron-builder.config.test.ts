@@ -90,12 +90,18 @@ test("shared packaging defaults", async () => {
   expect(config.mac?.sign).toBeFunction()
   expect(config.dmg?.sign).not.toBe(true)
   expect(config.mac?.extendInfo?.NSAutoFillRequiresTextContentTypeForOneTimeCodeOnMac).toBe(true)
+  expect(config.mac?.extendInfo?.NSMicrophoneUsageDescription).toBeString()
+  expect(config.mac?.extendInfo?.NSScreenCaptureUsageDescription).toBeString()
   const include = path.join(import.meta.dirname, "resources/windows/installer.nsh")
   expect(config.nsis?.include).toBe(include)
   expect(await Bun.file(include).exists()).toBe(true)
   expect(config.files).toContain("!resources/opencode-cli*")
   expect(config.extraResources).toEqual([
-    { from: "resources/", to: "", filter: ["opencode-cli", "opencode-cli.exe", "opencode-cli.version", "secretary-code.png"] },
+    {
+      from: "resources/",
+      to: "",
+      filter: ["opencode-cli", "opencode-cli.exe", "opencode-cli.version", "secretary-code.png", "secretary-recorder"],
+    },
   ])
 })
 

@@ -1,4 +1,4 @@
-import { BrowserWindow, Menu } from "electron"
+import { BrowserWindow, Menu, MenuItem } from "electron"
 import type { MenuItemConstructorOptions } from "electron"
 import {
   DESKTOP_MENU,
@@ -14,6 +14,8 @@ import { emitIpcEvent } from "../ipc-events"
 
 import { runDesktopMenuAction } from "./menu-actions"
 import { nativeT } from "./translations"
+import { openRecorder } from "../secretary/recorder"
+import recorderCopy from "../../renderer/secretary-recorder/en.json"
 
 type Deps = {
   trigger: (id: string) => void
@@ -65,6 +67,10 @@ export function createMenu(deps: Deps) {
   )
 
   const built = Menu.buildFromTemplate(template)
+  built.append(new MenuItem({ label: "Lucina", submenu: [
+    // The recorder registers ⌥⌘R globally so it works from any app; the menu only shows it.
+    { label: recorderCopy.menuRecord, accelerator: "Alt+CmdOrCtrl+R", registerAccelerator: false, click: () => void openRecorder() },
+  ] }))
 
   // Electron freezes a built item's state; contributions re-read theirs whenever a menu opens.
   const refresh = () =>

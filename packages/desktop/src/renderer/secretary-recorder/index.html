@@ -1,0 +1,310 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Secretary Code · Record</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <div class="backdrop" id="backdrop"></div>
+    <section class="sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-title">
+      <header class="sheet-header">
+        <h1 id="sheet-title">
+          <span class="live-dot" id="header-dot" hidden></span><span data-copy="sheetTitle"></span>
+        </h1>
+        <nav class="tabs" role="tablist">
+          <button
+            role="tab"
+            id="tab-record"
+            data-tab="record"
+            aria-controls="view-record"
+            data-copy="tabRecord"
+          ></button>
+          <button
+            role="tab"
+            id="tab-recordings"
+            data-tab="recordings"
+            aria-controls="view-recordings"
+            data-copy="tabRecordings"
+          ></button>
+          <button
+            role="tab"
+            id="tab-settings"
+            data-tab="settings"
+            aria-controls="view-settings"
+            data-copy="tabSettings"
+          ></button>
+        </nav>
+        <button class="icon-button" id="close" data-title="close">×</button>
+      </header>
+
+      <div class="sheet-body">
+        <section id="view-record" role="tabpanel" aria-labelledby="tab-record">
+          <div id="notice" class="notice" role="alert" hidden></div>
+          <div id="unavailable" class="callout" hidden>
+            <strong data-copy="unavailableTitle"></strong>
+            <p data-copy="unavailableBody"></p>
+          </div>
+          <div id="permission-screen" class="callout" hidden>
+            <strong data-copy="permissionScreenTitle"></strong>
+            <p data-copy="permissionScreenBody"></p>
+            <div class="callout-actions">
+              <button class="secondary" data-permission-request="screen" data-copy="allow"></button
+              ><button class="secondary" data-permission-open="screen" data-copy="openSystemSettings"></button>
+            </div>
+          </div>
+          <div id="permission-mic" class="callout" hidden>
+            <strong data-copy="permissionMicTitle"></strong>
+            <p data-copy="permissionMicBody"></p>
+            <div class="callout-actions">
+              <button class="secondary" data-permission-open="microphone" data-copy="openSystemSettings"></button>
+            </div>
+          </div>
+
+          <div id="setup">
+            <div class="picker">
+              <div class="picker-bar">
+                <div class="segmented" role="tablist">
+                  <button role="tab" data-kind="apps" data-copy="sourceApps"></button>
+                  <button role="tab" data-kind="windows" data-copy="sourceWindows"></button>
+                  <button role="tab" data-kind="displays" data-copy="sourceScreens"></button>
+                </div>
+                <input
+                  id="search"
+                  type="search"
+                  autocomplete="off"
+                  spellcheck="false"
+                  data-placeholder="searchSources"
+                />
+              </div>
+              <ul id="sources" class="sources" data-label="chooseSource"></ul>
+            </div>
+            <label class="field"
+              ><span class="field-label" data-copy="titleLabel"></span
+              ><input id="title" maxlength="200" autocomplete="off" data-placeholder="titlePlaceholder" /><small
+                id="title-hint"
+                class="hint"
+                data-copy="titleFromCalendar"
+                hidden
+              ></small
+            ></label>
+            <div class="chips" id="chips"></div>
+          </div>
+
+          <div id="live" class="live" hidden>
+            <div class="live-source">
+              <img id="live-icon" alt="" hidden />
+              <div>
+                <span class="eyebrow" id="live-state"></span><strong id="live-title"></strong
+                ><small id="live-name"></small>
+              </div>
+            </div>
+            <div class="meters">
+              <div class="meter" id="meter-system-row">
+                <span data-copy="levelSystem"></span>
+                <div class="bar"><i id="meter-system"></i></div>
+              </div>
+              <div class="meter" id="meter-mic-row">
+                <span data-copy="levelMic"></span>
+                <div class="bar"><i id="meter-mic"></i></div>
+              </div>
+            </div>
+            <div class="files" id="files"></div>
+          </div>
+
+          <div id="latest" hidden>
+            <h2 class="section-label" data-copy="latest"></h2>
+            <div id="latest-card"></div>
+          </div>
+        </section>
+
+        <section id="view-recordings" role="tabpanel" aria-labelledby="tab-recordings" hidden>
+          <ul id="recordings" class="recordings"></ul>
+          <p class="empty" id="recordings-empty" data-copy="noRecordings"></p>
+          <pre id="transcript" class="transcript" tabindex="0" hidden></pre>
+        </section>
+
+        <section id="view-settings" role="tabpanel" aria-labelledby="tab-settings" hidden>
+          <p id="settings-locked" class="callout subtle" data-copy="settingsLocked" hidden></p>
+          <h2 class="section-label" data-copy="settingsVideo"></h2>
+          <div class="group">
+            <div class="row">
+              <div class="row-copy">
+                <div class="row-title" data-copy="settingRecordVideo"></div>
+                <div class="row-hint" data-copy="settingRecordVideoHint"></div>
+              </div>
+              <div class="row-control">
+                <input
+                  type="checkbox"
+                  role="switch"
+                  class="switch"
+                  data-setting="video"
+                  data-label="settingRecordVideo"
+                />
+              </div>
+            </div>
+            <div class="row" data-video-only>
+              <div class="row-copy">
+                <div class="row-title" data-copy="settingResolution"></div>
+                <div class="row-hint" data-copy="settingResolutionHint"></div>
+              </div>
+              <div class="row-control">
+                <select data-setting="resolution" data-label="settingResolution">
+                  <option value="native" data-copy="resolutionNative"></option>
+                  <option value="1080p">1080p</option>
+                  <option value="720p">720p</option>
+                </select>
+              </div>
+            </div>
+            <div class="row" data-video-only>
+              <div class="row-copy">
+                <div class="row-title" data-copy="settingFrameRate"></div>
+                <div class="row-hint" data-copy="settingFrameRateHint"></div>
+              </div>
+              <div class="row-control">
+                <select data-setting="fps" data-number data-label="settingFrameRate">
+                  <option value="15">15 fps</option>
+                  <option value="30">30 fps</option>
+                  <option value="60">60 fps</option>
+                </select>
+              </div>
+            </div>
+            <div class="row" data-video-only>
+              <div class="row-copy">
+                <div class="row-title" data-copy="settingCodec"></div>
+                <div class="row-hint" data-copy="settingCodecHint"></div>
+              </div>
+              <div class="row-control">
+                <select data-setting="codec" data-label="settingCodec">
+                  <option value="hevc" data-copy="codecHevc"></option>
+                  <option value="h264" data-copy="codecH264"></option>
+                </select>
+              </div>
+            </div>
+            <div class="row" data-video-only>
+              <div class="row-copy">
+                <div class="row-title" data-copy="settingBitrate"></div>
+                <div class="row-hint" data-copy="settingBitrateHint"></div>
+              </div>
+              <div class="row-control">
+                <input
+                  type="number"
+                  min="500"
+                  max="100000"
+                  step="500"
+                  data-setting="bitrateKbps"
+                  data-number
+                  data-label="settingBitrate"
+                />
+              </div>
+            </div>
+          </div>
+          <h2 class="section-label" data-copy="settingsAudio"></h2>
+          <div class="group">
+            <div class="row">
+              <div class="row-copy">
+                <div class="row-title" data-copy="settingMicrophone"></div>
+                <div class="row-hint" data-copy="settingMicrophoneHint"></div>
+              </div>
+              <div class="row-control">
+                <input
+                  type="checkbox"
+                  role="switch"
+                  class="switch"
+                  data-setting="microphoneEnabled"
+                  data-label="settingMicrophone"
+                />
+              </div>
+            </div>
+            <div class="row">
+              <div class="row-copy">
+                <div class="row-title" data-copy="settingMicrophoneDevice"></div>
+                <div class="row-hint" data-copy="settingMicrophoneDeviceHint"></div>
+              </div>
+              <div class="row-control">
+                <select id="microphones" data-setting="microphone" data-label="settingMicrophoneDevice"></select>
+              </div>
+            </div>
+            <div class="row">
+              <div class="row-copy">
+                <div class="row-title" data-copy="settingSystemAudio"></div>
+                <div class="row-hint" data-copy="settingSystemAudioHint"></div>
+              </div>
+              <div class="row-control">
+                <select data-setting="systemAudio" data-label="settingSystemAudio">
+                  <option value="app" data-copy="systemAudioApp"></option>
+                  <option value="system" data-copy="systemAudioSystem"></option>
+                </select>
+              </div>
+            </div>
+            <div class="row">
+              <div class="row-copy">
+                <div class="row-title" data-copy="settingSeparateTracks"></div>
+                <div class="row-hint" data-copy="settingSeparateTracksHint"></div>
+              </div>
+              <div class="row-control"><span class="always-on" data-copy="alwaysOn"></span></div>
+            </div>
+          </div>
+          <h2 class="section-label" data-copy="settingsStorage"></h2>
+          <div class="group">
+            <div class="row">
+              <div class="row-copy">
+                <div class="row-title" data-copy="settingKeepDays"></div>
+                <div class="row-hint" data-copy="settingKeepDaysHint"></div>
+              </div>
+              <div class="row-control">
+                <select data-setting="keepDays" data-number data-label="settingKeepDays">
+                  <option value="0" data-copy="keep0"></option>
+                  <option value="1" data-copy="keep1"></option>
+                  <option value="7" data-copy="keep7"></option>
+                  <option value="14" data-copy="keep14"></option>
+                  <option value="30" data-copy="keep30"></option>
+                  <option value="90" data-copy="keep90"></option>
+                  <option value="365" data-copy="keep365"></option>
+                </select>
+              </div>
+            </div>
+            <div class="row">
+              <div class="row-copy">
+                <div class="row-title" data-copy="settingFolder"></div>
+                <div class="row-hint" data-copy="settingFolderHint"></div>
+              </div>
+              <div class="row-control"><button class="secondary" id="open-folder" data-copy="openFolder"></button></div>
+            </div>
+          </div>
+          <h2 class="section-label" data-copy="settingsSuggestions"></h2>
+          <div class="group">
+            <div class="row">
+              <div class="row-copy">
+                <div class="row-title" data-copy="settingSuggest"></div>
+                <div class="row-hint" data-copy="settingSuggestHint"></div>
+              </div>
+              <div class="row-control">
+                <input
+                  type="checkbox"
+                  role="switch"
+                  class="switch"
+                  data-setting="suggest"
+                  data-label="settingSuggest"
+                />
+              </div>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <footer class="sheet-footer" id="record-footer">
+        <div class="controls">
+          <button id="pause" class="round" hidden></button>
+          <button id="record" class="record-button"><span class="record-shape"></span></button>
+          <div class="readout">
+            <div class="timer" id="timer" aria-live="off">0:00</div>
+            <p class="record-label" id="record-label"></p>
+          </div>
+        </div>
+      </footer>
+    </section>
+    <script type="module" src="client.mjs"></script>
+  </body>
+</html>

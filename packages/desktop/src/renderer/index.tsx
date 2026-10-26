@@ -9,6 +9,7 @@ import { startDesktopMenu } from "./platform/menu"
 import { startDeepLinks } from "./startup/deep-links"
 import { requireRendererRoot } from "./startup/root"
 import { desktopVersion, initializeSentry } from "./startup/sentry"
+import { mountRecordButton } from "./secretary-recorder/titlebar-button"
 
 const root = requireRendererRoot()
 
@@ -19,5 +20,7 @@ startDesktopMenu(api)
 startDeepLinks(api)
 
 render(() => <DesktopApp api={api} version={version} />, root)
+
+mountRecordButton()
 
 void initializeSentry(version)

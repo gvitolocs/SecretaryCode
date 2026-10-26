@@ -7,6 +7,12 @@ export type ElectronNative = {
     request(action: string, input?: unknown): Promise<{ ok: boolean; data?: unknown; error?: string }>
   }
   codingLanes: CodingLanes
+  recorder: {
+    open(): Promise<boolean>
+    request(action: string, input?: unknown): Promise<{ ok: boolean; data?: unknown; error?: string }>
+    onState(callback: (snapshot: unknown) => void): () => void
+    onStatus(callback: (status: unknown) => void): () => void
+  }
   windowID: string
   bootstrap: WindowBootstrap
   storageSnapshot: Promise<StorageSnapshot>
