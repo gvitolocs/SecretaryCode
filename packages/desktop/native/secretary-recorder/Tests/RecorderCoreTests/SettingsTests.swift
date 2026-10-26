@@ -73,19 +73,23 @@ final class SettingsTests: XCTestCase {
     }
 
     func testOutputDimensionsOnlyScaleDownAndStayEven() {
-        let cases: [(Int, Int, Resolution, Int, Int)] = [
-            (3024, 1964, .native, 3024, 1964),
-            (3024, 1964, .p1080, 1662, 1080),
-            (3024, 1964, .p720, 1108, 720),
-            (1280, 720, .p1080, 1280, 720),
-            (5120, 1440, .p1080, 1920, 540),
-            (1001, 1601, .p720, 720, 1152),
-            (801, 601, .native, 802, 602),
+        let cases: [(Int, Int, Resolution, VideoCodec, Int, Int)] = [
+            (3024, 1964, .native, .hevc, 3024, 1964),
+            (3024, 1964, .p1080, .hevc, 1662, 1080),
+            (3024, 1964, .p720, .h264, 1108, 720),
+            (1280, 720, .p1080, .hevc, 1280, 720),
+            (5120, 1440, .p1080, .hevc, 1920, 540),
+            (1001, 1601, .p720, .hevc, 720, 1152),
+            (801, 601, .native, .hevc, 802, 602),
+            // Hardware H.264 tops out at 4096×2304, so native 5K and 6K are scaled to fit.
+            (5120, 2880, .native, .h264, 4096, 2304),
+            (6016, 3384, .native, .hevc, 6016, 3384),
+            (3024, 1964, .native, .h264, 3024, 1964),
         ]
-        for (width, height, resolution, expectedWidth, expectedHeight) in cases {
-            let size = outputDimensions(sourceWidth: width, sourceHeight: height, resolution: resolution)
-            XCTAssertEqual(size.width, expectedWidth, "\(width)x\(height) \(resolution)")
-            XCTAssertEqual(size.height, expectedHeight, "\(width)x\(height) \(resolution)")
+        for (width, height, resolution, codec, expectedWidth, expectedHeight) in cases {
+            let size = outputDimensions(sourceWidth: width, sourceHeight: height, resolution: resolution, codec: codec)
+            XCTAssertEqual(size.width, expectedWidth, "\(width)x\(height) \(resolution) \(codec)")
+            XCTAssertEqual(size.height, expectedHeight, "\(width)x\(height) \(resolution) \(codec)")
         }
     }
 }

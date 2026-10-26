@@ -1,4 +1,5 @@
 #if os(macOS)
+import AppKit
 import AVFoundation
 import CoreMedia
 import Foundation
@@ -54,6 +55,9 @@ enum Host {
         // Electron may exit first; a write to the closed pipe must fail instead of killing the helper
         // before it finalizes the recording.
         signal(SIGPIPE, SIG_IGN)
+        // NSScreen, NSWorkspace notifications and ScreenCaptureKit expect an application object
+        // (and its window-server connection); the helper never shows UI or a Dock icon.
+        NSApplication.shared.setActivationPolicy(.prohibited)
         let controller = Controller()
         controller.announce()
         Thread.detachNewThread {

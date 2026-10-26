@@ -11,6 +11,10 @@ final class Controller {
     private var statusTimer: DispatchSourceTimer?
     private var observers: [NSObjectProtocol] = []
     private var exiting = false
+    /// True while `CaptureSession.start` is still awaiting ScreenCaptureKit. A stop or failure in
+    /// that window is deferred until the start settles, so streams are never left without an owner.
+    private var starting = false
+    private var deferredFailure: Error?
 
     func announce() {
         Output.send(Message.event("ready", [
@@ -18,7 +22,7 @@ final class Controller {
             "macos": .string(ProcessInfo.processInfo.operatingSystemVersionString),
             "nativeMicrophone": .bool(CaptureSession.supportsNativeMicrophone),
         ]))
-        Output.send(Message.event("permissions", Permissions.snapshot()))
+        Output.send(Message.event("permissions", Permissions.snapshot().objectFields))
         watchApplications()
     }
 
@@ -48,7 +52,7 @@ final class Controller {
             Task {
                 await Permissions.request(permission)
                 let snapshot = Permissions.snapshot()
-                Output.send(Message.event("permissions", snapshot))
+                Output.send(Message.event("permissions", snapshot.objectFields))
                 Output.send(Message.result(id, snapshot))
             }
         case .start(let settings):
@@ -59,7 +63,7 @@ final class Controller {
             Output.send(Message.result(id))
             sendStatus()
         case .stop:
-            guard let session else { return fail(id, RecorderError.notRecording) }
+            guard let session, !starting else { return fail(id, RecorderError.notRecording) }
             finish(session, reply: id, error: nil)
         }
     }
@@ -67,6 +71,7 @@ final class Controller {
     /// stdin closed. Stop any recording cleanly, then exit.
     func shutdown() {
         exiting = true
+        if starting { return }
         guard let session else { exit(0) }
         finish(session, reply: nil, error: nil)
     }
@@ -76,30 +81,41 @@ final class Controller {
         guard Permissions.screenGranted() else {
             // Shows the system prompt the first time; afterwards the owner must use System Settings.
             Permissions.requestScreenPrompt()
-            Output.send(Message.event("permissions", Permissions.snapshot()))
+            Output.send(Message.event("permissions", Permissions.snapshot().objectFields))
             return fail(id, RecorderError.screenPermission)
         }
 
         let session = CaptureSession(settings: settings)
         self.session = session
+        starting = true
+        deferredFailure = nil
         session.onFailure = { [weak self, weak session] error in
             DispatchQueue.main.async {
                 guard let self, let session, self.session === session else { return }
-                self.finish(session, reply: nil, error: error)
+                if self.starting { self.deferredFailure = error } else { self.finish(session, reply: nil, error: error) }
             }
         }
         Task {
             do {
                 if settings.microphone.enabled, !(await Permissions.microphoneAllowed()) { throw RecorderError.microphonePermission }
                 let info = try await session.start()
-                DispatchQueue.main.async { self.startStatusTimer() }
                 Output.send(Message.result(id, info))
                 Output.send(Message.event("started", info.objectFields))
+                DispatchQueue.main.async {
+                    self.starting = false
+                    self.startStatusTimer()
+                    if let failure = self.deferredFailure { self.finish(session, reply: nil, error: failure) }
+                    else if self.exiting { self.finish(session, reply: nil, error: nil) }
+                }
             } catch {
                 await session.stop()
-                DispatchQueue.main.async { if self.session === session { self.session = nil } }
-                Output.send(Message.event("permissions", Permissions.snapshot()))
+                Output.send(Message.event("permissions", Permissions.snapshot().objectFields))
                 fail(id, error)
+                DispatchQueue.main.async {
+                    self.starting = false
+                    if self.session === session { self.session = nil }
+                    if self.exiting { exit(0) }
+                }
             }
         }
     }

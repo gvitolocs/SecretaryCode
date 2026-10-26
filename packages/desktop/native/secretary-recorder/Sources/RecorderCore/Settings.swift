@@ -185,11 +185,13 @@ private func parseEnum<T: RawRepresentable>(_ value: JSONValue?, field: String, 
 
 /// The encoded frame size for a source of `width`×`height` pixels. Presets only scale down, keep the
 /// aspect ratio and round to even sizes, which every hardware encoder requires.
-public func outputDimensions(sourceWidth: Int, sourceHeight: Int, resolution: Resolution) -> (width: Int, height: Int) {
-    let box: (Double, Double)? = switch resolution {
-    case .native: nil
-    case .p1080: (1920, 1080)
-    case .p720: (1280, 720)
+public func outputDimensions(sourceWidth: Int, sourceHeight: Int, resolution: Resolution, codec: VideoCodec) -> (width: Int, height: Int) {
+    let box: (Double, Double)? = switch (resolution, codec) {
+    case (.p1080, _): (1920, 1080)
+    case (.p720, _): (1280, 720)
+    // Hardware H.264 stops at 4096×2304; a 5K or 6K display at native size would fail on the first frame.
+    case (.native, .h264): (4096, 2304)
+    case (.native, .hevc): nil
     }
     let width = Double(max(sourceWidth, 2))
     let height = Double(max(sourceHeight, 2))

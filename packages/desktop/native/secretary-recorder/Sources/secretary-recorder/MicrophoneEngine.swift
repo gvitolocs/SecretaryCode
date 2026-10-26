@@ -14,6 +14,9 @@ final class MicrophoneEngine {
     private let handler: (CMSampleBuffer) -> Void
     private let format: AVAudioFormat
     private var converter: AVAudioConverter?
+    /// Where the previous converted buffer ended. Resampling changes buffer lengths, so stamping each
+    /// buffer with its input's host time would leave small gaps and overlaps between buffers.
+    private var nextTime: CMTime?
 
     init(deviceID: String?, queue: DispatchQueue, handler: @escaping (CMSampleBuffer) -> Void) throws {
         guard let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 48_000, channels: 1, interleaved: false) else { throw RecorderError.microphoneUnavailable }
@@ -55,8 +58,12 @@ final class MicrophoneEngine {
             status.pointee = .haveData
             return buffer
         }
-        guard error == nil, converted.frameLength > 0,
-              let sample = converted.sampleBuffer(at: CMClockMakeHostTimeFromSystemUnits(time.hostTime)) else { return }
+        guard error == nil, converted.frameLength > 0 else { return }
+        let captured = CMClockMakeHostTimeFromSystemUnits(time.hostTime)
+        // Follow on from the previous buffer unless the device clock drifted or input stalled.
+        let start = nextTime.map { abs(CMTimeSubtract($0, captured).seconds) < 0.1 ? $0 : captured } ?? captured
+        nextTime = CMTimeAdd(start, CMTime(value: CMTimeValue(converted.frameLength), timescale: CMTimeScale(format.sampleRate)))
+        guard let sample = converted.sampleBuffer(at: start) else { return }
         queue.async { self.handler(sample) }
     }
 

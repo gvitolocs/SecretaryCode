@@ -27,6 +27,7 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
     private var levels: [String: Double] = [:]
     private var accepting = false
     private var failed = false
+    private var stopTask: Task<JSONValue, Never>?
 
     private var mainStream: SCStream?
     private var systemStream: SCStream?
@@ -50,7 +51,7 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
         let separateSystemStream = systemAudio == .system && !target.isDisplay
         let nativeMicrophone = settings.microphone.enabled && Self.supportsNativeMicrophone
         let size = settings.video.enabled
-            ? outputDimensions(sourceWidth: target.pixelWidth, sourceHeight: target.pixelHeight, resolution: settings.video.resolution)
+            ? outputDimensions(sourceWidth: target.pixelWidth, sourceHeight: target.pixelHeight, resolution: settings.video.resolution, codec: settings.video.codec)
             : (width: 2, height: 2)
 
         let config = Self.configuration(width: size.width, height: size.height, fps: settings.video.enabled ? settings.video.fps : 1, audio: systemAudio != .off && !separateSystemStream)
@@ -131,9 +132,21 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
         ]
     }
 
-    /// Stops capture and finalizes every file. Safe to call after a failed or partial start.
+    /// Stops capture and finalizes every file. Safe to call after a failed or partial start, and
+    /// more than once: every caller awaits the same stop, because finishing an AVAssetWriter twice
+    /// raises an Objective-C exception.
     @discardableResult
     func stop() async -> JSONValue {
+        let task = queue.sync { () -> Task<JSONValue, Never> in
+            if let stopTask { return stopTask }
+            let task = Task { await self.finishCapture() }
+            stopTask = task
+            return task
+        }
+        return await task.value
+    }
+
+    private func finishCapture() async -> JSONValue {
         let ended = hostSeconds()
         let endedAt = Date()
         if let mainStream { try? await mainStream.stopCapture() }
@@ -184,7 +197,10 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
     private func append(_ buffer: CMSampleBuffer, to name: String, meter: String?) {
         guard accepting, !failed, let writer = writers[name] else { return }
         let time = CMSampleBufferGetPresentationTimeStamp(buffer)
-        guard time.isNumeric, let mapped = timeline.map(time.seconds) else { return }
+        let duration = CMSampleBufferGetDuration(buffer)
+        // Audio buffers span time; one that runs into a pause would overlap the first buffer after it.
+        let end = duration.isNumeric ? time.seconds + duration.seconds : time.seconds
+        guard time.isNumeric, let mapped = timeline.map(start: time.seconds, end: end) else { return }
         if let meter, let level = Self.level(of: buffer) { levels[meter] = level }
         let shift = time.seconds - mapped
         let output: CMSampleBuffer? = shift > 0 ? buffer.shifted(back: CMTime(seconds: shift, preferredTimescale: 1_000_000_000)) : buffer

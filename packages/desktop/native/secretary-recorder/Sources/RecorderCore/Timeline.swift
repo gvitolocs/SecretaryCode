@@ -40,6 +40,17 @@ public struct Timeline: Equatable {
         return time - removed
     }
 
+    /// The output timestamp for a buffer covering `start`..<`end`, or nil when any of it falls
+    /// before the start or inside a pause.
+    public func map(start: Double, end: Double) -> Double? {
+        guard let mapped = map(start) else { return nil }
+        guard end > start else { return mapped }
+        // Probe just before `end`: a buffer ending exactly where a pause starts is complete.
+        let last = end - min(1e-6, (end - start) / 2)
+        guard let mappedLast = map(last), abs((last - mappedLast) - (start - mapped)) < 1e-9 else { return nil }
+        return mapped
+    }
+
     /// Recorded seconds so far, excluding pauses.
     public func elapsed(at now: Double) -> Double {
         guard let origin else { return 0 }
