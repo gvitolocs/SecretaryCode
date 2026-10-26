@@ -34,6 +34,7 @@ import { rootSession } from "@/shell/routes/session"
 import { TitlebarItem } from "@opencode/gui-extensions/sdk"
 import { useExtensionHost } from "@/runtime/extension/host"
 import { TitlebarItems, useTitlebarItems } from "@/runtime/extension/titlebar-items"
+import { useWorkspace } from "@/shell/workspace/workspace"
 import devIcon from "../../../../desktop/icons/dev/64x64.png"
 import betaIcon from "../../../../desktop/icons/beta/64x64.png"
 
@@ -181,6 +182,7 @@ export function Titlebar(props: { verticalTabs?: { mount?: HTMLElement } }) {
           {(_) => {
             const layout = useLayout()
             const global = useGlobal()
+            const workspace = useWorkspace()
 
             const tabs = useTabs()
             const tabsStore = tabs.store
@@ -540,6 +542,30 @@ export function Titlebar(props: { verticalTabs?: { mount?: HTMLElement } }) {
                 <Show when={windows() || linux()}>
                   <WindowsAppMenu command={command} platform={platform} />
                 </Show>
+                <Show when={workspace.sidebar.available()}>
+                  <Tooltip
+                    placement="bottom"
+                    value={
+                      <>
+                        {language.t("workspace.sidebar.toggle")}
+                        <Keybind keys={command.keybindParts("sidebar.toggle")} variant="neutral" />
+                      </>
+                    }
+                    class="shrink-0"
+                  >
+                    <IconButton
+                      type="button"
+                      data-action="titlebar-sidebar-toggle"
+                      variant="ghost-muted"
+                      size="large"
+                      class="!w-9 shrink-0"
+                      icon={<Icon name={workspace.sidebar.visible() ? "layout-left-full" : "layout-left"} />}
+                      onClick={workspace.sidebar.toggle}
+                      aria-label={language.t("workspace.sidebar.toggle")}
+                      aria-pressed={workspace.sidebar.visible()}
+                    />
+                  </Tooltip>
+                </Show>
                 <Show when={!mobile() && !props.verticalTabs}>{homeButton()}</Show>
 
                 <Show
@@ -768,6 +794,30 @@ export function Titlebar(props: { verticalTabs?: { mount?: HTMLElement } }) {
                     <TitlebarItems items={titlebarItems} />
                     <TitlebarRightMount />
                   </div>
+                </Show>
+                <Show when={workspace.companion.available()}>
+                  <Tooltip
+                    placement="bottom"
+                    value={
+                      <>
+                        {language.t("workspace.companion.toggle")}
+                        <Keybind keys={command.keybindParts("secretary.lucina.toggle")} variant="neutral" />
+                      </>
+                    }
+                    class="shrink-0"
+                  >
+                    <IconButton
+                      type="button"
+                      data-action="titlebar-companion-toggle"
+                      variant="ghost-muted"
+                      size="large"
+                      class="!w-9 shrink-0"
+                      icon={<Icon name={workspace.companion.visible() ? "layout-right-full" : "layout-right"} />}
+                      onClick={workspace.companion.toggle}
+                      aria-label={language.t("workspace.companion.toggle")}
+                      aria-pressed={workspace.companion.visible()}
+                    />
+                  </Tooltip>
                 </Show>
               </div>
             )

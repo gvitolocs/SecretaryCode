@@ -177,7 +177,24 @@ export const DESKTOP_MENU: DesktopMenu[] = [
     id: "view",
     labelKey: "desktop.menu.view",
     items: [
-      { type: "item", labelKey: "desktop.menu.toggleSidebar", command: "sidebar.toggle" },
+      {
+        type: "item",
+        labelKey: "desktop.menu.toggleSidebar",
+        command: "sidebar.toggle",
+        accelerator: { macos: "Cmd+Shift+B" },
+      },
+      {
+        type: "item",
+        labelKey: "desktop.menu.toggleLucina",
+        command: "secretary.lucina.toggle",
+        accelerator: { macos: "Cmd+Option+B" },
+      },
+      {
+        type: "item",
+        labelKey: "desktop.menu.codingAgents",
+        command: "secretary.agents.open",
+        accelerator: { macos: "Cmd+Option+A" },
+      },
       {
         type: "item",
         labelKey: "desktop.menu.toggleTerminal",

@@ -1,1 +1,30 @@
 :root{color-scheme:dark;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#edece6;background:#101212;font-size:13px}*{box-sizing:border-box}body{margin:0}header{display:flex;align-items:center;gap:13px;height:109px;padding:28px 36px 12px;-webkit-app-region:drag}.mark{display:grid;place-items:center;width:43px;height:46px;font:italic 31px Georgia;color:#121612;background:#d9ead2;border-radius:13px}.eyebrow{font-size:10px;letter-spacing:.17em;color:#a4ada5;margin:0 0 5px}h1{font:500 25px Georgia,serif;margin:0}.chip{margin-left:auto;border:1px solid #3b433d;border-radius:20px;padding:7px 12px;font-size:11px;color:#c8d6c5}main{padding:12px 36px 26px}.setup{background:#191d1b;border:1px solid #303832;border-radius:18px;padding:23px 25px}.section-label{display:block;font-size:10px;letter-spacing:.15em;color:#a8b5a8;margin-bottom:15px}label{display:block;font-size:12px;margin:13px 0 7px;color:#d6dbd3}input,select,textarea{display:block;width:100%;border:1px solid #3b443d;border-radius:9px;color:#f4f4ed;background:#101612;padding:11px 12px;font:inherit;outline:none}input:focus,select:focus,textarea:focus{border-color:#c7dfa9;box-shadow:0 0 0 2px #c7dfa91a}textarea{resize:vertical;min-height:95px;line-height:1.5}.project-row{display:flex;gap:9px}.project-row input{flex:1;min-width:0}.fields{display:flex;gap:16px}.fields>div{flex:1}.optional{font-size:10px;color:#8e9b91;margin-left:6px}.hint{color:#91a194;line-height:1.6;font-size:11px;margin:9px 0}.actions{display:flex;gap:10px;align-items:center;margin-top:17px}button{border:0;border-radius:8px;background:#d5e7bf;color:#182018;padding:11px 17px;font:600 12px -apple-system,BlinkMacSystemFont,sans-serif;cursor:pointer;white-space:nowrap;-webkit-app-region:no-drag}button span{padding-left:18px}button:hover{filter:brightness(1.08)}button:disabled{opacity:.45;cursor:default}.secondary{background:#29332c;color:#d5dfd2;border:1px solid #465048}#status{font-size:11px;color:#b3c1b0;margin-left:auto}.output-section{margin-top:24px}.output-heading{display:flex;align-items:center;justify-content:space-between}.output-heading>div{display:flex;align-items:center;gap:15px}.output-heading .section-label{margin:0}#output-note{color:#7c8d81;font-size:10px}.text-button{background:transparent;color:#b3c3ac;font-size:11px;padding:6px 0}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#0c100d;border:1px solid #29352c;border-radius:12px;padding:20px;min-height:150px;max-height:340px;overflow:auto;font:11px/1.65 ui-monospace,SFMono-Regular,Menlo,monospace;color:#bfcec0}footer{font-size:10px;line-height:1.7;color:#78877b}#error{color:#f1b8a6;padding:10px 12px;background:#39251f;border-radius:8px;line-height:1.5}[hidden]{display:none!important}input:disabled,select:disabled,textarea:disabled{opacity:.6}@media(max-width:820px){header{padding-left:24px;padding-right:24px}main{padding:12px 24px}.chip{display:none}.setup{padding:20px}.fields{gap:10px}}
+
+/* Docked in the workspace's right panel: compact chrome, one column, and the workspace's light or dark scheme. */
+header{height:auto;padding:18px 18px 6px;-webkit-app-region:no-drag}
+.mark{width:34px;height:34px;border-radius:10px;object-fit:cover}
+h1{font-size:19px}
+.chip{display:none}
+main{padding:8px 18px 18px}
+.setup{padding:16px;border-radius:14px}
+.fields{flex-direction:column;gap:0}
+.project-row{flex-wrap:wrap}
+.project-row input{flex-basis:180px}
+.actions{flex-wrap:wrap}
+.output-section{margin-top:18px}
+pre{padding:14px;max-height:none;min-height:180px}
+footer{margin-top:14px}
+@media(min-width:620px){.fields{flex-direction:row;gap:16px}}
+@media(prefers-color-scheme:light){
+:root{color-scheme:light;color:#1d211e;background:#f6f7f4}
+.eyebrow,.section-label,#status,.text-button{color:#5d6b60}
+.setup{background:#fff;border-color:#dfe4dc}
+label{color:#2d352f}
+input,select,textarea{color:#1d211e;background:#fbfcfa;border-color:#d3dad0}
+input:focus,select:focus,textarea:focus{border-color:#7f9a62;box-shadow:0 0 0 2px #7f9a6226}
+.optional,.hint,#output-note,footer{color:#6b786d}
+button{background:#2f3d2c;color:#f4f7ef}
+.secondary{background:#eef1ec;color:#2d352f;border-color:#d3dad0}
+pre{background:#f1f3ef;border-color:#dfe4dc;color:#2d352f}
+#error{color:#8a2c14;background:#fbe6df}
+}

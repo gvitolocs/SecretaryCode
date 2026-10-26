@@ -1,7 +1,6 @@
-import { app, BrowserWindow, WebContentsView, ipcMain, protocol, safeStorage } from "electron"
+import { app, WebContentsView, ipcMain, protocol, safeStorage } from "electron"
 import { mkdir, readFile, writeFile, unlink } from "node:fs/promises"
 import { join } from "node:path"
-import { isRendererUrl } from "../windows/scheme"
 import icon from "./icon-data"
 import page from "../../renderer/secretary/index.html?raw"
 import style from "../../renderer/secretary/style.css?raw"
@@ -22,7 +21,7 @@ const files = new Map([
   ["/stage-host.mjs", { data: stageHost, type: "text/javascript" }],
   ["/lucina-stage.standalone.js", { data: stageBundle, type: "text/javascript" }],
 ])
-const state: { window?: BrowserWindow; view?: WebContentsView; visible: boolean; token?: string; registered: boolean; ready?: Promise<void> } = { registered: false, visible: false }
+const state: { view?: WebContentsView; token?: string; registered: boolean; ready?: Promise<void> } = { registered: false }
 
 function credentialFile() { return join(app.getPath("userData"), "secretary-device.enc") }
 
@@ -143,16 +142,6 @@ export function setupSecretary() {
       }
       return new Response(null, { status: 404 })
     })
-    ipcMain.handle("secretary:open", event => {
-      if (!event.senderFrame || event.senderFrame.parent || !isRendererUrl(event.senderFrame.url)) return false
-      void openSecretaryWindow()
-      return true
-    })
-    ipcMain.handle("secretary:close", event => {
-      if (!state.view || event.sender !== state.view.webContents || event.senderFrame?.url !== `${scheme}://app/index.html`) return false
-      hideSecretary()
-      return true
-    })
     ipcMain.handle("secretary:request", async (event, action: unknown, input: unknown) => {
       if (!state.view || event.sender !== state.view.webContents || event.senderFrame?.url !== `${scheme}://app/index.html`) return { ok: false, error: "invalidRequest" }
       try { return { ok: true, data: await perform(typeof action === "string" ? action : "", input) } }
@@ -161,50 +150,19 @@ export function setupSecretary() {
   })
 }
 
-/** Toggle a warm Lucina dock beside the coding surface in the existing desktop window. */
-export async function openSecretaryWindow(host?: BrowserWindow) {
+/** The Lucina panel's view, created on first use and kept warm while the companion panel is hidden. */
+export function lucinaView() {
   if (!state.registered) throw new Error("Call setupSecretary before app.ready")
-  await state.ready
-  if (state.view && !state.view.webContents.isDestroyed() && state.window && !state.window.isDestroyed()) {
-    if (state.visible) { hideSecretary(); return }
-    state.visible = true
-    state.window.contentView.addChildView(state.view)
-    resizeSecretary()
-    state.window.show()
-    return
-  }
-  const window = host || BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0]
-  if (!window || window.isDestroyed()) return
+  if (state.view && !state.view.webContents.isDestroyed()) return state.view
   const view = new WebContentsView({
     webPreferences: { preload: join(import.meta.dirname, "../preload/index.cjs"), additionalArguments: ["--opencode-window=" + encodeURIComponent(JSON.stringify({ id: "secretary-companion", packaged: app.isPackaged }))], contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true },
   })
-  state.window = window
   state.view = view
-  state.visible = true
-  view.setBackgroundColor("#000000")
-  window.contentView.addChildView(view)
+  // Transparent until the page paints, so the panel shows the workspace's own surface instead of a black flash.
+  view.setBackgroundColor("#00000000")
   view.webContents.setWindowOpenHandler(() => ({ action: "deny" }))
   view.webContents.on("will-navigate", (event, url) => { if (url !== `${scheme}://app/index.html`) event.preventDefault() })
-  window.on("resize", resizeSecretary)
-  window.webContents.on("did-finish-load", resizeSecretary)
-  window.once("closed", () => { view.webContents.close(); state.window = undefined; state.view = undefined; state.visible = false })
-  resizeSecretary()
-  await view.webContents.loadURL(`${scheme}://app/index.html`)
-}
-
-function resizeSecretary() {
-  const host = state.window
-  const view = state.view
-  if (!host || host.isDestroyed() || !view || view.webContents.isDestroyed()) return
-  const bounds = host.getContentBounds()
-  const width = state.visible ? Math.min(400, Math.max(340, Math.round(bounds.width * 0.32))) : 0
-  if (state.visible) view.setBounds({ x: bounds.width - width, y: 36, width, height: Math.max(100, bounds.height - 36) })
-  void host.webContents.executeJavaScript(`document.documentElement.style.setProperty('--secretary-dock-width','${width}px');document.documentElement.classList.toggle('secretary-dock-open',${state.visible})`).catch(() => undefined)
-}
-
-function hideSecretary() {
-  if (!state.view || !state.window || state.window.isDestroyed()) return
-  state.visible = false
-  state.window.contentView.removeChildView(state.view)
-  resizeSecretary()
+  view.webContents.once("destroyed", () => { if (state.view === view) state.view = undefined })
+  void state.ready?.then(() => view.webContents.loadURL(`${scheme}://app/index.html`))
+  return view
 }

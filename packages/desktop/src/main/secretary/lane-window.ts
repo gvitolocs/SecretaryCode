@@ -1,17 +1,18 @@
-import { app, BrowserWindow, dialog, ipcMain, protocol } from "electron"
+import { app, BrowserWindow, WebContentsView, dialog, ipcMain, protocol } from "electron"
 import { spawn } from "node:child_process"
 import type { ChildProcess } from "node:child_process"
 import { stat } from "node:fs/promises"
 import { join } from "node:path"
 import { LANES, ORCHESTRA_WORKERS, launchPlan, orchestraRequest, projectPath, remoteProject } from "./lanes"
 import { redactLaneOutput, supervisedSSH } from "./lane-process"
+import icon from "./icon-data"
 import page from "../../renderer/secretary-lanes/index.html?raw"
 import style from "../../renderer/secretary-lanes/style.css?raw"
 import client from "../../renderer/secretary-lanes/client.mjs?raw"
 
 const scheme = "secretary-coding"
 const origin = `${scheme}://app/index.html`
-let window: BrowserWindow | undefined
+let view: WebContentsView | undefined
 let registered = false
 let ready: Promise<void>
 let processState: { child: ChildProcess; raw: string; status: string; exitCode?: number | null; cancel: boolean } | undefined
@@ -64,7 +65,9 @@ async function perform(action: string, input: unknown) {
     output: redactLaneOutput(processState?.raw ?? ""), exitCode: processState?.exitCode,
   }
   if (action === "pick") {
-    const result = await dialog.showOpenDialog(window!, { title: "Choose a project", properties: ["openDirectory"] })
+    const options = { title: "Choose a project", properties: ["openDirectory" as const] }
+    const parent = view && BrowserWindow.fromWebContents(view.webContents)
+    const result = await (parent ? dialog.showOpenDialog(parent, options) : dialog.showOpenDialog(options))
     return { path: result.canceled ? undefined : result.filePaths[0] }
   }
   if (action === "cancel") { cancel(); return { requested: true } }
@@ -112,13 +115,14 @@ export function setupCodingLanes() {
     protocol.handle(scheme, request => {
       const url = new URL(request.url)
       if (url.hostname !== "app") return new Response(null, { status: 404 })
+      if (url.pathname === "/icon.png") return new Response(Buffer.from(icon, "base64"), { headers: { "Content-Type": "image/png", "Cache-Control": "public, max-age=86400" } })
       const assets: Record<string, [string, string]> = { "/index.html": [page, "text/html"], "/style.css": [style, "text/css"], "/client.mjs": [client, "text/javascript"] }
       const asset = assets[url.pathname]
       if (!asset) return new Response(null, { status: 404 })
       return new Response(asset[0], { headers: { "Content-Type": asset[1], "Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'", "X-Content-Type-Options": "nosniff" } })
     })
     ipcMain.handle("secretary:lanes", async (event, action: unknown, input: unknown) => {
-      if (!window || event.sender !== window.webContents || event.senderFrame?.url !== origin) return { ok: false, error: "Invalid window" }
+      if (!view || event.sender !== view.webContents || event.senderFrame?.url !== origin) return { ok: false, error: "Invalid window" }
       try { return { ok: true, data: await perform(typeof action === "string" ? action : "", input) } }
       catch (error) { return { ok: false, error: redactLaneOutput(error instanceof Error ? error.message : "Task failed") } }
     })
@@ -126,16 +130,18 @@ export function setupCodingLanes() {
   app.on("before-quit", cancel)
 }
 
-export async function openCodingLanes() {
+/** The coding-agents panel's view, created on first use and kept warm while the companion panel is hidden. */
+export function codingLanesView() {
   if (!registered) throw new Error("Call setupCodingLanes before app.ready")
-  await ready
-  if (window && !window.isDestroyed()) { window.show(); window.focus(); return window }
-  window = new BrowserWindow({ width: 1040, height: 800, minWidth: 760, minHeight: 620, title: "Secretary Code · Coding agents", backgroundColor: "#101212", titleBarStyle: "hiddenInset", webPreferences: {
+  if (view && !view.webContents.isDestroyed()) return view
+  const created = new WebContentsView({ webPreferences: {
     preload: join(import.meta.dirname, "../preload/index.cjs"), additionalArguments: ["--opencode-window=" + encodeURIComponent(JSON.stringify({ id: "secretary-coding", packaged: app.isPackaged }))], contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true,
   } })
-  window.webContents.setWindowOpenHandler(() => ({ action: "deny" }))
-  window.webContents.on("will-navigate", (event, url) => { if (url !== origin) event.preventDefault() })
-  window.on("closed", () => { cancel(); window = undefined })
-  await window.loadURL(origin)
-  return window
+  view = created
+  created.setBackgroundColor("#00000000")
+  created.webContents.setWindowOpenHandler(() => ({ action: "deny" }))
+  created.webContents.on("will-navigate", (event, url) => { if (url !== origin) event.preventDefault() })
+  created.webContents.once("destroyed", () => { if (view !== created) return; cancel(); view = undefined })
+  void ready.then(() => created.webContents.loadURL(origin))
+  return created
 }

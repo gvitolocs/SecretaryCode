@@ -51,7 +51,5 @@
   "jobError": "The task could not finish. Ask Lucina for more details.",
   "failed": "Message wasn’t delivered. Your text is back in the composer.",
   "you": "You",
-  "retry": "Retry",
-  "menu": "Secretary",
-  "openLucina": "Open Lucina"
+  "retry": "Retry"
 }

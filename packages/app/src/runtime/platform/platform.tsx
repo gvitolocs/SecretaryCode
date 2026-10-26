@@ -21,6 +21,10 @@ type SaveFilePickerOptions = { title?: string; defaultPath?: string }
 
 type PlatformName = "web" | "desktop"
 
+export type CompanionPanel = "lucina" | "agents"
+
+export type CompanionRect = { x: number; y: number; width: number; height: number }
+
 type DesktopOS = "macos" | "windows" | "linux"
 
 export type FatalRendererErrorLog = {
@@ -115,6 +119,12 @@ type PlatformBase = {
 
   /** GUI extension bridge to the main-process extension host (desktop only). */
   extensions?: Bridge
+
+  /**
+   * Secretary's companion panels (desktop only). Each is a native view the host lays over the rectangle the workspace
+   * reserves for it, in CSS pixels relative to the viewport; no panel hides them all.
+   */
+  companion?: { place(panel: CompanionPanel | undefined, rect?: CompanionRect): void }
 }
 
 export type Platform = PlatformBase &

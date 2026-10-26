@@ -43,6 +43,8 @@ const projectContextMenuID = (server: ServerConnection.Any, directory: string) =
 
 export type HomeProjectsViewProps = {
   dropdown?: boolean
+  /** Laid out as the workspace sidebar's projects section, without the page's sticky offsets or utility links. */
+  sidebar?: boolean
   language: ReturnType<typeof useLanguage>
   servers: ServerConnection.Any[]
   projects: LocalProject[]
@@ -172,7 +174,9 @@ function HomeProjectsPanel(props: HomeProjectsViewProps) {
       class={
         props.dropdown
           ? "flex max-h-[min(60dvh,calc(var(--kb-popper-content-available-height)-12px))] min-h-0 min-w-0 flex-col overflow-hidden"
-          : `
+          : props.sidebar
+            ? "flex min-h-0 min-w-0 flex-col gap-1 overflow-hidden"
+            : `
         mt-6 flex min-h-0 min-w-0 flex-col gap-4 overflow-hidden
         lg:sticky lg:top-14 lg:mt-14 lg:h-[calc(100cqh-56px)] lg:self-start lg:pt-[52px]
       `
@@ -300,12 +304,14 @@ function HomeProjectsPanel(props: HomeProjectsViewProps) {
           </div>
         </Show>
       </ScrollView>
-      <HomeUtilityNav
-        class="mb-8 mt-4 hidden shrink-0 lg:flex"
-        onOpenSettings={props.onOpenSettings}
-        onOpenHelp={props.onOpenHelp}
-        language={props.language}
-      />
+      <Show when={!props.sidebar}>
+        <HomeUtilityNav
+          class="mb-8 mt-4 hidden shrink-0 lg:flex"
+          onOpenSettings={props.onOpenSettings}
+          onOpenHelp={props.onOpenHelp}
+          language={props.language}
+        />
+      </Show>
     </aside>
   )
 }
