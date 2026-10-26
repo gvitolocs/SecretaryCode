@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>app.secretary.code.recorder</string>
+    <key>CFBundleName</key>
+    <string>Secretary Recorder</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0.0</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>13.0</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Secretary Code records your microphone as a separate track so Lucina can tell your voice apart in meeting transcripts.</string>
+    <key>NSScreenCaptureUsageDescription</key>
+    <string>Secretary Code records the meeting app, window or screen you choose so Lucina can transcribe it.</string>
+</dict>
+</plist>

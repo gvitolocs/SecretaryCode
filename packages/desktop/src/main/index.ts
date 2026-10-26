@@ -10,6 +10,7 @@ import { rendererAssetsServed } from "./windows/protocol"
 import { registerRendererScheme } from "./windows/scheme"
 import { setupSecretary, openSecretaryWindow } from "./secretary"
 import { setupCodingLanes } from "./secretary/lane-window"
+import { setupRecorder } from "./secretary/recorder"
 
 // This module stays small on purpose. Electron holds the ready event until the entry module has
 // finished, and the first window should be on screen before the rest of the main process — a few
@@ -18,6 +19,7 @@ import { setupCodingLanes } from "./secretary/lane-window"
 configureApplication()
 setupSecretary()
 setupCodingLanes()
+setupRecorder()
 
 if (acquireApplicationLock()) {
   registerRendererScheme()

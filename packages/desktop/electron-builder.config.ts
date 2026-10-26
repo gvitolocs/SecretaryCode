@@ -52,6 +52,10 @@ function macSignOptions(options: CustomMacSignOptions): CustomMacSignOptions {
     optionsForFile: (file) => {
       const defaults = options.optionsForFile?.(file)
 
+      // The meeting recorder needs only the microphone entitlement; Screen Recording is a TCC grant.
+      if (file === path.join(options.app, "Contents/Resources/secretary-recorder"))
+        return { ...defaults, entitlements: path.join(packageDir, "native/secretary-recorder/entitlements.plist") }
+
       if (file !== path.join(options.app, "Contents/Resources/opencode-cli")) return defaults ?? {}
 
       // The Bun CLI loads bun-pty's native library; Electron and its helpers do not need this exception.
@@ -102,6 +106,7 @@ const getBase = (appId: string): Configuration => {
       "out/**/*",
       "resources/**/*",
       "!resources/opencode-cli*",
+      "!resources/secretary-recorder",
       // Keep only the target platform's node-pty prebuild when cross-packaging with --cpu=*.
       ...CLI_BINARIES.filter((item) => item.os !== target.os || item.cpu !== target.cpu).map(
         (item) => `!**/node_modules/@lydell/node-pty-${item.os}-${item.cpu}{,/**/*}`,
@@ -125,7 +130,13 @@ const getBase = (appId: string): Configuration => {
       {
         from: "resources/",
         to: "",
-        filter: ["opencode-cli", "opencode-cli.exe", "opencode-cli.version", "secretary-code.png"],
+        filter: [
+          "opencode-cli",
+          "opencode-cli.exe",
+          "opencode-cli.version",
+          "secretary-code.png",
+          "secretary-recorder",
+        ],
       },
     ],
     afterPack: async (context) => {
@@ -145,6 +156,14 @@ const getBase = (appId: string): Configuration => {
       const version = path.join(path.dirname(cli), "opencode-cli.version")
 
       if ((await stat(version)).size === 0) throw new Error(`Bundled CLI version must be a non-empty file: ${version}`)
+
+      if (context.electronPlatformName === "darwin") {
+        // The meeting recorder is part of the macOS app; a build without it would fail only when recording.
+        const recorder = path.join(resources, "secretary-recorder")
+
+        if ((await stat(recorder)).size === 0) throw new Error(`Bundled recorder must be a non-empty file: ${recorder}`)
+        await NativeArch.verify(recorder, arch)
+      }
 
       if (context.electronPlatformName !== "win32") return
 
@@ -177,6 +196,12 @@ const getBase = (appId: string): Configuration => {
       identity: "-",
       extendInfo: {
         NSAutoFillRequiresTextContentTypeForOneTimeCodeOnMac: true,
+        // The recorder helper runs as a child of the app, so macOS asks for (and lists) these
+        // permissions under Secretary Code.
+        NSMicrophoneUsageDescription:
+          "Secretary Code records your microphone as a separate track so Lucina can tell your voice apart in meeting transcripts.",
+        NSScreenCaptureUsageDescription:
+          "Secretary Code records the meeting app, window or screen you choose so Lucina can transcribe it.",
       },
       hardenedRuntime: true,
       gatekeeperAssess: false,

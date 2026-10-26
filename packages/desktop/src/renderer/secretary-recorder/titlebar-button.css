@@ -1,0 +1,55 @@
+.secretary-record-button {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  margin-inline-end: 6px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--v2-text-text-faint, #8e8e93);
+  font:
+    500 12px/1 -apple-system,
+    BlinkMacSystemFont,
+    sans-serif;
+  font-variant-numeric: tabular-nums;
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+.secretary-record-button:hover {
+  background: var(--v2-background-bg-layer-02, #8e8e9326);
+}
+.secretary-record-button:focus-visible {
+  outline: 2px solid var(--v2-border-border-focus, #7f8fe0);
+  outline-offset: 1px;
+}
+.secretary-record-button.recording {
+  color: #ff453a;
+}
+.secretary-record-button.floating {
+  position: fixed;
+  z-index: 100;
+  top: 5px;
+  right: calc(12px + var(--secretary-dock-width, 0px));
+}
+.secretary-record-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #ff453a;
+}
+.secretary-record-button.recording .secretary-record-dot {
+  animation: secretary-record-pulse 1.6s ease-in-out infinite;
+}
+@keyframes secretary-record-pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .secretary-record-button.recording .secretary-record-dot {
+    animation: none;
+  }
+}

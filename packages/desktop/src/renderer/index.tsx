@@ -10,6 +10,7 @@ import { startDeepLinks } from "./startup/deep-links"
 import { requireRendererRoot } from "./startup/root"
 import { desktopVersion, initializeSentry } from "./startup/sentry"
 import secretaryCopy from "./secretary/en.json"
+import { mountRecordButton } from "./secretary-recorder/titlebar-button"
 
 const root = requireRendererRoot()
 
@@ -28,5 +29,6 @@ lucina.title = secretaryCopy.openLucina
 lucina.setAttribute("aria-label", secretaryCopy.openLucina)
 lucina.addEventListener("click", () => void window.electron.secretary.open())
 document.body.append(lucina)
+mountRecordButton()
 
 void initializeSentry(version)

@@ -13,6 +13,8 @@ await $`bun ./scripts/copy-icons.ts ${channel}`
 
 await $`bun ./scripts/copy-metainfo.ts ${channel}`
 
+await $`bun ./scripts/build-recorder.ts`
+
 if (channel === "dev") await downloadCliToResources()
 
 if ((channel === "beta" || channel === "prod") && Bun.env.OPENCODE_CLI_DIST) {

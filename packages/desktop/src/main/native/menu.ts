@@ -17,6 +17,8 @@ import { nativeT } from "./translations"
 import { openSecretaryWindow } from "../secretary"
 import secretaryCopy from "../../renderer/secretary/en.json"
 import { openCodingLanes } from "../secretary/lane-window"
+import { openRecorder } from "../secretary/recorder"
+import recorderCopy from "../../renderer/secretary-recorder/en.json"
 
 type Deps = {
   trigger: (id: string) => void
@@ -71,6 +73,8 @@ export function createMenu(deps: Deps) {
   built.append(new MenuItem({ label: secretaryCopy.menu, submenu: [
     { label: secretaryCopy.openLucina, accelerator: "CmdOrCtrl+Shift+L", click: () => void openSecretaryWindow() },
     { label: "Coding agents…", accelerator: "CmdOrCtrl+Shift+A", click: () => void openCodingLanes() },
+    // The recorder registers ⌥⌘R globally so it works from any app; the menu only shows it.
+    { label: recorderCopy.menuRecord, accelerator: "Alt+CmdOrCtrl+R", registerAccelerator: false, click: () => void openRecorder() },
   ] }))
 
   // Electron freezes a built item's state; contributions re-read theirs whenever a menu opens.

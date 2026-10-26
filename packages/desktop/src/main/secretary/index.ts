@@ -103,6 +103,12 @@ async function perform(action: string, input: unknown): Promise<unknown> {
   throw new Error("invalidRequest")
 }
 
+/** The signed-in Secretary device token, shared with the meeting recorder's uploads. */
+export async function secretaryToken() {
+  await state.ready
+  return state.token
+}
+
 /** Compose once during startup; windows/scheme centrally registers privileged schemes before ready. */
 export function setupSecretary() {
   if (state.registered) return

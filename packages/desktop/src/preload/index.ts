@@ -9,6 +9,7 @@ import {
 import { windowBootstrapFromArguments } from "../shared/window-bootstrap"
 import { secretaryBridge } from "./secretary"
 import { codingLanesBridge } from "./secretary-lanes"
+import { recorderBridge } from "./secretary-recorder"
 
 ipcRenderer.on(IpcTransportPort, (event) => {
   const port = event.ports[0]
@@ -28,6 +29,7 @@ const snapshot: Promise<WindowSnapshot> = ipcRenderer
 contextBridge.exposeInMainWorld("electron", {
   secretary: secretaryBridge,
   codingLanes: codingLanesBridge,
+  recorder: recorderBridge,
   windowID: bootstrap.id,
   bootstrap,
   storageSnapshot: snapshot.then((snapshot) => snapshot.storage),
