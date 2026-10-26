@@ -193,7 +193,9 @@ const getBase = (appId: string): Configuration => {
     mac: {
       category: "public.app-category.developer-tools",
       icon: "resources/secretary-code.icns",
-      identity: "-",
+      // A stable certificate keeps macOS privacy grants (Screen Recording, Microphone) across rebuilds;
+      // ad-hoc signatures change every build, so macOS treats each build as a new app.
+      identity: process.env.SECRETARY_SIGN_IDENTITY || "-",
       extendInfo: {
         NSAutoFillRequiresTextContentTypeForOneTimeCodeOnMac: true,
         // The recorder helper runs as a child of the app, so macOS asks for (and lists) these
