@@ -13,7 +13,7 @@ import { useGlobal } from "@/runtime/server/runtime"
 import { ServerConnection, useServers } from "@/runtime/server/registry"
 import { useLayout } from "@/shell/state/layout"
 import { addProjects } from "@/home/projects/add"
-import { commandProject, DEFAULT_VIEW, reduceView, revealsCode, routeKey, SHELL_VIEWS } from "./views"
+import { commandProject, DEFAULT_VIEW, nextFocus, reduceView, revealsCode, routeKey, SHELL_VIEWS, type FocusEvent } from "./views"
 
 export const SIDEBAR_WIDTH = { min: 220, default: 264, max: 420 }
 
@@ -93,18 +93,21 @@ export const { use: useWorkspace, provider: WorkspaceProvider } = createSimpleCo
     }
 
     // Focus mode: a plugin's page takes nearly the whole window while the rail steps aside (the viewer's fullscreen
-    // inside the shell). Code has no web page to focus; changing the view or Esc leaves it.
+    // inside the shell). Code has no web page to focus. The rules are nextFocus: the page asks, and the shell's own
+    // ways out (Exit focus, Esc while the window has focus, another view) always work. Esc inside the viewer is the
+    // page's: it may belong to the remote desktop.
     const [focus, setFocus] = createSignal(false)
     const focused = () => focus() && railAvailable() && !codeVisible()
-    createEffect(on(view, () => setFocus(false), { defer: true }))
+    const move = (event: FocusEvent) => setFocus((current) => nextFocus(current, event))
+    createEffect(on(view, () => move("view-change"), { defer: true }))
     // Her web views follow it, so a page can hide its own header (secretaryShell.onFocusModeChange).
     createEffect(() => platform.companion?.setFocusMode?.(focused()))
     makeEventListener(window, "keydown", (event) => {
-      if (event.key === "Escape" && focused()) setFocus(false)
+      if (event.key === "Escape" && focused()) move("escape")
     })
 
     const run = (next: ShellCommand) => {
-      if (next.action === "focus") return void setFocus(next.on)
+      if (next.action === "focus") return void move(next.on ? "page-on" : "page-off")
       show(reduceView(untrack(view), next))
       const project = commandProject(next)
 
@@ -182,7 +185,8 @@ export const { use: useWorkspace, provider: WorkspaceProvider } = createSimpleCo
       },
       focus: {
         on: focused,
-        set: setFocus,
+        // The titlebar's Exit focus.
+        exit: () => move("exit"),
       },
       view: {
         current: view,

@@ -3,6 +3,7 @@ import type { ShellView } from "@/runtime/platform/platform"
 import {
   commandProject,
   isShellView,
+  nextFocus,
   reduceView,
   revealsCode,
   routeKey,
@@ -90,4 +91,11 @@ test("settings never brings Code forward, a new screen does", () => {
 test("focus mode never changes the view", () => {
   expect(reduceView("computer", { action: "focus", on: true })).toBe("computer")
   expect(reduceView("lucina", { action: "focus", on: false })).toBe("lucina")
+})
+
+test("focus mode can always be left by the shell, with no help from the page", () => {
+  // The page turns it on and never asks to leave: each of the shell's own exits still ends it.
+  for (const exit of ["exit", "escape", "view-change"] as const) expect(nextFocus(nextFocus(false, "page-on"), exit)).toBe(false)
+  expect(nextFocus(true, "page-off")).toBe(false)
+  expect(nextFocus(false, "page-on")).toBe(true)
 })

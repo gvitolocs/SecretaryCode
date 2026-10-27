@@ -10,17 +10,13 @@ const origin = "https://getsecretary.tech"
 const page = withShellFlag(`${origin}/computer`)
 const permissions = new Set(["pointerLock", "fullscreen", "clipboard-sanitized-write"])
 let view: WebContentsView | undefined
-// The shell's focus mode as the main process last relayed it, and who to ask when the view wants it on or off.
-const focus = { on: false, request: (_on: boolean) => {} }
+// Who to ask when the view's refused fullscreen wants focus mode. Esc in the view is left to her page: while the
+// owner drives Lucina's desktop it belongs to the remote apps (her page leaves focus mode on Esc only in Watch mode).
+const focus = { request: (_on: boolean) => {} }
 
-/** Where the Computer view's focus-mode requests go (its refused fullscreen, Esc). Set once by the panels. */
+/** Where the Computer view's focus-mode requests go (its refused fullscreen). Set once by the panels. */
 export function onComputerFocusRequest(request: (on: boolean) => void) {
   focus.request = request
-}
-
-/** The shell's focus mode, as relayed to the web views. */
-export function setComputerFocusMode(on: boolean) {
-  focus.on = on
 }
 
 /** The web login and desktop stream stay warm while another companion tab is selected. */
@@ -52,10 +48,6 @@ export function computerView() {
     },
   })
   view = created
-  // Esc leaves focus mode, wherever the view's focus is (her page or the stream frame). The key still reaches the page.
-  created.webContents.on("before-input-event", (_event, input) => {
-    if (focus.on && input.type === "keyDown" && input.key === "Escape") focus.request(false)
-  })
   // Only the top page is pinned to Lucina's origin: the viewer frame may move to the home-network host the server offers.
   const navigate = (event: { url: string; isMainFrame?: boolean; preventDefault(): void }) => {
     if (event.isMainFrame === false || allowedOrigin(event.url)) return

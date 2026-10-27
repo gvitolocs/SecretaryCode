@@ -52,7 +52,6 @@ mock.module("../src/main/secretary/computer-view", () => ({
   computerView: () => ({ webContents: computer, setBounds() {}, setBorderRadius() {} }),
   computerWebContents: () => computer,
   onComputerFocusRequest: () => {},
-  setComputerFocusMode: () => {},
 }))
 const { setupCompanionPanels } = await import("../src/main/secretary/panel")
 setupCompanionPanels()

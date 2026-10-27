@@ -4,7 +4,7 @@ import { forgetDevice, lucinaView, lucinaWebContents, openLucinaPath } from "./i
 import { isLucinaUrl } from "./lucina-web-policy"
 import { isNavigatePath, parseShellCommand, type ShellCommand } from "./shell-command"
 import { codingLanesView } from "./lane-window"
-import { computerView, computerWebContents, onComputerFocusRequest, setComputerFocusMode } from "./computer-view"
+import { computerView, computerWebContents, onComputerFocusRequest } from "./computer-view"
 
 export type CompanionPanel = "lucina" | "agents" | "computer"
 
@@ -60,7 +60,7 @@ export function setupCompanionPanels() {
     else if (command) toHost(command)
   })
 
-  // The viewer's refused fullscreen and Esc ask the window for focus mode like her page's setFocusMode does.
+  // The viewer's refused fullscreen asks the window for focus mode like her page's setFocusMode does.
   onComputerFocusRequest((on) => {
     const contents = computerWebContents()
 
@@ -73,7 +73,6 @@ export function setupCompanionPanels() {
     const value = on === true
     // The window left focus mode (Esc, Exit focus, another view): nothing to watch any more.
     if (!value) unwatchFocus()
-    setComputerFocusMode(value)
     for (const contents of [lucinaWebContents(), computerWebContents()])
       if (contents && !contents.isDestroyed()) contents.send("secretary:focus-mode", value)
   })

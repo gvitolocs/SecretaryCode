@@ -192,17 +192,14 @@ for (const [url, trusted] of [
   }
 }
 
-// Esc leaves focus mode only while the window has it on; the window relays its focus mode to the viewer.
+// Esc in the viewer belongs to her page and the remote desktop (driving it needs Esc): the shell never leaves focus
+// mode on it. The window relays its focus mode to the viewer, whose page follows it.
 window.webContents.sent.length = 0
-const escape = { type: "keyDown", key: "Escape" }
-view.webContents.emit("before-input-event", {}, escape)
-assert.deepEqual(window.webContents.sent, [], "no focus mode, nothing to leave")
 ipc.emit("secretary:focus-mode", event, true)
 assert.deepEqual(view.webContents.sent.at(-1), ["secretary:focus-mode", true])
-view.webContents.emit("before-input-event", {}, { type: "keyUp", key: "Escape" })
-view.webContents.emit("before-input-event", {}, { type: "keyDown", key: "a" })
-view.webContents.emit("before-input-event", {}, escape)
-assert.deepEqual(window.webContents.sent, [["secretary:shell-command", { action: "focus", on: false }]])
+view.webContents.emit("before-input-event", {}, { type: "keyDown", key: "Escape" })
+assert.equal(view.webContents.listenerCount("before-input-event"), 0, "the shell does not watch keys in the viewer")
+assert.deepEqual(window.webContents.sent, [], "Esc in the viewer does not leave focus mode")
 ipc.emit("secretary:focus-mode", { sender, senderFrame: { url: "https://getsecretary.tech/", parent: null } }, false)
 assert.deepEqual(view.webContents.sent.at(-1), ["secretary:focus-mode", true], "only the app renderer sets focus mode")
 ipc.emit("secretary:focus-mode", event, false)
