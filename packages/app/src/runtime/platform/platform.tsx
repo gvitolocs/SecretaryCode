@@ -26,7 +26,17 @@ export type CompanionPanel = "lucina" | "agents" | "computer"
 export type CompanionRect = { x: number; y: number; width: number; height: number }
 
 /** A plugin on the Lucina-first shell rail. Every view but "code" is one of Lucina's native web views. */
-export type ShellView = "lucina" | "code" | "computer" | "gallery" | "films" | "chats" | "secrets" | "health"
+export type ShellView =
+  | "lucina"
+  | "code"
+  | "computer"
+  | "shopping"
+  | "training"
+  | "gallery"
+  | "films"
+  | "chats"
+  | "secrets"
+  | "health"
 
 /** What Lucina's web app asks of the desktop shell through `window.secretaryShell`. */
 export type ShellCommand =

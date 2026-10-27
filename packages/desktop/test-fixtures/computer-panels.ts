@@ -106,9 +106,10 @@ assert.equal(netFetch.mock.calls.length, 0, "a signed-in partition needs no toke
 assert.deepEqual(view.webContents.commands, [
   ["Emulation.setUserAgentOverride", { userAgent: "Secretary-Test", acceptLanguage: "en-US,en" }],
 ])
-assert.deepEqual(view.options, {
-  webPreferences: { session: partition, contextIsolation: true, sandbox: true, nodeIntegration: false },
-})
+// The shell preload tells her page it is framed (no rail, stage dock or back link); the sandbox stays on.
+const { preload, ...preferences } = (view.options as { webPreferences: { preload?: string } }).webPreferences
+assert.deepEqual(preferences, { session: partition, contextIsolation: true, sandbox: true, nodeIntegration: false })
+assert.match(preload ?? "", /\/preload\/lucina\.cjs$/)
 assert.equal(view.webContents.focus.mock.calls.length, 1)
 ipc.emit("secretary:place", event, "computer", rect)
 assert.equal(view.webContents.focus.mock.calls.length, 1, "layout updates must not steal focus")

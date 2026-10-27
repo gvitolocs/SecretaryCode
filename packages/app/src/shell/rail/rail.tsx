@@ -7,7 +7,18 @@ import { useWorkspace } from "@/shell/workspace/workspace"
 import { ACCOUNT_ROUTE } from "@/shell/workspace/views"
 import "./rail.css"
 
-type RailIcon = "code" | "computer" | "gallery" | "film" | "inbox" | "key" | "pulse" | "gear" | "person"
+type RailIcon =
+  | "code"
+  | "computer"
+  | "list"
+  | "dumbbell"
+  | "gallery"
+  | "film"
+  | "inbox"
+  | "key"
+  | "pulse"
+  | "gear"
+  | "person"
 
 // Stroke icons on a 24px grid, the same artwork as the approved mock.
 const ICONS: Record<RailIcon, () => JSX.Element> = {
@@ -18,6 +29,14 @@ const ICONS: Record<RailIcon, () => JSX.Element> = {
       <path d="M8.5 20h7M12 16v4" />
     </>
   ),
+  // Shopping and Training: the web app's own tab icons.
+  list: () => (
+    <>
+      <path d="M9 6h11M9 12h11M9 18h11" />
+      <path d="m3.5 6 1 1 2-2M3.5 12l1 1 2-2M3.5 18l1 1 2-2" />
+    </>
+  ),
+  dumbbell: () => <path d="M3.5 10v4M6 8v8M18 8v8M20.5 10v4M6 12h12" />,
   gallery: () => (
     <>
       <rect x="3.5" y="4.5" width="17" height="15" rx="2.5" />
@@ -62,6 +81,8 @@ const ICONS: Record<RailIcon, () => JSX.Element> = {
 const VIEW_ICONS: { view: ShellView; icon: RailIcon }[] = [
   { view: "code", icon: "code" },
   { view: "computer", icon: "computer" },
+  { view: "shopping", icon: "list" },
+  { view: "training", icon: "dumbbell" },
   { view: "gallery", icon: "gallery" },
   { view: "films", icon: "film" },
   { view: "chats", icon: "inbox" },

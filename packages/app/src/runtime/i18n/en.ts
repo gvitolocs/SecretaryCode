@@ -9,6 +9,8 @@ export const dict = {
   "shell.view.lucina": "Lucina",
   "shell.view.code": "Code",
   "shell.view.computer": "Computer",
+  "shell.view.shopping": "Shopping",
+  "shell.view.training": "Training",
   "shell.view.gallery": "Gallery",
   "shell.view.films": "Films",
   "shell.view.chats": "All chats",

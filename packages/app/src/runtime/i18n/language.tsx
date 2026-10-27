@@ -17,7 +17,6 @@ import en from "@/runtime/i18n/en"
 import { dict } from "@opencode/ui/i18n/en"
 import {
   createDesktopNativeBundle,
-  detectDesktopNativeLocale,
   DESKTOP_NATIVE_ENGLISH,
   DESKTOP_NATIVE_LABELS,
   DESKTOP_NATIVE_LOCALES,
@@ -187,10 +186,10 @@ export function loadLocaleDict(locale: Locale) {
   return loadDict(locale).then(() => undefined)
 }
 
+// Secretary Code speaks English until a language is picked in Settings: Automatic no longer follows the Mac's own
+// languages (the owner's Mac is Danish), the same rule as the embedded Lucina pages. The menus follow this too.
 function detectLocale(): Locale {
-  if (typeof navigator !== "object") return "en"
-
-  return detectDesktopNativeLocale(navigator.languages?.length ? navigator.languages : [navigator.language])
+  return "en"
 }
 
 export function normalizeLocale(value: string): Locale {
