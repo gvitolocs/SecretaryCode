@@ -1,5 +1,6 @@
-import { session, shell, WebContentsView } from "electron"
+import { shell, WebContentsView } from "electron"
 import { nativeT } from "../native/translations"
+import { applyWebLanguage, ensureWebSession, lucinaWebPartition } from "./web-session"
 
 const origin = "https://getsecretary.tech"
 const page = `${origin}/computer`
@@ -10,7 +11,7 @@ let view: WebContentsView | undefined
 export function computerView() {
   if (view && !view.webContents.isDestroyed()) return view
 
-  const partition = session.fromPartition("persist:lucina-web")
+  const partition = lucinaWebPartition()
   partition.setPermissionCheckHandler(
     (_contents, permission, requestingOrigin) => allowedOrigin(requestingOrigin) && permissions.has(permission),
   )
@@ -46,8 +47,17 @@ export function computerView() {
     void created.webContents.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`).catch(() => {})
   })
   // did-fail-load owns the inline error page, including failures after the initial navigation.
-  void created.webContents.loadURL(page).catch(() => {})
+  // The device signs the partition in and the app's language is set first, so the owner sees neither a second login
+  // form nor the Mac's locale. Both always settle.
+  void Promise.all([ensureWebSession(), applyWebLanguage(created.webContents)])
+    .then(() => created.webContents.loadURL(page))
+    .catch(() => {})
   return created
+}
+
+/** Reloads the Computer tab if it exists, e.g. after the device signs in or out; never creates it. */
+export function reloadComputerView() {
+  if (view && !view.webContents.isDestroyed()) void view.webContents.loadURL(page).catch(() => {})
 }
 
 function allowedOrigin(value: string) {

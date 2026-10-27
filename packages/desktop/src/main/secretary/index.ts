@@ -2,6 +2,8 @@ import { app, WebContentsView, ipcMain, protocol, safeStorage } from "electron"
 import { mkdir, readFile, writeFile, unlink } from "node:fs/promises"
 import { join } from "node:path"
 import icon from "./icon-data"
+import { reloadComputerView } from "./computer-view"
+import { endWebSession, ensureWebSession, setWebSessionToken } from "./web-session"
 import page from "../../renderer/secretary/index.html?raw"
 import style from "../../renderer/secretary/style.css?raw"
 import client from "../../renderer/secretary/client.mjs?raw"
@@ -70,11 +72,18 @@ async function perform(action: string, input: unknown): Promise<unknown> {
     // One credential is encrypted by the macOS Keychain-backed Electron safeStorage, separate from application data.
     await writeFile(credentialFile(), safeStorage.encryptString(result.token), { mode: 0o600 })
     state.token = result.token
+    // The embedded Lucina pages share this sign-in.
+    void ensureWebSession().then((signedIn) => {
+      if (signedIn === "ok") reloadComputerView()
+    })
     return { authenticated: true }
   }
   if (action === "signOut") {
     state.token = undefined
     await unlink(credentialFile()).catch(() => undefined)
+    // Signing the device out signs the embedded Lucina pages out too.
+    await endWebSession()
+    reloadComputerView()
     return { authenticated: false }
   }
   if (!state.token) throw new Error("signInRequired")
@@ -113,6 +122,7 @@ export async function secretaryToken() {
 export function setupSecretary() {
   if (state.registered) return
   state.registered = true
+  setWebSessionToken(secretaryToken)
   state.ready = app.whenReady().then(async () => {
     const encrypted = await readFile(credentialFile()).catch(() => undefined)
     if (encrypted && safeStorage.isEncryptionAvailable()) {
