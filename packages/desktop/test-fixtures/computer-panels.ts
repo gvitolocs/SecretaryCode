@@ -192,6 +192,27 @@ for (const [url, trusted] of [
   }
 }
 
+// Reading the clipboard (LucinaDesk's ⌘V): the viewer's own top page on her origin, nothing else.
+const viewerContents = view.webContents as unknown as WebContents
+const otherView = new Contents() as unknown as WebContents // her chat, the image viewer: same partition
+for (const [contents, url, isMainFrame, allowed, label] of [
+  [viewerContents, "https://getsecretary.tech/computer", true, true, "the viewer's top page"],
+  [viewerContents, "https://getsecretary.tech/v1/computer/view/id/viewer/", false, false, "a frame inside the viewer"],
+  [viewerContents, "http://192.168.1.20:8006/viewer/", false, false, "the home-network viewer frame"],
+  [viewerContents, "https://evil.test/computer", true, false, "another origin"],
+  [viewerContents, "https://getsecretary.tech.evil.test/", true, false, "a lookalike origin"],
+  [otherView, "https://getsecretary.tech/", true, false, "another view of the partition"],
+  [null, "https://getsecretary.tech/", true, false, "no view"],
+] as const) {
+  assert.equal(partition.check?.(contents, "clipboard-read", url, { isMainFrame }), allowed, `check: ${label}`)
+  const callback = mock((_allowed: boolean) => {})
+  partition.request?.(contents as WebContents, "clipboard-read", callback, { requestingUrl: url, isMainFrame })
+  assert.deepEqual(callback.mock.calls, [[allowed]], `request: ${label}`)
+}
+// The top page gets nothing else beyond what every view of her origin has.
+for (const permission of ["media", "display-capture", "notifications", "keyboardLock", "unknown"] as const)
+  assert.equal(partition.check?.(viewerContents, permission, "https://getsecretary.tech/computer", { isMainFrame: true }), false, permission)
+
 // Esc in the viewer belongs to her page and the remote desktop (driving it needs Esc): the shell never leaves focus
 // mode on it. The window relays its focus mode to the viewer, whose page follows it.
 window.webContents.sent.length = 0

@@ -28,11 +28,21 @@ export function computerView() {
   // inside the shell: it is refused and becomes the shell's focus mode. The green button keeps macOS full screen.
   const viewerFullscreen = (contents: unknown, permission: string) =>
     permission === "fullscreen" && !!view && contents === view.webContents
-  partition.setPermissionCheckHandler((contents, permission, requestingOrigin) =>
-    viewerFullscreen(contents, permission) ? false : allowedOrigin(requestingOrigin) && permissions.has(permission),
+  // Reading the clipboard (LucinaDesk's ⌘V) is the viewer's own top page alone: never a frame inside it (the stream,
+  // the home-network host) nor another view of the partition. Electron does not say whether a user gesture asked, so
+  // this is a deliberate grant to that page; Chromium still lets only a focused document read.
+  const granted = (contents: unknown, permission: string, url: string, mainFrame: boolean) => {
+    if (!allowedOrigin(url)) return false
+    if (permission === "clipboard-read") return mainFrame && !!view && contents === view.webContents
+
+    return permissions.has(permission)
+  }
+  partition.setPermissionCheckHandler((contents, permission, requestingOrigin, details) =>
+    viewerFullscreen(contents, permission) ? false : granted(contents, permission, requestingOrigin, details.isMainFrame),
   )
   partition.setPermissionRequestHandler((contents, permission, callback, details) => {
-    if (!viewerFullscreen(contents, permission)) return callback(allowedOrigin(details.requestingUrl) && permissions.has(permission))
+    if (!viewerFullscreen(contents, permission))
+      return callback(granted(contents, permission, details.requestingUrl, details.isMainFrame))
     callback(false)
     focus.request(true)
   })
