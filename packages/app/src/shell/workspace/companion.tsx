@@ -28,6 +28,7 @@ export function CompanionRegion() {
   const tabs: { id: CompanionPanel; label: string; command: string }[] = [
     { id: "lucina", label: language.t("workspace.companion.lucina"), command: "secretary.lucina.toggle" },
     { id: "agents", label: language.t("workspace.companion.agents"), command: "secretary.agents.open" },
+    { id: "computer", label: language.t("workspace.companion.computer"), command: "secretary.computer.open" },
   ]
 
   const place = () => {
@@ -106,7 +107,7 @@ export function CompanionRegion() {
                 {tab.id === "lucina" ? (
                   <img src={lucina} alt="" class="size-4 shrink-0 rounded-[4px]" draggable={false} />
                 ) : (
-                  <Icon name="terminal" size="small" class="shrink-0" />
+                  <Icon name={tab.id === "computer" ? "monitor" : "terminal"} size="small" class="shrink-0" />
                 )}
                 {tab.label}
               </button>

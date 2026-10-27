@@ -21,7 +21,7 @@ type SaveFilePickerOptions = { title?: string; defaultPath?: string }
 
 type PlatformName = "web" | "desktop"
 
-export type CompanionPanel = "lucina" | "agents"
+export type CompanionPanel = "lucina" | "agents" | "computer"
 
 export type CompanionRect = { x: number; y: number; width: number; height: number }
 

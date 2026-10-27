@@ -1,4 +1,7 @@
 export const dict = {
+  "desktop.menu.computer": "Computer",
+  "workspace.companion.computer": "Computer",
+  "workspace.companion.computer.toggle": "Vis eller skjul computer",
   "common.color.orange": "orange",
   "common.color.yellow": "gul",
   "common.color.cyan": "cyan",

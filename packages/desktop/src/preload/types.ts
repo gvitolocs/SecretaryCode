@@ -3,7 +3,10 @@ import type { WindowBootstrap } from "../shared/window-bootstrap"
 
 export type ElectronNative = {
   secretary: {
-    place(panel: "lucina" | "agents" | undefined, rect?: { x: number; y: number; width: number; height: number }): void
+    place(
+      panel: "lucina" | "agents" | "computer" | undefined,
+      rect?: { x: number; y: number; width: number; height: number },
+    ): void
     request(action: string, input?: unknown): Promise<{ ok: boolean; data?: unknown; error?: string }>
   }
   codingLanes: CodingLanes

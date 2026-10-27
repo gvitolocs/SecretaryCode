@@ -197,6 +197,12 @@ export const DESKTOP_MENU: DesktopMenu[] = [
       },
       {
         type: "item",
+        labelKey: "desktop.menu.computer",
+        command: "secretary.computer.open",
+        accelerator: { macos: "Cmd+Option+C" },
+      },
+      {
+        type: "item",
         labelKey: "desktop.menu.toggleTerminal",
         command: "terminal.toggle",
         accelerator: { macos: "Ctrl+`" },
