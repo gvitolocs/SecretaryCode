@@ -12,6 +12,7 @@ import { setNativeTranslations } from "../native/translations"
 import { IpcPortHandoff } from "../ipc-transport"
 import { ApplicationLifecycle } from "../lifecycle"
 import { finishFirstLaunchOnboarding, isFirstLaunchOnboardingPending } from "../lifecycle/onboarding"
+import { agentsMirrorSettings, setAgentsMirrorEnabled } from "../secretary/agents"
 import { captureFatalRendererError, diagnosticSettings, setDiagnosticAutomatic } from "../secretary/diagnostics"
 import { BackgroundService } from "../service/background-service"
 import { DesktopCli } from "../service/desktop-cli"
@@ -47,6 +48,8 @@ export const appHandlers = AppRpcs.toLayer(
         ),
       AppGetDiagnosticsSettings: () => Effect.sync(diagnosticSettings),
       AppSetDiagnosticsSettings: ({ automatic }) => Effect.sync(() => setDiagnosticAutomatic(automatic)),
+      AppGetAgentsMirrorSettings: () => Effect.sync(agentsMirrorSettings),
+      AppSetAgentsMirrorSettings: ({ enabled }) => Effect.sync(() => setAgentsMirrorEnabled(enabled)),
       AppSetNativeTranslations: ({ value }, context) =>
         Effect.sync(() => {
           const contents = sender(handoff, context)

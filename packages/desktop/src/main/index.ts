@@ -9,6 +9,7 @@ import { createEarlyWindow } from "./windows/early"
 import { rendererAssetsServed } from "./windows/protocol"
 import { registerRendererScheme } from "./windows/scheme"
 import { setupSecretary } from "./secretary"
+import { setupAgentsMirror } from "./secretary/agents"
 import { setupDiagnostics } from "./secretary/diagnostics"
 import { setupCodingLanes } from "./secretary/lane-window"
 import { setupCompanionPanels } from "./secretary/panel"
@@ -25,6 +26,7 @@ setupSecretary()
 setupCodingLanes()
 setupCompanionPanels()
 setupRecorder()
+setupAgentsMirror()
 
 if (acquireApplicationLock()) {
   registerRendererScheme()

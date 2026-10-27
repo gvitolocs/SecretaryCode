@@ -28,6 +28,8 @@ export type DiagnosticReportReceipt = {
 
 export type DiagnosticsSettings = { automatic: boolean }
 
+export type AgentsMirrorSettings = { enabled: boolean }
+
 export type DirectoryPickerOptions = {
   multiple?: boolean
   title?: string

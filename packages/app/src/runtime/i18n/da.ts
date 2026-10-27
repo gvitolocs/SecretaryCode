@@ -629,6 +629,8 @@ export const dict = {
   "settings.general.row.pinchZoom.description": "Tillad knibebevægelser på pegefeltet og Ctrl-rulning for at zoome",
   "settings.general.row.crashReports.title": "Send nedbrudsrapporter til Lucina",
   "settings.general.row.crashReports.description": "Når Secretary Code går ned eller ikke kan starte, får Lucina logfilerne, så hun kan forklare, hvad der gik galt. Slå det fra for at beholde dem på denne Mac.",
+  "settings.general.row.agentsMirror.title": "Spejl kodesessioner til Lucina",
+  "settings.general.row.agentsMirror.description": "Dine kodesessioner vises i Lucina, hvor din telefon kan følge, styre og stoppe dem og svare på deres tilladelsesanmodninger. Filindhold og fuldt værktøjsoutput bliver på denne Mac.",
 
   "sound.option.none": "Ingen",
   "sound.option.alert01": "Alarm 01",

@@ -44,6 +44,8 @@ export type FatalRendererReport = { id: string; sent: boolean }
 
 export type DiagnosticsSettings = { automatic: boolean }
 
+export type AgentsMirrorSettings = { enabled: boolean }
+
 type PlatformBase = {
   /** App version */
   version?: string
@@ -131,6 +133,12 @@ type PlatformBase = {
 
   /** Turns automatic crash reporting on or off (desktop only) */
   setDiagnosticsAutomatic?(automatic: boolean): Promise<DiagnosticsSettings>
+
+  /** Whether coding sessions are mirrored to Lucina as agents the owner can follow and steer (desktop only) */
+  agentsMirrorSettings?(): Promise<AgentsMirrorSettings>
+
+  /** Turns mirroring coding sessions to Lucina on or off (desktop only) */
+  setAgentsMirrorEnabled?(enabled: boolean): Promise<AgentsMirrorSettings>
 
   /** The opt-in preview of the Rust engine, run beside the TypeScript engine (desktop only). */
   rustEngine?: RustEnginePreview

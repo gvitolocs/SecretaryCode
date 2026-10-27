@@ -643,6 +643,8 @@ export const dict = {
     "Consenti i gesti di pizzicamento del trackpad e di scorrimento Ctrl per eseguire lo zoom",
   "settings.general.row.crashReports.title": "Invia rapporto di arresto anomalo a Lucina",
   "settings.general.row.crashReports.description": "Quando Secretary Code si blocca o non si avvia, Lucina riceve i log per spiegare cosa è andato storto. Disattiva l'opzione per tenerli su questo Mac.",
+  "settings.general.row.agentsMirror.title": "Rispecchia le sessioni di programmazione su Lucina",
+  "settings.general.row.agentsMirror.description": "Le sessioni di programmazione compaiono in Lucina, dove il telefono può seguirle, guidarle, fermarle e rispondere alle richieste di permesso. I contenuti dei file e l'output completo degli strumenti restano su questo Mac.",
   "sound.option.none": "Nessuno",
   "sound.option.alert01": "Avviso 01",
   "sound.option.alert02": "Avviso 02",

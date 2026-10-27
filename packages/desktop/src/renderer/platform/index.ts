@@ -30,6 +30,8 @@ export function createDesktopPlatform(api: ElectronAPI, windowState: DesktopWind
     recordFatalRendererError: (error) => api.recordFatalRendererError(error),
     diagnosticsSettings: () => api.getDiagnosticsSettings(),
     setDiagnosticsAutomatic: (automatic) => api.setDiagnosticsSettings(automatic),
+    agentsMirrorSettings: () => api.getAgentsMirrorSettings(),
+    setAgentsMirrorEnabled: (enabled) => api.setAgentsMirrorSettings(enabled),
     restart: async () => api.relaunch(),
     notify: createDesktopNotify(api),
     fetch: (input, init) => {
