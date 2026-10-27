@@ -18,9 +18,8 @@ export const SHELL_VIEWS = [
 export const DEFAULT_VIEW: ShellView = "lucina"
 
 /**
- * The path Lucina's warm web view shows for each view it hosts. "secrets" points at the plugins page until the web app
- * ships a route of its own (today the secret sheet opens from the /secret chat command). "code" and "computer" have no
- * web route.
+ * The path Lucina's warm web view shows for each view it hosts ("/secrets" is the Add-secret sheet over her chat).
+ * "code" and "computer" have no web route: Code is OpenCode, Computer has its own warm view.
  */
 export const VIEW_ROUTES = {
   lucina: "/",
@@ -29,7 +28,7 @@ export const VIEW_ROUTES = {
   gallery: "/media",
   films: "/films",
   chats: "/chats",
-  secrets: "/plugins",
+  secrets: "/secrets",
   health: "/server-health",
 } as const satisfies Partial<Record<ShellView, string>>
 

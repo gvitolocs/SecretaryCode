@@ -2,10 +2,12 @@ import { session, shell, WebContentsView } from "electron"
 import { join } from "node:path"
 import { nativeT } from "../native/translations"
 import { LUCINA_PARTITION } from "./lucina-web-policy"
+import { withShellFlag } from "./shell-command"
 import { applyWebLanguage, ensureWebSession } from "./web-session"
 
 const origin = "https://getsecretary.tech"
-const page = `${origin}/computer`
+// Framed by the shell: her page drops its own rail, tab bar and back link (?shell=1, and the preload below).
+const page = withShellFlag(`${origin}/computer`)
 const permissions = new Set(["pointerLock", "fullscreen", "clipboard-sanitized-write"])
 let view: WebContentsView | undefined
 

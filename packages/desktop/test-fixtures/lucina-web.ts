@@ -160,12 +160,12 @@ await navigateLucinaView(routed.webContents as never, "/gallery")
 assert.deepEqual(routed.webContents.urls, [])
 gate()
 await new Promise((resolve) => setTimeout(resolve, 0))
-assert.deepEqual(routed.webContents.urls, ["https://getsecretary.tech/gallery"])
+assert.deepEqual(routed.webContents.urls, ["https://getsecretary.tech/gallery?shell=1"])
 assert.equal(routed.webContents.scripts.length, 0)
 
 // A loaded Lucina page is routed with pushState and popstate, without a reload.
 await navigateLucinaView(routed.webContents as never, "/chats?tab=all")
-assert.deepEqual(routed.webContents.urls, ["https://getsecretary.tech/gallery"])
+assert.deepEqual(routed.webContents.urls, ["https://getsecretary.tech/gallery?shell=1"])
 assert.equal(routed.webContents.scripts.length, 1)
 const script = routed.webContents.scripts[0]!
 assert.ok(script.includes('history.pushState(null, "", path)'))
@@ -180,7 +180,7 @@ for (const current of ["", "about:blank", "data:text/html;charset=utf-8,x", "htt
   const scripts = routed.webContents.scripts.length
   await navigateLucinaView(routed.webContents as never, "/films")
   assert.equal(routed.webContents.urls.length, before + 1, current)
-  assert.equal(routed.webContents.urls.at(-1), "https://getsecretary.tech/films")
+  assert.equal(routed.webContents.urls.at(-1), "https://getsecretary.tech/films?shell=1")
   assert.equal(routed.webContents.scripts.length, scripts, current)
 }
 
@@ -188,4 +188,4 @@ for (const current of ["", "about:blank", "data:text/html;charset=utf-8,x", "htt
 routed.webContents.current = "https://getsecretary.tech/"
 routed.webContents.failScript = true
 await navigateLucinaView(routed.webContents as never, "/health")
-assert.equal(routed.webContents.urls.at(-1), "https://getsecretary.tech/health")
+assert.equal(routed.webContents.urls.at(-1), "https://getsecretary.tech/health?shell=1")

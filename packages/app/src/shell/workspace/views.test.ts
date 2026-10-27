@@ -20,7 +20,7 @@ test("the route map is the agreed one", () => {
     gallery: "/media",
     films: "/films",
     chats: "/chats",
-    secrets: "/plugins",
+    secrets: "/secrets",
     health: "/server-health",
   })
 })

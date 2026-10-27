@@ -6,6 +6,7 @@ import { join } from "node:path"
 import { nativeT } from "../native/translations"
 import { localImagePolicy } from "./image-viewer/policy"
 import { bundlePath, contentType, isLucinaUrl, LUCINA_ORIGIN, LUCINA_PAGE_CSP, LUCINA_PARTITION } from "./lucina-web-policy"
+import { withShellFlag } from "./shell-command"
 import { applyWebLanguage } from "./web-session"
 
 // Lucina's web app in Secretary Code: the same app as getsecretary.tech and the iPhone, so the Mac gets the synced
@@ -91,7 +92,8 @@ export function lucinaWebSession() {
 }
 
 // Where each view's first page goes, until that load has started. A route asked for before then replaces the path.
-const firstLoad = new WeakMap<WebContents, { path: string; started: boolean }>()
+// A view the shell frames (it has the shell preload) loads its pages with ?shell=1.
+const firstLoad = new WeakMap<WebContents, { path: string; started: boolean; shell: boolean }>()
 
 /**
  * A warm view of Lucina's web app at `path` (the chat at "/"). It loads once `beforeLoad` settles (the web sign-in,
@@ -109,7 +111,7 @@ export function lucinaWebView(path: string, beforeLoad?: () => Promise<unknown>,
       ...(options.preload ? { preload: options.preload } : {}),
     },
   })
-  const first = { path, started: false }
+  const first = { path, started: false, shell: !!options.preload }
   firstLoad.set(view.webContents, first)
   // Transparent until the page paints, so the panel shows the workspace's own surface instead of a black flash.
   view.setBackgroundColor("#00000000")
@@ -137,7 +139,9 @@ export function lucinaWebView(path: string, beforeLoad?: () => Promise<unknown>,
     .then(() => {
       first.started = true
 
-      return view.webContents.loadURL(`${LUCINA_ORIGIN}${first.path}`)
+      const page = `${LUCINA_ORIGIN}${first.path}`
+
+      return view.webContents.loadURL(first.shell ? withShellFlag(page) : page)
     })
     .catch(() => {})
   return view
@@ -159,7 +163,7 @@ export async function navigateLucinaView(contents: WebContents, path: string) {
   }
 
   const target = `${LUCINA_ORIGIN}${path}`
-  const reload = () => contents.loadURL(target).catch(() => {})
+  const reload = () => contents.loadURL(first?.shell ? withShellFlag(target) : target).catch(() => {})
 
   if (!isLucinaUrl(contents.getURL())) return reload()
   const script = `(() => {

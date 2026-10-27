@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { isNavigatePath, isProjectPath, parseShellCommand, SHELL_VIEWS } from "./shell-command"
+import { isNavigatePath, isProjectPath, parseShellCommand, SHELL_VIEWS, withShellFlag } from "./shell-command"
 
 describe("parseShellCommand", () => {
   test("accepts the three commands and rebuilds them from known fields", () => {
@@ -98,4 +98,10 @@ describe("isNavigatePath", () => {
 test("sign-out is never a window command", () => {
   // It has its own invoke channel (secretary:sign-out), handled in the main process.
   expect(parseShellCommand({ action: "signOut" })).toBeUndefined()
+})
+
+test("withShellFlag marks a page as framed by the shell and keeps its route and query", () => {
+  expect(withShellFlag("https://getsecretary.tech/")).toBe("https://getsecretary.tech/?shell=1")
+  expect(withShellFlag("https://getsecretary.tech/chats?tab=all")).toBe("https://getsecretary.tech/chats?tab=all&shell=1")
+  expect(withShellFlag("https://getsecretary.tech/computer?shell=1")).toBe("https://getsecretary.tech/computer?shell=1")
 })

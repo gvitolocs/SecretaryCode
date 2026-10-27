@@ -64,3 +64,14 @@ export function isNavigatePath(value: unknown): value is string {
     return false
   }
 }
+
+/**
+ * A page of her web app marked as framed by the shell (?shell=1). Her app then hides its own rail, tab bar and plugin
+ * back links even before the preload bridge is attached, and remembers it for the browser session.
+ */
+export function withShellFlag(url: string) {
+  const next = new URL(url)
+  next.searchParams.set("shell", "1")
+
+  return next.toString()
+}
