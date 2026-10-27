@@ -1,6 +1,10 @@
 // The Electron-free half of web-session.ts (sign-in flow, cookie parsing, languages), so it runs under `bun test`.
 import type { CookiesSetDetails, Session } from "electron"
-import { DESKTOP_NATIVE_LOCALE_TAGS } from "@opencode/app/i18n/desktop-native"
+import {
+  DESKTOP_NATIVE_LOCALE_TAGS,
+  detectDesktopNativeLocale,
+  type DesktopNativeLocale,
+} from "@opencode/app/i18n/desktop-native"
 import { nativeLocale } from "../native/translations"
 import { LUCINA_ORIGIN as origin } from "./lucina-web-policy"
 
@@ -43,9 +47,15 @@ export function parseSetCookie(headers: readonly string[], now = Date.now()): We
   })
 }
 
-/** The app's language first, then English: the embedded pages follow Secretary Code, not the Mac locale. */
-export function webLanguages() {
-  const tag = DESKTOP_NATIVE_LOCALE_TAGS[nativeLocale()] ?? "en"
+/**
+ * The embedded pages' languages: English, unless the owner picked another language for Secretary Code. Its "Automatic"
+ * setting means the Mac's language (`system`, the Mac's preferred languages), which these pages must not follow, so an
+ * app language equal to what Automatic would detect counts as automatic. Picking the Mac's own language on purpose
+ * looks the same and also gives English.
+ */
+export function webLanguages(system: readonly string[], locale: DesktopNativeLocale = nativeLocale()) {
+  const automatic = !system.length || locale === detectDesktopNativeLocale(system)
+  const tag = automatic ? "en" : (DESKTOP_NATIVE_LOCALE_TAGS[locale] ?? "en")
   return tag === "en" ? ["en-US", "en"] : [tag, "en"]
 }
 

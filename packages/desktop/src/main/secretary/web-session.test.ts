@@ -218,6 +218,20 @@ describe("endWebSession", () => {
   })
 })
 
-test("the embedded pages default to English", () => {
-  expect(webLanguages()).toEqual(["en-US", "en"])
+describe("webLanguages", () => {
+  const danishMac = ["da-DK", "en-DK", "it-DK"]
+
+  test("Automatic on a Danish Mac (the app follows the Mac) gives English, not Danish", () => {
+    expect(webLanguages(danishMac, "da")).toEqual(["en-US", "en"])
+  })
+
+  test("a language picked for the app that differs from the Mac's is followed", () => {
+    expect(webLanguages(danishMac, "it")).toEqual(["it-IT", "en"])
+    expect(webLanguages(["en-US"], "da")).toEqual(["da", "en"])
+  })
+
+  test("English stays English; unknown Mac languages fall back to English", () => {
+    expect(webLanguages(danishMac, "en")).toEqual(["en-US", "en"])
+    expect(webLanguages([], "da")).toEqual(["en-US", "en"])
+  })
 })
