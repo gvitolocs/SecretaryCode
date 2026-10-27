@@ -117,6 +117,9 @@ type PlatformBase = {
   /** Record a fatal renderer error in platform logs (desktop only) */
   recordFatalRendererError?(error: FatalRendererErrorLog): Promise<void>
 
+  /** The opt-in preview of the Rust engine, run beside the TypeScript engine (desktop only). */
+  rustEngine?: RustEnginePreview
+
   /** GUI extension bridge to the main-process extension host (desktop only). */
   extensions?: Bridge
 
@@ -125,6 +128,34 @@ type PlatformBase = {
    * reserves for it, in CSS pixels relative to the viewport; no panel hides them all.
    */
   companion?: { place(panel: CompanionPanel | undefined, rect?: CompanionRect): void }
+}
+
+export type RustEngineRouteCoverage = {
+  portedTotal: number
+  portedMatched: number
+  v2Total: number
+  beyondV2: readonly string[]
+}
+
+export type RustEngineStatus = {
+  enabled: boolean
+  running: boolean
+  port?: number
+  version?: string
+  error?: string
+  routes: RustEngineRouteCoverage
+}
+
+export type RustEngineLatency = {
+  rust?: { ms: number; ok: boolean }
+  ts?: { ms: number; ok: boolean }
+}
+
+/** The preview server's toggle and status; `ping` measures both engines, the TypeScript one by its URL. */
+export type RustEnginePreview = {
+  status(): Promise<RustEngineStatus>
+  setEnabled(enabled: boolean): Promise<RustEngineStatus>
+  ping(tsUrl?: string): Promise<RustEngineLatency>
 }
 
 export type Platform = PlatformBase &

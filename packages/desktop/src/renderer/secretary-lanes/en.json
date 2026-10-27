@@ -1,6 +1,7 @@
 {
   "secretaryName": "Secretary Code · built-in",
   "secretaryHint": "Runs Secretary Code’s own engine in this project. Sessions are saved in your workspace. External coding CLIs are optional.",
+  "rustHint": "Preview: runs the bundled OpenCode Rust engine with an OpenAI-compatible or Anthropic provider. It has no MCP, plugins or the full v2 route set yet.",
   "modelLabel": "Model",
   "modelPlaceholder": "Workspace default, or provider/model",
   "engineUnavailable": "Secretary Code’s bundled engine is unavailable. Rebuild the app or set SECRETARY_ENGINE_PATH to its executable.",

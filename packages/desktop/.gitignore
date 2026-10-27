@@ -26,6 +26,7 @@ out/
 
 resources/opencode-cli*
 resources/secretary-recorder
+resources/engine-rs
 native/secretary-recorder/.build
 resources/icons
 resources/*.metainfo.xml

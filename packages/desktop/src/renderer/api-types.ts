@@ -1,5 +1,6 @@
 import type { DesktopMenuAction } from "@opencode/app/desktop-menu"
 import type { DesktopNativeBundle } from "@opencode/app/i18n/desktop-native"
+import type { RustEngineLatency, RustEngineStatus } from "../shared/ipc-rpc/engine-rs"
 import type { WindowBootstrap } from "../shared/window-bootstrap"
 import type {
   ClipboardImage,
@@ -65,6 +66,9 @@ export type ElectronAPI = {
   runDesktopMenuAction(action: DesktopMenuAction): Promise<void>
   setBackgroundColor(color: string): Promise<void>
   exportDebugLogs(): Promise<string>
+  rustEngineStatus(): Promise<RustEngineStatus>
+  rustEngineSetEnabled(enabled: boolean): Promise<RustEngineStatus>
+  rustEnginePing(tsUrl?: string): Promise<RustEngineLatency>
   setForceFocus(enabled: boolean): Promise<void>
   recordFatalRendererError(error: FatalRendererError): Promise<void>
   setNativeTranslations(bundle: DesktopNativeBundle): Promise<void>

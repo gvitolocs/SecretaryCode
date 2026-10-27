@@ -10,6 +10,7 @@ export type SettingsRootTab =
   | "extensions"
   | "servers"
   | "experimental"
+  | "rust-engine"
   | "gui-extensions"
   | "about"
 
@@ -58,6 +59,7 @@ const rootTabs: Record<SettingsRootTab, true> = {
   extensions: true,
   servers: true,
   experimental: true,
+  "rust-engine": true,
   "gui-extensions": true,
   about: true,
 }

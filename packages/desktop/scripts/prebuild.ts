@@ -15,6 +15,10 @@ await $`bun ./scripts/copy-metainfo.ts ${channel}`
 
 await $`bun ./scripts/build-recorder.ts`
 
+// The Rust port ships as an opt-in preview; SECRETARY_SKIP_ENGINE_RS keeps a build from paying for cargo.
+if (Bun.env.SECRETARY_SKIP_ENGINE_RS === "1") console.log("Skipping engine-rs (SECRETARY_SKIP_ENGINE_RS=1)")
+else await $`bun ./scripts/build-engine-rs.ts`
+
 if (channel === "dev") await downloadCliToResources()
 
 if ((channel === "beta" || channel === "prod") && Bun.env.OPENCODE_CLI_DIST) {
