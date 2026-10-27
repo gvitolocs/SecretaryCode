@@ -2,14 +2,19 @@ import { BrowserWindow, ipcMain, type WebContentsView } from "electron"
 import { isRendererUrl } from "../windows/scheme"
 import { lucinaView } from "./index"
 import { codingLanesView } from "./lane-window"
+import { computerView } from "./computer-view"
 
-export type CompanionPanel = "lucina" | "agents"
+export type CompanionPanel = "lucina" | "agents" | "computer"
 
 type Rect = { x: number; y: number; width: number; height: number }
 
 // Each panel keeps one warm view. The renderer owns the layout, reports where the active panel sits, and the view
 // follows that rectangle; hiding a panel detaches its view without reloading it.
-const views: Record<CompanionPanel, () => WebContentsView> = { lucina: lucinaView, agents: codingLanesView }
+const views: Record<CompanionPanel, () => WebContentsView> = {
+  lucina: lucinaView,
+  agents: codingLanesView,
+  computer: computerView,
+}
 
 const state = { host: undefined as BrowserWindow | undefined, created: new Set<WebContentsView>() }
 
@@ -21,7 +26,12 @@ export function setupCompanionPanels() {
 
     if (!window || window.isDestroyed()) return
     const zoom = event.sender.getZoomFactor()
-    place(window, panel === "lucina" || panel === "agents" ? panel : undefined, readRect(rect, zoom), zoom)
+    place(
+      window,
+      panel === "lucina" || panel === "agents" || panel === "computer" ? panel : undefined,
+      readRect(rect, zoom),
+      zoom,
+    )
   })
 }
 
@@ -39,7 +49,10 @@ function place(window: BrowserWindow, panel: CompanionPanel | undefined, rect: R
     target.webContents.once("destroyed", () => state.created.delete(target))
   }
 
-  if (!window.contentView.children.includes(target)) window.contentView.addChildView(target)
+  if (!window.contentView.children.includes(target)) {
+    window.contentView.addChildView(target)
+    target.webContents.focus()
+  }
   target.setBounds(rect)
   // Matches the workspace card's 10px corner radius, which the native view would otherwise square off.
   target.setBorderRadius(Math.round(10 * zoom))

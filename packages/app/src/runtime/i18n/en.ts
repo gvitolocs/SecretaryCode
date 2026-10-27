@@ -10,6 +10,8 @@ export const dict = {
   "workspace.companion.agents.toggle": "Toggle coding agents",
   "workspace.companion.lucina": "Lucina",
   "workspace.companion.agents": "Agents",
+  "workspace.companion.computer": "Computer",
+  "workspace.companion.computer.toggle": "Toggle Computer",
   "workspace.companion.close": "Close panel",
   "session.location.unavailable": "Session location unavailable",
   "session.location.description": "Choose another directory to continue this session.",

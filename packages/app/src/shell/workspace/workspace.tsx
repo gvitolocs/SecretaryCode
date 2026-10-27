@@ -22,7 +22,7 @@ const WorkspaceState = Persistence.struct({
   companion: Persistence.struct({
     opened: Schema.Boolean,
     width: Schema.Finite,
-    panel: Schema.Literals(["lucina", "agents"]),
+    panel: Schema.Literals(["lucina", "agents", "computer"]),
   }),
 })
 
@@ -96,6 +96,13 @@ export const { use: useWorkspace, provider: WorkspaceProvider } = createSimpleCo
               category: language.t("command.category.view"),
               keybind: "mod+alt+a",
               onSelect: () => show("agents"),
+            },
+            {
+              id: "secretary.computer.open",
+              title: language.t("workspace.companion.computer.toggle"),
+              category: language.t("command.category.view"),
+              keybind: "mod+alt+c",
+              onSelect: () => show("computer"),
             },
           ]
         : []),
