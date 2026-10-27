@@ -6,6 +6,7 @@ import { promisify } from "node:util"
 
 import type { CustomMacSignOptions } from "app-builder-lib"
 import { Arch, type Configuration } from "electron-builder"
+import { imageTypes } from "./src/main/secretary/image-viewer/formats"
 import { NativeArch } from "../../script/native-arch"
 import { ENGINE_RS_BINARIES } from "./scripts/build-engine-rs"
 import { CLI_BINARIES, getCurrentCli, nodePtyPackage } from "./scripts/utils"
@@ -207,12 +208,20 @@ const getBase = (appId: string): Configuration => {
       )
     },
     mac: {
+      fileAssociations: imageTypes.map((type) => ({ ext: type.ext, name: type.uti, role: "Viewer", rank: "Default" })),
       category: "public.app-category.developer-tools",
       icon: "resources/secretary-code.icns",
       // A stable certificate keeps macOS privacy grants (Screen Recording, Microphone) across rebuilds;
       // ad-hoc signatures change every build, so macOS treats each build as a new app.
       identity: process.env.SECRETARY_SIGN_IDENTITY || "-",
       extendInfo: {
+        // electron-builder only emits extension declarations; add UTI declarations explicitly.
+        CFBundleDocumentTypes: imageTypes.map((type) => ({
+          CFBundleTypeName: type.uti,
+          LSItemContentTypes: [type.uti],
+          CFBundleTypeRole: "Viewer",
+          LSHandlerRank: "Default",
+        })),
         NSAutoFillRequiresTextContentTypeForOneTimeCodeOnMac: true,
         // The recorder helper runs as a child of the app, so macOS asks for (and lists) these
         // permissions under Secretary Code.

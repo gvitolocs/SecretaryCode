@@ -234,6 +234,9 @@ function locale(value: string) {
 const normalizeScript = (script?: string) => (script === "Aran" ? "Arab" : script)
 
 export const DESKTOP_NATIVE_ENGLISH = {
+  "desktop.imageViewer.preview": "Open with Preview",
+  "desktop.imageViewer.signIn": "Sign in to Lucina",
+  "desktop.imageViewer.local": "Viewing a local copy. If this format cannot be displayed, use Open with Preview (⌘⇧P).",
   "desktop.menu.app": "Secretary Code",
   "desktop.menu.file": "File",
   "desktop.menu.edit": "Edit",

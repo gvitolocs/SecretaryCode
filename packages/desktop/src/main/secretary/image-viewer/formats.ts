@@ -1,0 +1,48 @@
+export const imageTypes = [
+  { uti: "public.jpeg", ext: ["jpg", "jpeg", "jpe"], mime: "image/jpeg" },
+  { uti: "public.png", ext: ["png"], mime: "image/png" },
+  { uti: "public.heic", ext: ["heic"], mime: "image/heic" },
+  { uti: "public.heif", ext: ["heif", "hif"], mime: "image/heif" },
+  { uti: "com.compuserve.gif", ext: ["gif"], mime: "image/gif" },
+  { uti: "org.webmproject.webp", ext: ["webp"], mime: "image/webp" },
+  { uti: "public.tiff", ext: ["tif", "tiff"], mime: "image/tiff" },
+  { uti: "com.microsoft.bmp", ext: ["bmp", "dib"], mime: "image/bmp" },
+  { uti: "public.svg-image", ext: ["svg", "svgz"], mime: "image/svg+xml" },
+  {
+    uti: "public.camera-raw-image",
+    ext: [
+      "raw",
+      "dng",
+      "cr2",
+      "cr3",
+      "crw",
+      "nef",
+      "nrw",
+      "arw",
+      "srf",
+      "sr2",
+      "orf",
+      "rw2",
+      "raf",
+      "pef",
+      "ptx",
+      "rwl",
+      "srw",
+      "3fr",
+      "fff",
+      "iiq",
+      "kdc",
+      "dcr",
+      "mos",
+      "mrw",
+      "x3f",
+      "erf",
+      "mef",
+    ],
+    mime: "image/x-dcraw",
+  },
+]
+
+export function imageType(file: string) {
+  return imageTypes.find((type) => type.ext.includes(file.slice(file.lastIndexOf(".") + 1).toLowerCase()))
+}

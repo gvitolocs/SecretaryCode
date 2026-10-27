@@ -1,3 +1,4 @@
+import { imageArguments } from "../secretary/image-viewer/queue"
 export * as ApplicationLifecycle from "./index"
 
 import { app, BrowserWindow } from "electron"
@@ -76,7 +77,8 @@ const runtime = Layer.effect(
       )
     }
 
-    const secondInstance = (_event: Event, argv: string[]) => {
+    const secondInstance = (_event: Event, argv: string[], cwd: string) => {
+      if (imageArguments(argv, cwd).length) return
       const urls = argv.filter((arg) => arg.startsWith("secretary-code://") || arg.startsWith("opencode://"))
 
       if (urls.length) {
