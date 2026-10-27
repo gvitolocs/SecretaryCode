@@ -14,6 +14,7 @@ import { emitIpcEvent } from "../ipc-events"
 
 import { runDesktopMenuAction } from "./menu-actions"
 import { nativeT } from "./translations"
+import { hasFocusedImage, previewFocusedImage } from "../secretary/image-viewer"
 import { openRecorder } from "../secretary/recorder"
 import recorderCopy from "../../renderer/secretary-recorder/en.json"
 
@@ -81,6 +82,18 @@ export function createMenu(deps: Deps) {
     })
 
   if (extra.length) built.items.forEach((item) => item.submenu?.on("menu-will-show", refresh))
+  const windowMenu = built.items.find((item) => item.role === "windowMenu")?.submenu
+  const preview = new MenuItem({
+    label: nativeT("desktop.imageViewer.preview"),
+    accelerator: "CommandOrControl+Shift+P",
+    registerAccelerator: false,
+    enabled: hasFocusedImage(),
+    click: previewFocusedImage,
+  })
+  windowMenu?.append(preview)
+  windowMenu?.on("menu-will-show", () => {
+    preview.enabled = hasFocusedImage()
+  })
   Menu.setApplicationMenu(built)
 }
 
