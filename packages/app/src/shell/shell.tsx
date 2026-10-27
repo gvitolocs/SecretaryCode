@@ -13,7 +13,8 @@ import { ExtensionServerCover } from "@/runtime/extension/server-shell"
 import { ExtensionSlot } from "@/runtime/extension/render"
 import { useWorkspace, WorkspaceProvider } from "@/shell/workspace/workspace"
 import { WorkspaceSidebar } from "@/shell/workspace/sidebar"
-import { CompanionRegion } from "@/shell/workspace/companion"
+import { ContentCard } from "@/shell/workspace/companion"
+import { ShellRail } from "@/shell/rail/rail"
 
 export default function Layout(props: ParentProps) {
   return (
@@ -35,7 +36,11 @@ function Workspace(props: ParentProps) {
     tabsMount: undefined,
   })
 
-  const verticalTabs = () => preferences.appearance.tabLayout() === "vertical" && !mobile()
+  const verticalTabs = () => workspace.view.verticalTabs()
+  // OpenCode's own screen shows in Code and under settings; every other view keeps it mounted but hidden.
+  const showMain = () => workspace.view.code() || settings.active()
+  // The card exists in every view but Code; the card itself steps aside while settings is open.
+  const showCard = () => workspace.rail.available() && !workspace.view.code()
   const bottomTitlebar = () => mobile() && preferences.general.mobileTitlebarPosition() === "bottom"
 
   return (
@@ -59,10 +64,13 @@ function Workspace(props: ParentProps) {
       >
         <Titlebar verticalTabs={verticalTabs() ? { mount: state.tabsMount } : undefined} />
         <div class="flex flex-1 min-h-0 min-w-0 flex-row">
+          <Show when={workspace.rail.available()}>
+            <ShellRail />
+          </Show>
           <Show when={workspace.sidebar.visible()}>
             <WorkspaceSidebar />
           </Show>
-          <Show when={verticalTabs()}>
+          <Show when={verticalTabs() && showMain()}>
             <aside
               ref={(element) => setState("tabsMount", element)}
               data-slot="vertical-tabs-sidebar"
@@ -86,6 +94,7 @@ function Workspace(props: ParentProps) {
           <main
             class="flex-1 min-h-0 min-w-0 overflow-x-hidden flex flex-col items-start contain-content"
             style={{
+              display: showMain() ? undefined : "none",
               "padding-top": bottomTitlebar() ? "env(safe-area-inset-top, 0px)" : "0px",
               "padding-bottom":
                 bottomTitlebar() || settings.active()
@@ -100,12 +109,12 @@ function Workspace(props: ParentProps) {
               <Suspense>{props.children}</Suspense>
             </ExtensionServerCover>
           </main>
-          <Show when={workspace.companion.visible()}>
-            <CompanionRegion />
+          <Show when={showCard()}>
+            <ContentCard hidden={settings.active()} />
           </Show>
         </div>
         <ExtensionSlot at="window.bottom" input={{}} />
-        <ToastRegion inlineEnd={workspace.companion.width()} />
+        <ToastRegion />
         <UploadToastHost />
       </div>
     </TitlebarRightProvider>
