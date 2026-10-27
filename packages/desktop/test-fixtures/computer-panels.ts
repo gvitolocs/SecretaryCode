@@ -12,10 +12,28 @@ const partition = {
   setPermissionRequestHandler(handler: NonNullable<Parameters<Session["setPermissionRequestHandler"]>[0]>) {
     this.request = handler
   },
+  // Already signed in: the Computer tab must not trade the device token again.
+  fetch: mock(async (_url: string) => Response.json({ authenticated: true })),
+  cookies: { set: mock(async () => {}) },
 }
+const netFetch = mock(async () => new Response(null, { status: 500 }))
 class Contents extends EventEmitter {
   destroyed = false
   urls: string[] = []
+  commands: [string, unknown][] = []
+  debugger = {
+    attached: false,
+    isAttached: () => this.debugger.attached,
+    attach: () => {
+      this.debugger.attached = true
+    },
+    // Like Electron before the view's first page: the command does not settle, so the load must not wait for it.
+    sendCommand: (method: string, params: unknown) => {
+      this.commands.push([method, params])
+      return new Promise<never>(() => {})
+    },
+  }
+  getUserAgent = () => "Secretary-Test"
   focus = mock(() => {})
   getZoomFactor = () => 1
   isDestroyed = () => this.destroyed
@@ -56,6 +74,7 @@ mock.module("electron", () => ({
   WebContentsView: View,
   BrowserWindow: { fromWebContents: () => window },
   ipcMain: ipc,
+  net: { fetch: netFetch },
   protocol: {},
   session: { fromPartition },
   shell: { openExternal: external },
@@ -72,8 +91,15 @@ ipc.emit("secretary:place", event, "computer", rect)
 const view = window.contentView.children[0]!
 assert.ok(view)
 assert.equal(view, computerView())
+assert.deepEqual(view.webContents.urls, [], "the page waits for the web session and the language")
+for (let tick = 0; tick < 100 && !view.webContents.urls.length; tick++) await Bun.sleep(1)
 assert.deepEqual(view.webContents.urls, ["https://getsecretary.tech/computer"])
 assert.equal(fromPartition.mock.calls[0]?.[0], "persist:lucina-web")
+assert.equal(partition.fetch.mock.calls[0]?.[0], "https://getsecretary.tech/v1/session")
+assert.equal(netFetch.mock.calls.length, 0, "a signed-in partition needs no token exchange")
+assert.deepEqual(view.webContents.commands, [
+  ["Emulation.setUserAgentOverride", { userAgent: "Secretary-Test", acceptLanguage: "en-US,en" }],
+])
 assert.deepEqual(view.options, {
   webPreferences: { session: partition, contextIsolation: true, sandbox: true, nodeIntegration: false },
 })
