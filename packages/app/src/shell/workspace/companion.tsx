@@ -88,7 +88,7 @@ export function CompanionRegion() {
         <For each={tabs}>
           {(tab) => (
             <Tooltip
-              placement="bottom"
+              placement="left"
               value={
                 <>
                   {tab.label}
@@ -115,7 +115,7 @@ export function CompanionRegion() {
           )}
         </For>
         <div class="flex-1" />
-        <Tooltip placement="bottom" value={language.t("workspace.companion.close")}>
+        <Tooltip placement="left" value={language.t("workspace.companion.close")}>
           <IconButton
             type="button"
             variant="ghost-muted"
@@ -135,8 +135,9 @@ export function CompanionRegion() {
   )
 }
 
-function covered(rect: DOMRect) {
-  return Array.from(document.body.children).some((child) => {
+/** Whether a portalled overlay (menu, dialog, popover) overlaps the native companion view. Tooltips never count. */
+export function covered(rect: Pick<DOMRect, "left" | "right" | "top" | "bottom">, body: HTMLElement = document.body) {
+  return Array.from(body.children).some((child) => {
     if (child.id === "root" || !(child instanceof HTMLElement) || child.matches("script,style,template,svg"))
       return false
 
@@ -144,7 +145,8 @@ function covered(rect: DOMRect) {
 
     return [child, ...child.children, ...Array.from(child.children).flatMap((item) => [...item.children])].some(
       (element) => {
-        if (element.getAttribute("role") === "tooltip" || element.closest("[role=tooltip]")) return false
+        // Tooltip portals wrap the role in positioner layers, so look down the subtree as well as up.
+        if (element.closest("[role=tooltip]") || element.querySelector("[role=tooltip]")) return false
         const box = element.getBoundingClientRect()
 
         return (
