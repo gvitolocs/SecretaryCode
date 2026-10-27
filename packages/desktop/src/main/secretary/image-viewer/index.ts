@@ -8,6 +8,7 @@ import { deviceID } from "./device"
 import { ImageFiles, folderImages } from "./files"
 import { localImagePolicy } from "./policy"
 import { imageType } from "./formats"
+import { applyWebLanguage, ensureWebSession } from "../web-session"
 
 const run = promisify(execFile)
 const origin = "https://getsecretary.tech"
@@ -172,10 +173,14 @@ async function openViewer(clicked: string, identity: ReturnType<typeof device>) 
         showLocal()
       })
   })
-  void window.loadURL(`${origin}/viewer`).catch(() => {
-    clearTimeout(timer)
-    showLocal()
-  })
+  // Same sign-in and language as the other Lucina views; ensureWebSession always settles, so the page still loads.
+  applyWebLanguage(window.webContents)
+  void ensureWebSession()
+    .then(() => window.loadURL(`${origin}/viewer`))
+    .catch(() => {
+      clearTimeout(timer)
+      showLocal()
+    })
 }
 
 function fallback(url: string, name: string) {
