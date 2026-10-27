@@ -105,7 +105,9 @@ const require = __cjs_mod__.createRequire(import.meta.url);
       build: {
         minify: command === "build",
         rolldownOptions: {
-          input: { index: "src/preload/index.ts" },
+          // A sandboxed preload cannot require sibling files, so every entry must bundle into one self-contained file.
+          // lucina.cjs is the preload of Lucina's web view (window.secretaryShell); it shares no module with index.
+          input: { index: "src/preload/index.ts", lucina: "src/preload/lucina.ts" },
           output: {
             format: "cjs",
             // The package is "type": "module". Under --no-sandbox Electron loads the preload

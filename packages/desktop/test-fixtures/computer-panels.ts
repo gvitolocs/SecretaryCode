@@ -79,7 +79,11 @@ mock.module("electron", () => ({
   session: { fromPartition },
   shell: { openExternal: external },
 }))
-mock.module("../src/main/secretary/index", () => ({ lucinaView: () => new View({}) }))
+mock.module("../src/main/secretary/index", () => ({
+  lucinaView: () => new View({}),
+  lucinaWebContents: () => undefined,
+  openLucinaPath: () => {},
+}))
 mock.module("../src/main/secretary/lane-window", () => ({ codingLanesView: () => new View({}) }))
 const { computerView } = await import("../src/main/secretary/computer-view")
 const { setupCompanionPanels } = await import("../src/main/secretary/panel")

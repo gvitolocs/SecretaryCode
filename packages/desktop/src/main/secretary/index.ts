@@ -11,7 +11,7 @@ import stagePage from "../../renderer/secretary/stage.html?raw"
 import stageHost from "../../renderer/secretary/stage-host.mjs?raw"
 import stageBundle from "../../renderer/secretary/lucina-stage.standalone.js?raw"
 import copy from "../../renderer/secretary/en.json"
-import { lucinaWebView } from "./lucina-web"
+import { lucinaWebView, navigateLucinaView } from "./lucina-web"
 
 const scheme = "secretary-companion"
 const origins = ["https://getsecretary.tech", "https://secretary-p1.tail75dcfc.ts.net"]
@@ -24,7 +24,7 @@ const files = new Map([
   ["/stage-host.mjs", { data: stageHost, type: "text/javascript" }],
   ["/lucina-stage.standalone.js", { data: stageBundle, type: "text/javascript" }],
 ])
-const state: { view?: WebContentsView; token?: string; registered: boolean; ready?: Promise<void> } = { registered: false }
+const state: { view?: WebContentsView; token?: string; registered: boolean; ready?: Promise<void>; path?: string } = { registered: false }
 
 function credentialFile() { return join(app.getPath("userData"), "secretary-device.enc") }
 
@@ -176,8 +176,26 @@ export function lucinaView() {
   if (!state.registered) throw new Error("Call setupSecretary before app.ready")
   if (state.view && !state.view.webContents.isDestroyed()) return state.view
   // The stored token is read at startup; then the partition gets its cookie session before the first load.
-  const view = lucinaWebView("/", () => state.token, state.ready?.then(() => ensureWebSession()))
+  // A path asked for before the view existed (see openLucinaPath) is where it starts.
+  const view = lucinaWebView("/", () => state.token, state.ready?.then(() => ensureWebSession()), {
+    preload: join(import.meta.dirname, "../preload/lucina.cjs"),
+  })
+  if (state.path) void navigateLucinaView(view.webContents, state.path)
+  state.path = undefined
   state.view = view
   view.webContents.once("destroyed", () => { if (state.view === view) state.view = undefined })
   return view
+}
+
+/** The Lucina view's webContents while it exists. Never creates the view. */
+export function lucinaWebContents() {
+  return state.view && !state.view.webContents.isDestroyed() ? state.view.webContents : undefined
+}
+
+/** Routes Lucina's warm view to `path` without a reload; without a view yet, the first load goes there. */
+export function openLucinaPath(path: string) {
+  const contents = lucinaWebContents()
+
+  if (contents) void navigateLucinaView(contents, path)
+  else state.path = path
 }

@@ -32,8 +32,18 @@ class Contents extends EventEmitter {
     },
   }
   getUserAgent = () => "Secretary-Test"
+  current = ""
+  scripts: string[] = []
+  failScript = false
+  isDestroyed = () => false
+  getURL = () => this.current
+  executeJavaScript = async (script: string) => {
+    this.scripts.push(script)
+    if (this.failScript) throw new Error("no page")
+  }
   loadURL = async (url: string) => {
     this.urls.push(url)
+    this.current = url
   }
   open: ((details: { url: string }) => { action: string }) | undefined
   setWindowOpenHandler(handler: NonNullable<Contents["open"]>) {
@@ -54,7 +64,7 @@ mock.module("electron", () => ({
   shell: { openExternal: external },
 }))
 mock.module("../src/main/native/translations", () => ({ nativeT: (key: string) => key, nativeLocale: () => "da" }))
-const { lucinaWebView } = await import("../src/main/secretary/lucina-web")
+const { lucinaWebView, navigateLucinaView } = await import("../src/main/secretary/lucina-web")
 
 let token: string | undefined
 let release!: () => void
@@ -94,3 +104,50 @@ view.webContents.emit("will-frame-navigate", allowed)
 assert.equal(allowed.prevented, false)
 assert.deepEqual(view.webContents.open!({ url: "javascript:alert(1)" }), { action: "deny" })
 assert.equal(external.mock.calls.length, 1)
+
+// Routing: a view that has not started loading just starts at the new path, with the shell preload attached.
+let gate!: () => void
+const pending = new Promise<void>((resolve) => (gate = resolve))
+const routed = lucinaWebView("/", () => token, pending, { preload: "/app/out/preload/lucina.cjs" }) as unknown as View
+assert.deepEqual(routed.options, {
+  webPreferences: {
+    session: partition,
+    contextIsolation: true,
+    sandbox: true,
+    nodeIntegration: false,
+    preload: "/app/out/preload/lucina.cjs",
+  },
+})
+await navigateLucinaView(routed.webContents as never, "/gallery")
+assert.deepEqual(routed.webContents.urls, [])
+gate()
+await new Promise((resolve) => setTimeout(resolve, 0))
+assert.deepEqual(routed.webContents.urls, ["https://getsecretary.tech/gallery"])
+assert.equal(routed.webContents.scripts.length, 0)
+
+// A loaded Lucina page is routed with pushState and popstate, without a reload.
+await navigateLucinaView(routed.webContents as never, "/chats?tab=all")
+assert.deepEqual(routed.webContents.urls, ["https://getsecretary.tech/gallery"])
+assert.equal(routed.webContents.scripts.length, 1)
+const script = routed.webContents.scripts[0]!
+assert.ok(script.includes('history.pushState(null, "", path)'))
+assert.ok(script.includes('const path = "/chats?tab=all"'))
+assert.ok(script.includes('dispatchEvent(new PopStateEvent("popstate"))'))
+assert.ok(script.includes('location.origin !== "https://getsecretary.tech"'))
+
+// No page yet, an error page or another origin: load the URL.
+for (const current of ["", "about:blank", "data:text/html;charset=utf-8,x", "https://example.com/gallery"]) {
+  routed.webContents.current = current
+  const before = routed.webContents.urls.length
+  const scripts = routed.webContents.scripts.length
+  await navigateLucinaView(routed.webContents as never, "/films")
+  assert.equal(routed.webContents.urls.length, before + 1, current)
+  assert.equal(routed.webContents.urls.at(-1), "https://getsecretary.tech/films")
+  assert.equal(routed.webContents.scripts.length, scripts, current)
+}
+
+// A page that refuses the script (still loading, wrong origin) falls back to a load.
+routed.webContents.current = "https://getsecretary.tech/"
+routed.webContents.failScript = true
+await navigateLucinaView(routed.webContents as never, "/health")
+assert.equal(routed.webContents.urls.at(-1), "https://getsecretary.tech/health")
