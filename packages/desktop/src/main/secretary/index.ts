@@ -171,12 +171,15 @@ export function setupSecretary() {
 }
 
 /** The Lucina panel's view: Lucina's web app (chat, All chats, gallery, films, plugins), created on first use and kept
- * warm while the companion panel is hidden. The signed-in device token signs its requests to Lucina. */
+ * warm while the companion panel is hidden. */
 export function lucinaView() {
   if (!state.registered) throw new Error("Call setupSecretary before app.ready")
   if (state.view && !state.view.webContents.isDestroyed()) return state.view
   // The stored token is read at startup; then the partition gets its cookie session before the first load.
-  const view = lucinaWebView("/", () => state.token, state.ready?.then(() => ensureWebSession()))
+  const view = lucinaWebView("/", async () => {
+    await state.ready
+    await ensureWebSession()
+  })
   state.view = view
   view.webContents.once("destroyed", () => { if (state.view === view) state.view = undefined })
   return view

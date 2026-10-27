@@ -115,6 +115,8 @@ const getBase = (appId: string): Configuration => {
       "!resources/secretary-recorder",
       // The Rust preview binaries are extraResources, not asar contents.
       "!resources/engine-rs{,/**/*}",
+      // Lucina's bundled web app is an extraResource the main process serves from disk.
+      "!resources/lucina-web{,/**/*}",
       // Keep only the target platform's node-pty prebuild when cross-packaging with --cpu=*.
       ...CLI_BINARIES.filter((item) => item.os !== target.os || item.cpu !== target.cpu).map(
         (item) => `!**/node_modules/@lydell/node-pty-${item.os}-${item.cpu}{,/**/*}`,

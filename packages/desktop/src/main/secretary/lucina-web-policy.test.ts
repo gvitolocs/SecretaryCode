@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { isLucinaUrl, withDeviceToken } from "./lucina-web-policy"
+import { bundlePath, contentType, isLucinaUrl } from "./lucina-web-policy"
 
 test("only Lucina's origin counts as a Lucina page", () => {
   expect(isLucinaUrl("https://getsecretary.tech/chats")).toBe(true)
@@ -8,19 +8,28 @@ test("only Lucina's origin counts as a Lucina page", () => {
   expect(isLucinaUrl("not a url")).toBe(false)
 })
 
-test("the device token signs Lucina's requests only, and never replaces the page's own header", () => {
-  const plain = { Accept: "application/json" }
-  expect(withDeviceToken("https://getsecretary.tech/v1/timeline", plain, "sec_x")).toEqual({
-    Accept: "application/json",
-    Authorization: "Bearer sec_x",
-  })
-  expect(withDeviceToken("https://example.com/v1/timeline", plain, "sec_x")).toBe(plain)
-  expect(withDeviceToken("https://getsecretary.tech/v1/timeline", plain, undefined)).toBe(plain)
-  const own = { authorization: "Bearer page" }
-  expect(withDeviceToken("https://getsecretary.tech/v1/session", own, "sec_x")).toBe(own)
+test("the bundle answers page and asset GETs on Lucina's origin, never the API or a path outside it", () => {
+  expect(bundlePath("https://getsecretary.tech/", "GET")).toBe("")
+  expect(bundlePath("https://getsecretary.tech/chats/device%3Aabc", "GET")).toBe("chats/device:abc")
+  expect(bundlePath("https://getsecretary.tech/assets/index-1.js?v=2", "HEAD")).toBe("assets/index-1.js")
+  expect(bundlePath("https://getsecretary.tech/v1/timeline?scope=mine", "GET")).toBeUndefined()
+  expect(bundlePath("https://getsecretary.tech/v1", "GET")).toBeUndefined()
+  expect(bundlePath("https://getsecretary.tech/chats", "POST")).toBeUndefined()
+  expect(bundlePath("https://example.com/", "GET")).toBeUndefined()
+  // URL parsing folds dot segments (encoded too) at the root, so a path can never climb out of the bundle.
+  expect(bundlePath("https://getsecretary.tech/assets/%2e%2e/%2e%2e/etc/passwd", "GET")).toBe("etc/passwd")
+  expect(bundlePath("https://getsecretary.tech/a%5Cb", "GET")).toBeUndefined()
+  expect(bundlePath("https://getsecretary.tech/%E0%A4%A", "GET")).toBeUndefined()
 })
 
-test("the Lucina view uses the shared partition, waits for the token and keeps navigation on Lucina", async () => {
+test("build output gets its content type", () => {
+  expect(contentType("/x/index.html")).toBe("text/html; charset=utf-8")
+  expect(contentType("/x/assets/a.JS")).toBe("text/javascript; charset=utf-8")
+  expect(contentType("/x/image-core.wasm")).toBe("application/wasm")
+  expect(contentType("/x/blob")).toBe("application/octet-stream")
+})
+
+test("the Lucina view serves the bundle same-origin, signs in first and keeps navigation on Lucina", async () => {
   // Electron module mocks run in a child so they cannot leak into the shared package test registry.
   const child = Bun.spawn([process.execPath, `${import.meta.dir}/../../../test-fixtures/lucina-web.ts`], {
     stdout: "pipe",
