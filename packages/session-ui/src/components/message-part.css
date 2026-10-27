@@ -173,7 +173,9 @@
     word-break: break-word;
     overflow: hidden;
     unicode-bidi: plaintext;
-    background: var(--v2-background-bg-layer-02);
+    /* The Lucina theme gives the owner's bubbles the same gradient as her chat; other themes keep the layer. */
+    background: var(--v2-lucina-user-bubble, var(--v2-background-bg-layer-02));
+    color: var(--v2-lucina-user-bubble-text, inherit);
     border: none;
     padding: 8px 12px;
     border-radius: 10px;

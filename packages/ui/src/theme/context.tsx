@@ -5,6 +5,7 @@ import { createStore } from "solid-js/store"
 import { makeEventListener } from "@solid-primitives/event-listener"
 import { createSimpleContext } from "../context/helper"
 import oc2ThemeJson from "./themes/oc-2.json"
+import lucinaThemeJson from "./themes/lucina.json"
 import { resolveThemeVariant, themeToCss } from "./resolve"
 import { resolveThemeVariantV2, themeV2ToCss } from "./v2/resolve"
 import type { DesktopTheme } from "./types"
@@ -19,6 +20,23 @@ const STORAGE_KEYS = {
 } as const
 
 const THEME_STYLE_ID = "oc-theme"
+
+// The theme a fresh install gets: nothing stored under THEME_ID means the user never picked one, so
+// they follow this. A stored id (including "oc-2") is an explicit choice and is never replaced.
+export const DEFAULT_THEME_ID = "lucina"
+
+// Page background painted behind the app before and between theme renders, per theme. Themes not
+// listed use the stock OpenCode values. oc-theme-preload.js keeps the same values for the default.
+const FRAME_BACKGROUND: Record<string, { light: string; dark: string }> = {
+  lucina: { light: "#f2f2f7", dark: "#090c1e" },
+}
+
+function frameBackground(themeId: string, isDark: boolean) {
+  const own = FRAME_BACKGROUND[themeId]
+  if (own) return isDark ? own.dark : own.light
+
+  return isDark ? "#080808" : "#fafafa"
+}
 
 let files: Record<string, () => Promise<{ default: DesktopTheme }>> | undefined
 
@@ -67,6 +85,7 @@ const names: Record<string, string> = {
   gruvbox: "Gruvbox",
   kanagawa: "Kanagawa",
   "lucent-orng": "Lucent Orng",
+  lucina: "Lucina",
   material: "Material",
   matrix: "Matrix",
   mercury: "Mercury",
@@ -90,10 +109,12 @@ const names: Record<string, string> = {
 
 const oc2Theme = oc2ThemeJson as DesktopTheme
 
+const lucinaTheme = lucinaThemeJson as DesktopTheme
+
 function resolveStoredTheme(id: string | null | undefined, registered?: Record<string, DesktopTheme>) {
   if (id === "oc-2" || (id && (knownThemes().has(id) || registered?.[id]))) return id
 
-  return "oc-2"
+  return DEFAULT_THEME_ID
 }
 
 function read(key: string) {
@@ -166,12 +187,13 @@ function applyThemeCss(theme: DesktopTheme, themeId: string, mode: "light" | "da
   ensureThemeStyleElement().textContent = fullCss
   document.documentElement.dataset.theme = themeId
   document.documentElement.dataset.colorScheme = mode
-  document.documentElement.style.backgroundColor = isDark ? "#080808" : "#fafafa"
+  const frame = frameBackground(themeId, isDark)
+  document.documentElement.style.backgroundColor = frame
 
   // Update theme-color meta tag to match light/dark mode
   const meta = document.querySelector('meta[name="theme-color"]')
 
-  if (meta) meta.setAttribute("content", isDark ? "#080808" : "#fafafa")
+  if (meta) meta.setAttribute("content", frame)
 }
 
 function cacheThemeVariants(theme: DesktopTheme, themeId: string) {
@@ -207,6 +229,7 @@ export const { use: useTheme, provider: ThemeProvider } = createSimpleContext({
     const [store, setStore] = createStore({
       themes: {
         "oc-2": oc2Theme,
+        lucina: lucinaTheme,
       } as Record<string, DesktopTheme>,
       themeId,
       colorScheme,
