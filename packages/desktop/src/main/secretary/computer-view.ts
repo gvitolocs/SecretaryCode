@@ -27,8 +27,9 @@ export function computerView() {
     },
   })
   view = created
-  const navigate = (event: { url: string; preventDefault(): void }) => {
-    if (allowedOrigin(event.url)) return
+  // Only the top page is pinned to Lucina's origin: the viewer frame may move to the home-network host the server offers.
+  const navigate = (event: { url: string; isMainFrame?: boolean; preventDefault(): void }) => {
+    if (event.isMainFrame === false || allowedOrigin(event.url)) return
     event.preventDefault()
     openExternal(event.url)
   }
