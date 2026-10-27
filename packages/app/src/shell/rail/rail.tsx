@@ -4,9 +4,10 @@ import { useLanguage } from "@/runtime/i18n/language"
 import type { ShellView } from "@/runtime/platform/platform"
 import { useSettingsSurface } from "@/settings/surface"
 import { useWorkspace } from "@/shell/workspace/workspace"
+import { ACCOUNT_ROUTE } from "@/shell/workspace/views"
 import "./rail.css"
 
-type RailIcon = "code" | "computer" | "gallery" | "film" | "inbox" | "key" | "pulse" | "gear"
+type RailIcon = "code" | "computer" | "gallery" | "film" | "inbox" | "key" | "pulse" | "gear" | "person"
 
 // Stroke icons on a 24px grid, the same artwork as the approved mock.
 const ICONS: Record<RailIcon, () => JSX.Element> = {
@@ -43,6 +44,12 @@ const ICONS: Record<RailIcon, () => JSX.Element> = {
     </>
   ),
   pulse: () => <path d="M3 12h4l2-5 4 10 2-5h6" />,
+  person: () => (
+    <>
+      <circle cx="12" cy="8.5" r="3.5" />
+      <path d="M5 20c.8-3.6 3.6-5.5 7-5.5s6.2 1.9 7 5.5" />
+    </>
+  ),
   gear: () => (
     <>
       <circle cx="12" cy="12" r="3" />
@@ -121,6 +128,17 @@ export function ShellRail() {
               <Glyph icon="gear" />
             </span>
             <span data-slot="rail-label">{language.t("sidebar.settings")}</span>
+          </button>
+          {/* The owner's account in Lucina's web app, where signing out also signs this Mac out. */}
+          <button
+            type="button"
+            data-slot="rail-owner"
+            data-action="rail-account"
+            aria-label={language.t("shell.account")}
+            title={language.t("shell.account")}
+            onClick={() => workspace.view.open("lucina", ACCOUNT_ROUTE)}
+          >
+            <Glyph icon="person" />
           </button>
         </div>
       </nav>

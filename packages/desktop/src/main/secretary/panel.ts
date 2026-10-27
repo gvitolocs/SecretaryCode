@@ -1,8 +1,8 @@
 import { BrowserWindow, ipcMain, type WebContentsView } from "electron"
 import { isRendererUrl } from "../windows/scheme"
-import { lucinaView, lucinaWebContents, openLucinaPath } from "./index"
+import { lucinaView, lucinaWebContents, openLucinaPath, signOutDevice } from "./index"
 import { isLucinaUrl } from "./lucina-web-policy"
-import { isNavigatePath, parseShellCommand } from "./shell-command"
+import { isNavigatePath, isSignOutMessage, parseShellCommand } from "./shell-command"
 import { codingLanesView } from "./lane-window"
 import { computerView } from "./computer-view"
 
@@ -50,6 +50,9 @@ export function setupCompanionPanels() {
     const frame = event.senderFrame
 
     if (!lucina || event.sender !== lucina || !frame || frame.parent || !isLucinaUrl(frame.url)) return
+
+    // Her account page's sign-out: the Mac forgets its device token here; nothing goes to the window.
+    if (isSignOutMessage(message)) return void signOutDevice().catch(() => {})
     const command = parseShellCommand(message)
     const host = state.host && !state.host.isDestroyed() ? state.host : BrowserWindow.getFocusedWindow()
 

@@ -53,3 +53,8 @@ export function isNavigatePath(value: unknown): value is string {
     return false
   }
 }
+
+/** `window.secretaryShell.signOut()`: her web app signed out, so the Mac forgets its device token too. */
+export function isSignOutMessage(value: unknown): boolean {
+  return !!value && typeof value === "object" && !Array.isArray(value) && (value as Record<string, unknown>).action === "signOut"
+}

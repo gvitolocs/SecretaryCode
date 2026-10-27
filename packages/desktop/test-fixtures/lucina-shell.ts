@@ -23,6 +23,7 @@ class Contents extends EventEmitter {
 const lucina = new Contents()
 let lucinaExists = true
 const opened: string[] = []
+let signedOut = 0
 const ipc = new EventEmitter()
 mock.module("electron", () => ({
   BrowserWindow: { fromWebContents: () => host, getFocusedWindow: () => focused },
@@ -33,6 +34,10 @@ mock.module("../src/main/secretary/index", () => ({
   lucinaView: () => ({ webContents: lucina, setBounds() {}, setBorderRadius() {} }),
   lucinaWebContents: () => (lucinaExists ? lucina : undefined),
   openLucinaPath: (path: string) => opened.push(path),
+  signOutDevice: async () => {
+    signedOut++
+    return { authenticated: false }
+  },
 }))
 mock.module("../src/main/secretary/lane-window", () => ({ codingLanesView: () => ({}) }))
 mock.module("../src/main/secretary/computer-view", () => ({ computerView: () => ({}) }))
@@ -79,8 +84,15 @@ const rejected = [
   { sender: lucina, senderFrame: null },
 ]
 for (const event of rejected) ipc.emit("secretary:shell", event, { action: "hideCode" })
+for (const event of rejected) ipc.emit("secretary:shell", event, { action: "signOut" })
+assert.equal(signedOut, 0, "only Lucina's own top frame may sign the Mac out")
 for (const message of [undefined, null, "hideCode", [], {}, { action: "nope" }, { action: "show" }, { action: "show", view: "x" }, { action: "showCode", projectPath: "rel" }])
   ipc.emit("secretary:shell", fromLucina, message)
+assert.deepEqual(sent, [])
+
+// Her web app's sign-out signs the Mac's device out in the main process; no window hears about it.
+ipc.emit("secretary:shell", fromLucina, { action: "signOut" })
+assert.equal(signedOut, 1)
 assert.deepEqual(sent, [])
 
 // A view that does not exist hears nothing.

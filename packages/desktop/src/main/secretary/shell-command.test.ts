@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { isNavigatePath, isProjectPath, parseShellCommand, SHELL_VIEWS } from "./shell-command"
+import { isNavigatePath, isProjectPath, isSignOutMessage, parseShellCommand, SHELL_VIEWS } from "./shell-command"
 
 describe("parseShellCommand", () => {
   test("accepts the three commands and rebuilds them from known fields", () => {
@@ -93,4 +93,12 @@ describe("isNavigatePath", () => {
 
     for (const path of invalid) expect(isNavigatePath(path)).toBe(false)
   })
+})
+
+test("isSignOutMessage takes only the sign-out message", () => {
+  expect(isSignOutMessage({ action: "signOut" })).toBe(true)
+  for (const value of [undefined, null, "signOut", [], {}, { action: "signout" }, { action: "hideCode" }, [{ action: "signOut" }]])
+    expect(isSignOutMessage(value)).toBe(false)
+  // Sign-out is never a window command.
+  expect(parseShellCommand({ action: "signOut" })).toBeUndefined()
 })

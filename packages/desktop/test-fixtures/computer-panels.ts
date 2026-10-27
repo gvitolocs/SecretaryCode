@@ -84,6 +84,7 @@ mock.module("../src/main/secretary/index", () => ({
   lucinaView: () => new View({}),
   lucinaWebContents: () => undefined,
   openLucinaPath: () => {},
+  signOutDevice: async () => ({ authenticated: false }),
 }))
 mock.module("../src/main/secretary/lane-window", () => ({ codingLanesView: () => new View({}) }))
 const { computerView } = await import("../src/main/secretary/computer-view")

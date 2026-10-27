@@ -23,6 +23,10 @@ if (location.origin === LUCINA_ORIGIN && window.top === window) {
       hideCode() {
         send({ action: "hideCode" })
       },
+      /** Her web app signed out: the Mac forgets its device token too, or it would sign her straight back in. */
+      signOut() {
+        ipcRenderer.send("secretary:shell", { action: "signOut" })
+      },
       show(view: string) {
         if (!isShellView(view)) throw new TypeError("unknown view")
         const command = parseShellCommand({ action: "show", view })
