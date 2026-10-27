@@ -24,7 +24,10 @@ const lucina = new Contents()
 let lucinaExists = true
 const opened: string[] = []
 let signedOut = 0
-const ipc = new EventEmitter()
+const handlers = new Map<string, (event: unknown) => Promise<unknown>>()
+const ipc = Object.assign(new EventEmitter(), {
+  handle: (channel: string, handler: (event: unknown) => Promise<unknown>) => handlers.set(channel, handler),
+})
 mock.module("electron", () => ({
   BrowserWindow: { fromWebContents: () => host, getFocusedWindow: () => focused },
   ipcMain: ipc,
@@ -34,9 +37,8 @@ mock.module("../src/main/secretary/index", () => ({
   lucinaView: () => ({ webContents: lucina, setBounds() {}, setBorderRadius() {} }),
   lucinaWebContents: () => (lucinaExists ? lucina : undefined),
   openLucinaPath: (path: string) => opened.push(path),
-  signOutDevice: async () => {
+  forgetDevice: async () => {
     signedOut++
-    return { authenticated: false }
   },
 }))
 mock.module("../src/main/secretary/lane-window", () => ({ codingLanesView: () => ({}) }))
@@ -84,14 +86,15 @@ const rejected = [
   { sender: lucina, senderFrame: null },
 ]
 for (const event of rejected) ipc.emit("secretary:shell", event, { action: "hideCode" })
-for (const event of rejected) ipc.emit("secretary:shell", event, { action: "signOut" })
-assert.equal(signedOut, 0, "only Lucina's own top frame may sign the Mac out")
+for (const event of rejected) await handlers.get("secretary:sign-out")!(event)
+ipc.emit("secretary:shell", fromLucina, { action: "signOut" })
+assert.equal(signedOut, 0, "only Lucina's own top frame may sign the Mac out, and only through its invoke channel")
 for (const message of [undefined, null, "hideCode", [], {}, { action: "nope" }, { action: "show" }, { action: "show", view: "x" }, { action: "showCode", projectPath: "rel" }])
   ipc.emit("secretary:shell", fromLucina, message)
 assert.deepEqual(sent, [])
 
-// Her web app's sign-out signs the Mac's device out in the main process; no window hears about it.
-ipc.emit("secretary:shell", fromLucina, { action: "signOut" })
+// Her web app awaits the sign-out: the Mac has forgotten its device once it settles, and no window hears about it.
+await handlers.get("secretary:sign-out")!(fromLucina)
 assert.equal(signedOut, 1)
 assert.deepEqual(sent, [])
 

@@ -108,14 +108,20 @@ async function perform(action: string, input: unknown): Promise<unknown> {
 }
 
 /**
- * Forgets this Mac's Secretary device token. Signing the device out signs the embedded Lucina pages out too; her web
- * app's own sign-out calls this through window.secretaryShell, or the stored token would sign her straight back in.
+ * Forgets this Mac's Secretary device token and reloads the Computer view. Her web app's own sign-out awaits this
+ * through window.secretaryShell.signOut() before it ends its session and clears its data, so the stored token cannot
+ * sign her straight back in; her page is left alone while it finishes.
  */
-export async function signOutDevice() {
+export async function forgetDevice() {
   state.token = undefined
   await unlink(credentialFile()).catch(() => undefined)
-  await endWebSession()
   reloadComputerView()
+}
+
+/** Signs this Mac's device out from the app itself, which signs the embedded Lucina pages out too. */
+async function signOutDevice() {
+  await forgetDevice()
+  await endWebSession()
   if (state.view && !state.view.webContents.isDestroyed()) state.view.webContents.reload()
   return { authenticated: false }
 }
