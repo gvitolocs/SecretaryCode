@@ -94,3 +94,8 @@ describe("isNavigatePath", () => {
     for (const path of invalid) expect(isNavigatePath(path)).toBe(false)
   })
 })
+
+test("sign-out is never a window command", () => {
+  // It has its own invoke channel (secretary:sign-out), handled in the main process.
+  expect(parseShellCommand({ action: "signOut" })).toBeUndefined()
+})

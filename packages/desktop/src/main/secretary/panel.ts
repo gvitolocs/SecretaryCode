@@ -1,6 +1,6 @@
 import { BrowserWindow, ipcMain, type WebContentsView } from "electron"
 import { isRendererUrl } from "../windows/scheme"
-import { lucinaView, lucinaWebContents, openLucinaPath } from "./index"
+import { forgetDevice, lucinaView, lucinaWebContents, openLucinaPath } from "./index"
 import { isLucinaUrl } from "./lucina-web-policy"
 import { isNavigatePath, parseShellCommand } from "./shell-command"
 import { codingLanesView } from "./lane-window"
@@ -46,16 +46,28 @@ export function setupCompanionPanels() {
   // window.secretaryShell in Lucina's web view. Only her own top frame is heard; the window hosting the companion
   // (or else the focused one) gets the validated command.
   ipcMain.on("secretary:shell", (event, message: unknown) => {
-    const lucina = lucinaWebContents()
-    const frame = event.senderFrame
-
-    if (!lucina || event.sender !== lucina || !frame || frame.parent || !isLucinaUrl(frame.url)) return
+    if (!fromLucina(event)) return
     const command = parseShellCommand(message)
     const host = state.host && !state.host.isDestroyed() ? state.host : BrowserWindow.getFocusedWindow()
 
     if (!command || !host || host.isDestroyed()) return
     host.webContents.send("secretary:shell-command", command)
   })
+
+  // window.secretaryShell.signOut(): her web app awaits this before it ends its own session and clears its data, so
+  // the Mac forgets its device token first and cannot sign her straight back in. Her page does the rest itself.
+  ipcMain.handle("secretary:sign-out", async (event) => {
+    if (!fromLucina(event)) return
+    await forgetDevice().catch(() => {})
+  })
+}
+
+/** Whether an IPC message comes from Lucina's own view, in its top frame, on her origin. */
+function fromLucina(event: { sender: unknown; senderFrame?: { url: string; parent: unknown } | null }) {
+  const lucina = lucinaWebContents()
+  const frame = event.senderFrame
+
+  return !!lucina && event.sender === lucina && !!frame && !frame.parent && isLucinaUrl(frame.url)
 }
 
 function place(window: BrowserWindow, panel: CompanionPanel | undefined, rect: Rect | undefined, zoom: number) {

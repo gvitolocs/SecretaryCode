@@ -35,6 +35,7 @@ import { TitlebarItem } from "@opencode/gui-extensions/sdk"
 import { useExtensionHost } from "@/runtime/extension/host"
 import { TitlebarItems, useTitlebarItems } from "@/runtime/extension/titlebar-items"
 import { useWorkspace } from "@/shell/workspace/workspace"
+import { NOTIFICATIONS_ROUTE } from "@/shell/workspace/views"
 import devIcon from "../../../../desktop/icons/dev/64x64.png"
 import betaIcon from "../../../../desktop/icons/beta/64x64.png"
 import lucinaPortrait from "../../../../ui/src/assets/images/secretary-lucina.png"
@@ -808,6 +809,32 @@ export function Titlebar(props: { verticalTabs?: { mount?: HTMLElement } }) {
                     <TitlebarItems items={titlebarItems} />
                     <TitlebarRightMount />
                   </div>
+                </Show>
+                <Show when={rail()}>
+                  {/* Lucina's notifications, which her web app's hidden top bar used to hold. */}
+                  <Tooltip placement="bottom" value={language.t("shell.notifications")} class="shrink-0">
+                    <button
+                      type="button"
+                      data-action="titlebar-notifications"
+                      class="flex size-[30px] shrink-0 items-center justify-center rounded-[7px] text-v2-icon-icon-muted hover:bg-v2-background-bg-layer-02 focus-visible:outline-none focus-visible:bg-v2-background-bg-layer-02 [app-region:no-drag]"
+                      onClick={() => workspace.view.open("lucina", NOTIFICATIONS_ROUTE)}
+                      aria-label={language.t("shell.notifications")}
+                    >
+                      <svg
+                        viewBox="0 0 24 24"
+                        class="size-[18px]"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="1.7"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                        aria-hidden="true"
+                      >
+                        <path d="M6 16.5V11a6 6 0 0 1 12 0v5.5l1.5 2h-15z" />
+                        <path d="M10 20.5a2.2 2.2 0 0 0 4 0" />
+                      </svg>
+                    </button>
+                  </Tooltip>
                 </Show>
                 <Show when={rail() && view() !== "lucina"}>
                   <Tooltip

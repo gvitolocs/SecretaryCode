@@ -80,15 +80,7 @@ async function perform(action: string, input: unknown): Promise<unknown> {
     })
     return { authenticated: true }
   }
-  if (action === "signOut") {
-    state.token = undefined
-    await unlink(credentialFile()).catch(() => undefined)
-    // Signing the device out signs the embedded Lucina pages out too.
-    await endWebSession()
-    reloadComputerView()
-    if (state.view && !state.view.webContents.isDestroyed()) state.view.webContents.reload()
-    return { authenticated: false }
-  }
+  if (action === "signOut") return signOutDevice()
   if (!state.token) throw new Error("signInRequired")
   if (action === "chat") {
     const data = object(input)
@@ -113,6 +105,25 @@ async function perform(action: string, input: unknown): Promise<unknown> {
     return json("/v1/avatar", "PUT", data)
   }
   throw new Error("invalidRequest")
+}
+
+/**
+ * Forgets this Mac's Secretary device token and reloads the Computer view. Her web app's own sign-out awaits this
+ * through window.secretaryShell.signOut() before it ends its session and clears its data, so the stored token cannot
+ * sign her straight back in; her page is left alone while it finishes.
+ */
+export async function forgetDevice() {
+  state.token = undefined
+  await unlink(credentialFile()).catch(() => undefined)
+  reloadComputerView()
+}
+
+/** Signs this Mac's device out from the app itself, which signs the embedded Lucina pages out too. */
+async function signOutDevice() {
+  await forgetDevice()
+  await endWebSession()
+  if (state.view && !state.view.webContents.isDestroyed()) state.view.webContents.reload()
+  return { authenticated: false }
 }
 
 /** The signed-in Secretary device token, shared with the meeting recorder's uploads. */

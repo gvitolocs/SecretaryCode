@@ -53,7 +53,7 @@ export function ContentCard(props: { hidden?: boolean }) {
   })
   // Lucina's pages share one warm web view: the view decides which page it shows.
   createEffect(() => {
-    const route = viewRoute(workspace.view.current())
+    const route = workspace.view.page() ?? viewRoute(workspace.view.current())
 
     if (route) platform.companion?.navigate?.(route)
   })

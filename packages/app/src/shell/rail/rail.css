@@ -168,3 +168,36 @@
     margin-block: 3px;
   }
 }
+
+/* The owner's round button under Settings, as in the mock: the account page of Lucina's web app. */
+[data-slot="rail-owner"] {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  margin-top: 6px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  border: 2px solid var(--rail-pill-border);
+  background: linear-gradient(135deg, #3b6ea8, #7a5bc4);
+  color: #fff;
+}
+
+[data-slot="rail-owner"] svg {
+  width: 18px;
+  height: 18px;
+}
+
+[data-slot="rail-owner"]:hover,
+[data-slot="rail-owner"]:focus-visible {
+  outline: none;
+  border-color: var(--rail-ring);
+}
+
+@media (max-height: 800px) {
+  [data-slot="rail-owner"] {
+    width: 32px;
+    height: 32px;
+    margin-top: 2px;
+  }
+}

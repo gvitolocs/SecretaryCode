@@ -16,17 +16,22 @@ export const SHELL_VIEWS = [
 export const DEFAULT_VIEW: ShellView = "lucina"
 
 /**
- * The path Lucina's warm web view shows for each view it hosts. "chats" and "secrets" point at the plugins page until
- * the web app ships routes of their own. "code" and "computer" have no web route.
+ * The path Lucina's warm web view shows for each view it hosts. "secrets" points at the plugins page until the web app
+ * ships a route of its own (today the secret sheet opens from the /secret chat command). "code" and "computer" have no
+ * web route.
  */
 export const VIEW_ROUTES = {
   lucina: "/",
   gallery: "/media",
   films: "/films",
-  chats: "/plugins",
+  chats: "/chats",
   secrets: "/plugins",
   health: "/server-health",
 } as const satisfies Partial<Record<ShellView, string>>
+
+/** Pages of Lucina's web app that her hidden top bar used to open: the account (with sign-out) and the notifications. */
+export const ACCOUNT_ROUTE = "/account"
+export const NOTIFICATIONS_ROUTE = "/notifications"
 
 export function isShellView(value: unknown): value is ShellView {
   return typeof value === "string" && (SHELL_VIEWS as readonly string[]).includes(value)

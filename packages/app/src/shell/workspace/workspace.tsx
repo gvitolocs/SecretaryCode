@@ -69,7 +69,16 @@ export const { use: useWorkspace, provider: WorkspaceProvider } = createSimpleCo
       return clamp(Math.min(store.sidebar.width, room), SIDEBAR_WIDTH.min, SIDEBAR_WIDTH.max)
     })
 
-    const show = (next: ShellView) => setStore("view", next)
+    // A page of Lucina's web app asked for beyond the view's own (her account, the notifications); every click counts.
+    const [page, setPage] = createSignal<string | undefined>(undefined, { equals: false })
+    const show = (next: ShellView) => {
+      setPage(undefined)
+      setStore("view", next)
+    }
+    const open = (next: ShellView, path: string) => {
+      setStore("view", next)
+      setPage(path)
+    }
 
     // Selects the project in OpenCode's sidebar, adding it first when OpenCode does not know it yet.
     const openProject = (directory: string) => {
@@ -163,6 +172,8 @@ export const { use: useWorkspace, provider: WorkspaceProvider } = createSimpleCo
         current: view,
         code: codeVisible,
         show,
+        open,
+        page,
         verticalTabs,
       },
     }

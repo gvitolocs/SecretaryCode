@@ -15,6 +15,8 @@ export const dict = {
   "shell.view.secrets": "Secrets",
   "shell.view.health": "Server",
   "shell.newChat": "New chat",
+  "shell.account": "Account",
+  "shell.notifications": "Notifications",
   "shell.command.lucina": "Show Lucina",
   "shell.command.code": "Show Code",
   "shell.command.computer": "Show Computer",

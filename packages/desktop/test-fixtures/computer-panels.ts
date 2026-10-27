@@ -67,7 +67,7 @@ const window = Object.assign(new EventEmitter(), {
     },
   },
 })
-const ipc = new EventEmitter()
+const ipc = Object.assign(new EventEmitter(), { handle: () => {} })
 const external = mock(async (_url: string) => {})
 const fromPartition = mock((_name: string) => partition)
 mock.module("electron", () => ({
@@ -84,6 +84,7 @@ mock.module("../src/main/secretary/index", () => ({
   lucinaView: () => new View({}),
   lucinaWebContents: () => undefined,
   openLucinaPath: () => {},
+  forgetDevice: async () => {},
 }))
 mock.module("../src/main/secretary/lane-window", () => ({ codingLanesView: () => new View({}) }))
 const { computerView } = await import("../src/main/secretary/computer-view")
