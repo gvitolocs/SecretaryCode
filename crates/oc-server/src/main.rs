@@ -28,6 +28,25 @@ use tokio::sync::RwLock;
 const DEFAULT_BIND: &str = "127.0.0.1:18212";
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// `OC_PERMISSIONS`: an inline JSON ruleset (`[{"action":..,"resource":..,
+/// "effect":..}]`) or a path to a file holding one. Unset = allow-all.
+fn permissions_from_env() -> oc_permission::Ruleset {
+    let raw = std::env::var("OC_PERMISSIONS").unwrap_or_default();
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return oc_permission::Ruleset::default();
+    }
+    let json = if raw.starts_with('[') {
+        raw.to_string()
+    } else {
+        std::fs::read_to_string(raw).unwrap_or_default()
+    };
+    serde_json::from_str(&json).unwrap_or_else(|e| {
+        tracing::warn!("bad OC_PERMISSIONS ruleset ({e}); running with allow-all");
+        oc_permission::Ruleset::default()
+    })
+}
+
 #[derive(Clone)]
 struct AppState {
     store: Arc<RwLock<Store>>,
@@ -36,6 +55,7 @@ struct AppState {
     client: Arc<Client>,
     model: ModelRef,
     max_steps: Option<u32>,
+    permissions: oc_permission::Ruleset,
     /// One abort flag per running session (`session.abort`).
     aborts: Arc<std::sync::Mutex<HashMap<String, Arc<AtomicBool>>>>,
 }
@@ -64,6 +84,7 @@ async fn main() {
         client: Arc::new(Client::new(oc_agent::endpoint_from_env())),
         model: oc_agent::model_from_env(),
         max_steps: oc_agent::max_steps_from_env(),
+        permissions: permissions_from_env(),
         aborts: Arc::new(std::sync::Mutex::new(HashMap::new())),
     };
     let bind = std::env::var("OC_BIND").unwrap_or_else(|_| DEFAULT_BIND.into());
@@ -275,6 +296,7 @@ async fn session_prompt(
         agent: "build".into(),
         max_steps: st.max_steps,
         abort,
+        permissions: st.permissions.clone(),
     };
     let registry = st.registry.clone();
     let client = st.client.clone();
@@ -430,6 +452,7 @@ mod tests {
             })),
             model: oc_schema::ModelRef::parse("openai/gpt-test").unwrap(),
             max_steps: None,
+            permissions: oc_permission::Ruleset::default(),
             aborts: Arc::new(std::sync::Mutex::new(HashMap::new())),
         }
     }

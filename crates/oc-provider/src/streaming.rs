@@ -162,11 +162,11 @@ pub fn parse_openai_sse_frame(chunk: &Value, state: &mut OpenAiStreamState) -> R
 
     // Trailing usage chunk (with `stream_options.include_usage`), plus the
     // Moonshot-style `choices[0].usage` fallback.
-    if let Some(u) = non_null(chunk.get("usage")) {
+    if let Some(u) = chunk.get("usage").and_then(non_null) {
         state.usage = Some(openai_usage(u));
     }
     let choice = chunk.pointer("/choices/0");
-    if let Some(u) = choice.and_then(|c| non_null(c.get("usage"))) {
+    if let Some(u) = choice.and_then(|c| c.get("usage")).and_then(non_null) {
         state.usage = Some(openai_usage(u));
     }
 
@@ -475,7 +475,7 @@ pub async fn drive_sse(
     let mut terminal = false;
 
     'outer: while let Some(chunk) = stream.next().await {
-        for frame in buffer.push(chunk?) {
+        for frame in buffer.push(&chunk?) {
             if handle_frame(&frame, protocol, &mut openai, &mut anthropic, &on_event)? {
                 terminal = true;
                 break 'outer;
@@ -527,8 +527,8 @@ fn handle_frame(
     }
 }
 
-fn non_null(v: Option<&Value>) -> Option<&Value> {
-    v.filter(|v| !v.is_null())
+fn non_null(v: &Value) -> Option<&Value> {
+    if v.is_null() { None } else { Some(v) }
 }
 
 /// Blank text collapses to `None` (same rule as the non-streaming parsers).

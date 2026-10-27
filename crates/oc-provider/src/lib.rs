@@ -49,6 +49,7 @@
 
 use std::sync::Arc;
 
+use futures_util::TryStreamExt;
 use oc_schema::{FinishReason, LlmResponse, LlmToolCall, LlmUsage, ToolContent, ToolDef};
 use serde_json::{json, Map, Value};
 
@@ -171,8 +172,45 @@ impl Client {
 
     /// Run one completion. `model_id` wins over `req.model` when non-empty.
     pub async fn complete(&self, model_id: &str, req: &ChatRequest) -> Result<LlmResponse, ProviderError> {
+        let (url, headers, body) = self.prepare(model_id, req, false);
+        let response = self.transport.post_json(&url, headers, body).await?;
+        match self.endpoint.protocol {
+            Protocol::OpenAI => parse_openai_response(&response),
+            Protocol::Anthropic => parse_anthropic_response(&response),
+        }
+    }
+
+    /// Run one completion over SSE, reporting deltas through `on_event` and
+    /// returning the accumulated [`LlmResponse`] (same shape `complete`
+    /// returns). The request bodies are `complete`'s plus `stream: true`
+    /// (and `stream_options: {"include_usage": true}` for OpenAI).
+    ///
+    /// If the transport does not implement `post_stream` (it returns the
+    /// [`STREAMING_UNSUPPORTED`] error), this falls back to `complete` and no
+    /// events are emitted. `Finished` marks the protocol's terminal SSE
+    /// event (`data: [DONE]` for OpenAI, `message_stop` for Anthropic); a
+    /// stream that ends without it still produces a response.
+    pub async fn complete_streaming(
+        &self,
+        model_id: &str,
+        req: &ChatRequest,
+        on_event: OnEvent,
+    ) -> Result<LlmResponse, ProviderError> {
+        let (url, headers, body) = self.prepare(model_id, req, true);
+        match self.transport.post_stream(&url, headers, body).await {
+            Ok(stream) => streaming::drive_sse(stream, self.endpoint.protocol, on_event).await,
+            Err(ProviderError::Transport(message)) if message == STREAMING_UNSUPPORTED => {
+                self.complete(model_id, req).await
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Build the POST target: URL, headers, and body (`stream` fields added
+    /// when `streaming`).
+    fn prepare(&self, model_id: &str, req: &ChatRequest, streaming: bool) -> (String, Vec<(String, String)>, Value) {
         let model = if model_id.is_empty() { req.model.as_str() } else { model_id };
-        let (url, headers, body) = match self.endpoint.protocol {
+        let mut body = match self.endpoint.protocol {
             Protocol::OpenAI => (
                 format!("{}/chat/completions", self.endpoint.base_url.trim_end_matches('/')),
                 openai_headers(&self.endpoint),
@@ -184,11 +222,14 @@ impl Client {
                 build_anthropic_request(model, req),
             ),
         };
-        let response = self.transport.post_json(&url, headers, body).await?;
-        match self.endpoint.protocol {
-            Protocol::OpenAI => parse_openai_response(&response),
-            Protocol::Anthropic => parse_anthropic_response(&response),
+        if streaming {
+            let object = body.2.as_object_mut().expect("request body is an object");
+            object.insert("stream".into(), json!(true));
+            if self.endpoint.protocol == Protocol::OpenAI {
+                object.insert("stream_options".into(), json!({ "include_usage": true }));
+            }
         }
+        body
     }
 }
 
@@ -219,6 +260,47 @@ struct ReqwestTransport {
 #[async_trait::async_trait]
 impl Transport for ReqwestTransport {
     async fn post_json(&self, url: &str, headers: Vec<(String, String)>, body: Value) -> Result<Value, ProviderError> {
+        let text = self.post_for_text(url, headers, &body).await?;
+        serde_json::from_str(&text).map_err(|e| ProviderError::Malformed(e.to_string()))
+    }
+
+    async fn post_stream(&self, url: &str, headers: Vec<(String, String)>, body: Value) -> Result<ByteStream, ProviderError> {
+        let response = self.post(url, headers, &body).await?;
+        let status = response.status().as_u16();
+        if !(200..300).contains(&status) {
+            let body = response.text().await.map_err(|e| ProviderError::Transport(e.to_string()))?;
+            return Err(ProviderError::Http { status, body });
+        }
+        Ok(Box::pin(
+            response
+                .bytes_stream()
+                .map_err(|e| ProviderError::Transport(e.to_string())),
+        ))
+    }
+}
+
+impl ReqwestTransport {
+    async fn post_for_text(
+        &self,
+        url: &str,
+        headers: Vec<(String, String)>,
+        body: &Value,
+    ) -> Result<String, ProviderError> {
+        let response = self.post(url, headers, body).await?;
+        let status = response.status().as_u16();
+        let text = response.text().await.map_err(|e| ProviderError::Transport(e.to_string()))?;
+        if !(200..300).contains(&status) {
+            return Err(ProviderError::Http { status, body: text });
+        }
+        Ok(text)
+    }
+
+    async fn post(
+        &self,
+        url: &str,
+        headers: Vec<(String, String)>,
+        body: &Value,
+    ) -> Result<reqwest::Response, ProviderError> {
         let mut request = self
             .http
             .post(url)
@@ -230,20 +312,11 @@ impl Transport for ReqwestTransport {
                 .map_err(|e| ProviderError::Transport(format!("invalid header value {value:?}: {e}")))?;
             request = request.header(name, value);
         }
-        let response = request
-            .json(&body)
+        request
+            .json(body)
             .send()
             .await
-            .map_err(|e| ProviderError::Transport(e.to_string()))?;
-        let status = response.status().as_u16();
-        let text = response
-            .text()
-            .await
-            .map_err(|e| ProviderError::Transport(e.to_string()))?;
-        if !(200..300).contains(&status) {
-            return Err(ProviderError::Http { status, body: text });
-        }
-        serde_json::from_str(&text).map_err(|e| ProviderError::Malformed(e.to_string()))
+            .map_err(|e| ProviderError::Transport(e.to_string()))
     }
 }
 
@@ -431,7 +504,20 @@ pub fn parse_openai_response(v: &Value) -> Result<LlmResponse, ProviderError> {
         Some(_) => return Err(ProviderError::Malformed("choices[0].message.tool_calls is not a list".into())),
     };
 
-    let (finish, raw_finish) = match choice.get("finish_reason").and_then(Value::as_str) {
+    let (finish, raw_finish) = openai_finish_reason(choice.get("finish_reason").and_then(Value::as_str));
+
+    let usage = match v.get("usage") {
+        None | Some(Value::Null) => None,
+        Some(u) => Some(openai_usage(u)),
+    };
+
+    Ok(LlmResponse { text, reasoning: None, tool_calls, finish, raw_finish, usage })
+}
+
+/// OpenAI `finish_reason` → union mapping (shared by the non-streaming and
+/// streaming parses).
+fn openai_finish_reason(raw: Option<&str>) -> (FinishReason, Option<String>) {
+    match raw {
         Some("stop") | Some("end") => (FinishReason::Stop, None),
         Some("length") => (FinishReason::Length, None),
         Some("tool_calls") | Some("function_call") => (FinishReason::ToolCalls, None),
@@ -440,32 +526,30 @@ pub fn parse_openai_response(v: &Value) -> Result<LlmResponse, ProviderError> {
         Some("error") => (FinishReason::Error, None),
         Some(other) => (FinishReason::Unknown, Some(other.to_owned())),
         None => (FinishReason::Unknown, None),
-    };
+    }
+}
 
-    let usage = match v.get("usage") {
-        None | Some(Value::Null) => None,
-        Some(u) => Some(LlmUsage {
-            input: json_f64(u.get("prompt_tokens")),
-            output: json_f64(u.get("completion_tokens")),
-            reasoning: json_f64(
-                u.get("completion_tokens_details")
-                    .and_then(|d| d.get("reasoning_tokens")),
-            ),
-            // OpenAI reports cached reads under `prompt_tokens_details`;
-            // DeepSeek-compatible surfaces use the flat fallbacks.
-            cache_read: first_f64(&[
-                u.get("prompt_tokens_details").and_then(|d| d.get("cached_tokens")),
-                u.get("prompt_cache_hit_tokens"),
-                u.get("cached_tokens"),
-            ]),
-            cache_write: first_f64(&[
-                u.get("prompt_tokens_details").and_then(|d| d.get("cache_write_tokens")),
-                u.get("cache_created_input_tokens"),
-            ]),
-        }),
-    };
-
-    Ok(LlmResponse { text, reasoning: None, tool_calls, finish, raw_finish, usage })
+/// OpenAI usage object → `LlmUsage` (shared by both parse paths).
+fn openai_usage(u: &Value) -> LlmUsage {
+    LlmUsage {
+        input: json_f64(u.get("prompt_tokens")),
+        output: json_f64(u.get("completion_tokens")),
+        reasoning: json_f64(
+            u.get("completion_tokens_details")
+                .and_then(|d| d.get("reasoning_tokens")),
+        ),
+        // OpenAI reports cached reads under `prompt_tokens_details`;
+        // DeepSeek-compatible surfaces use the flat fallbacks.
+        cache_read: first_f64(&[
+            u.get("prompt_tokens_details").and_then(|d| d.get("cached_tokens")),
+            u.get("prompt_cache_hit_tokens"),
+            u.get("cached_tokens"),
+        ]),
+        cache_write: first_f64(&[
+            u.get("prompt_tokens_details").and_then(|d| d.get("cache_write_tokens")),
+            u.get("cache_created_input_tokens"),
+        ]),
+    }
 }
 
 /// Tool-call id lives on the call itself (`call.id`).
@@ -629,7 +713,20 @@ pub fn parse_anthropic_response(v: &Value) -> Result<LlmResponse, ProviderError>
     let text = if texts.is_empty() { None } else { Some(texts.join("\n")) };
     let reasoning = if thinkings.is_empty() { None } else { Some(thinkings.join("\n")) };
 
-    let (finish, raw_finish) = match v.get("stop_reason").and_then(Value::as_str) {
+    let (finish, raw_finish) = anthropic_finish_reason(v.get("stop_reason").and_then(Value::as_str));
+
+    let usage = match v.get("usage") {
+        None | Some(Value::Null) => None,
+        Some(u) => Some(anthropic_usage(u)),
+    };
+
+    Ok(LlmResponse { text, reasoning, tool_calls, finish, raw_finish, usage })
+}
+
+/// Anthropic `stop_reason` → union mapping (shared by the non-streaming and
+/// streaming parses).
+fn anthropic_finish_reason(raw: Option<&str>) -> (FinishReason, Option<String>) {
+    match raw {
         Some("end_turn") | Some("stop_sequence") | Some("pause_turn") => (FinishReason::Stop, None),
         Some("max_tokens") | Some("model_context_window_exceeded") => (FinishReason::Length, None),
         Some("tool_use") => (FinishReason::ToolCalls, None),
@@ -637,26 +734,24 @@ pub fn parse_anthropic_response(v: &Value) -> Result<LlmResponse, ProviderError>
         Some("refusal") | Some("refuse") => (FinishReason::ContentFilter, None),
         Some(other) => (FinishReason::Unknown, Some(other.to_owned())),
         None => (FinishReason::Unknown, None),
-    };
+    }
+}
 
-    let usage = match v.get("usage") {
-        None | Some(Value::Null) => None,
-        Some(u) => Some(LlmUsage {
-            // Raw disjoint fields: `input_tokens` is the *non-cached* count
-            // (upstream sums cache into an inclusive total; this port keeps
-            // the split so totals are not double-counted downstream).
-            input: json_f64(u.get("input_tokens")),
-            output: json_f64(u.get("output_tokens")),
-            reasoning: json_f64(
-                u.get("output_tokens_details")
-                    .and_then(|d| d.get("thinking_tokens")),
-            ),
-            cache_read: json_f64(u.get("cache_read_input_tokens")),
-            cache_write: json_f64(u.get("cache_creation_input_tokens")),
-        }),
-    };
-
-    Ok(LlmResponse { text, reasoning, tool_calls, finish, raw_finish, usage })
+/// Anthropic usage object → `LlmUsage` (shared by both parse paths).
+fn anthropic_usage(u: &Value) -> LlmUsage {
+    LlmUsage {
+        // Raw disjoint fields: `input_tokens` is the *non-cached* count
+        // (upstream sums cache into an inclusive total; this port keeps the
+        // split so totals are not double-counted downstream).
+        input: json_f64(u.get("input_tokens")),
+        output: json_f64(u.get("output_tokens")),
+        reasoning: json_f64(
+            u.get("output_tokens_details")
+                .and_then(|d| d.get("thinking_tokens")),
+        ),
+        cache_read: json_f64(u.get("cache_read_input_tokens")),
+        cache_write: json_f64(u.get("cache_creation_input_tokens")),
+    }
 }
 
 // =============================================================================

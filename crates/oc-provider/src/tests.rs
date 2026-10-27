@@ -738,3 +738,418 @@ async fn client_empty_model_id_falls_back_to_request_model() {
     client.complete("", &sample_request()).await.expect("completes");
     assert_eq!(transport.captured().body["model"], "fallback-model");
 }
+
+// =============================================================================
+// Streaming: scripted byte-stream transport
+// =============================================================================
+
+use crate::{
+    parse_anthropic_sse_frame, parse_openai_sse_frame, parse_sse_frame, AnthropicStreamState, ByteStream, OnEvent,
+    OpenAiStreamState, SseFrame, StreamEvent,
+};
+use bytes::Bytes;
+
+struct ScriptedStream {
+    captured: Mutex<Option<Captured>>,
+    chunks: Vec<Result<Bytes, ProviderError>>,
+}
+
+impl ScriptedStream {
+    fn new(chunks: Vec<Result<Bytes, ProviderError>>) -> Arc<Self> {
+        Arc::new(Self { captured: Mutex::new(None), chunks })
+    }
+
+    fn captured(&self) -> Captured {
+        self.captured.lock().expect("capture lock").clone().expect("transport was called")
+    }
+}
+
+#[async_trait::async_trait]
+impl Transport for ScriptedStream {
+    async fn post_json(&self, _url: &str, _headers: Vec<(String, String)>, _body: Value) -> Result<Value, ProviderError> {
+        Err(ProviderError::Transport("post_json reached although post_stream is implemented".into()))
+    }
+
+    async fn post_stream(&self, url: &str, headers: Vec<(String, String)>, body: Value) -> Result<ByteStream, ProviderError> {
+        *self.captured.lock().expect("capture lock") = Some(Captured { url: url.to_owned(), headers, body });
+        Ok(Box::pin(futures_util::stream::iter(self.chunks.clone())))
+    }
+}
+
+/// `data: {json}\n\n` wire frames for each value.
+fn sse_chunks(frames: &[Value]) -> Vec<Result<Bytes, ProviderError>> {
+    frames
+        .iter()
+        .map(|v| Ok(Bytes::from(format!("data: {v}\n\n"))))
+        .collect()
+}
+
+fn done_chunk() -> Result<Bytes, ProviderError> {
+    Ok(Bytes::from("data: [DONE]\n\n"))
+}
+
+/// A callback sink collecting every event in stream order.
+fn recorder() -> (OnEvent, Arc<Mutex<Vec<StreamEvent>>>) {
+    let events: Arc<Mutex<Vec<StreamEvent>>> = Arc::new(Mutex::new(Vec::new()));
+    let sink = events.clone();
+    (Arc::new(move |event| sink.lock().expect("event lock").push(event)), events)
+}
+
+#[tokio::test]
+async fn openai_streaming_text_usage_and_done() {
+    let frames = vec![
+        json!({ "choices": [ { "index": 0, "delta": { "role": "assistant", "content": "Hel" } } ] }),
+        json!({ "choices": [ { "index": 0, "delta": { "content": "lo" } } ] }),
+        json!({ "choices": [ { "index": 0, "delta": {}, "finish_reason": "stop" } ] }),
+        json!({ "choices": [ { "index": 0, "delta": {} } ], "usage": { "prompt_tokens": 7, "completion_tokens": 3 } }),
+    ];
+    let mut chunks = sse_chunks(&frames);
+    chunks.push(done_chunk());
+    let transport = ScriptedStream::new(chunks);
+    let client = Client::with_transport(openai_endpoint(), transport.clone());
+
+    let (on_event, events) = recorder();
+    let got = client.complete_streaming("gpt-5", &sample_request(), on_event).await.expect("streams");
+
+    assert_eq!(
+        *events.lock().expect("event lock"),
+        vec![
+            StreamEvent::Text { delta: "Hel".into() },
+            StreamEvent::Text { delta: "lo".into() },
+            StreamEvent::Finished,
+        ]
+    );
+    assert_eq!(
+        got,
+        parse_openai_response(&json!({
+            "choices": [ { "message": { "content": "Hello" }, "finish_reason": "stop" } ],
+            "usage": { "prompt_tokens": 7, "completion_tokens": 3 }
+        }))
+        .expect("parses"),
+        "stream result equals the non-streaming parse of the full body"
+    );
+
+    let captured = transport.captured();
+    assert_eq!(captured.url, "https://api.openai.com/v1/chat/completions");
+    assert_eq!(captured.body["stream"], true);
+    assert_eq!(captured.body["stream_options"], json!({ "include_usage": true }));
+    assert_eq!(captured.body["model"], "gpt-5");
+}
+
+#[tokio::test]
+async fn openai_streaming_tool_call_fragment_reassembly() {
+    // call_1's arguments arrive split across three frames.
+    let frames = vec![
+        json!({ "choices": [ { "index": 0, "delta": { "tool_calls": [
+            { "index": 0, "id": "call_1", "type": "function", "function": { "name": "bash", "arguments": "" } }
+        ] } } ] }),
+        json!({ "choices": [ { "index": 0, "delta": { "tool_calls": [
+            { "index": 0, "function": { "arguments": "{\"cmd\":" } }
+        ] } } ] }),
+        json!({ "choices": [ { "index": 0, "delta": { "tool_calls": [
+            { "index": 0, "function": { "arguments": "\"ls -la\"}" } }
+        ] } } ] }),
+        json!({ "choices": [ { "index": 0, "delta": { "tool_calls": [
+            { "index": 1, "id": "call_2", "type": "function", "function": { "name": "read", "arguments": "{\"path\":\"a\"}" } }
+        ] } } ] }),
+        json!({ "choices": [ { "index": 0, "delta": {}, "finish_reason": "tool_calls" } ] }),
+        json!({ "choices": [ { "index": 0, "delta": {} } ], "usage": { "prompt_tokens": 5, "completion_tokens": 9 } }),
+    ];
+    let mut chunks = sse_chunks(&frames);
+    chunks.push(done_chunk());
+    let transport = ScriptedStream::new(chunks);
+    let client = Client::with_transport(openai_endpoint(), transport.clone());
+
+    let (on_event, events) = recorder();
+    let got = client.complete_streaming("gpt-5", &sample_request(), on_event).await.expect("streams");
+
+    assert_eq!(
+        *events.lock().expect("event lock"),
+        vec![
+            StreamEvent::ToolCallStarted { index: 0, id: "call_1".into(), name: "bash".into() },
+            StreamEvent::ToolCallDelta { index: 0, arguments_delta: "{\"cmd\":".into() },
+            StreamEvent::ToolCallDelta { index: 0, arguments_delta: "\"ls -la\"}".into() },
+            StreamEvent::ToolCallStarted { index: 1, id: "call_2".into(), name: "read".into() },
+            StreamEvent::ToolCallDelta { index: 1, arguments_delta: "{\"path\":\"a\"}".into() },
+            StreamEvent::Finished,
+        ]
+    );
+    assert_eq!(
+        got,
+        parse_openai_response(&json!({
+            "choices": [ {
+                "message": {
+                    "content": null,
+                    "tool_calls": [
+                        { "id": "call_1", "type": "function", "function": { "name": "bash", "arguments": "{\"cmd\":\"ls -la\"}" } },
+                        { "id": "call_2", "type": "function", "function": { "name": "read", "arguments": "{\"path\":\"a\"}" } }
+                    ]
+                },
+                "finish_reason": "tool_calls"
+            } ],
+            "usage": { "prompt_tokens": 5, "completion_tokens": 9 }
+        }))
+        .expect("parses"),
+        "reassembled stream equals the non-streaming parse of the full body"
+    );
+    assert_eq!(got.tool_calls[0].arguments, "{\"cmd\":\"ls -la\"}", "fragments concatenated");
+}
+
+#[test]
+fn openai_stream_parser_reassembles_fragments_purely() {
+    let mut state = OpenAiStreamState::default();
+    let frames = [
+        json!({ "choices": [ { "index": 0, "delta": { "tool_calls": [
+            { "index": 0, "id": "call_1", "type": "function", "function": { "name": "bash" } }
+        ] } } ] }),
+        json!({ "choices": [ { "index": 0, "delta": { "tool_calls": [
+            { "index": 0, "function": { "arguments": "{\"cmd\":" } }
+        ] } } ] }),
+        json!({ "choices": [ { "index": 0, "delta": { "tool_calls": [
+            { "index": 0, "function": { "arguments": "\"ls\"" } }
+        ] } } ] }),
+        json!({ "choices": [ { "index": 0, "delta": { "tool_calls": [
+            { "index": 0, "function": { "arguments": "}" } }
+        ] } } ] }),
+    ];
+    for frame in &frames {
+        parse_openai_sse_frame(frame, &mut state).expect("frame parses");
+    }
+    let got = state.finish().expect("finishes");
+    assert_eq!(
+        got.tool_calls,
+        vec![call("call_1", "bash", "{\"cmd\":\"ls\"}")],
+        "arguments split over 4 frames reassemble"
+    );
+}
+
+#[test]
+fn openai_stream_unknown_frames_are_ignored() {
+    let mut state = OpenAiStreamState::default();
+    assert!(parse_openai_sse_frame(&json!({ "totally": "unknown" }), &mut state).expect("ok").is_empty());
+    assert!(parse_openai_sse_frame(&json!({ "choices": [] }), &mut state).expect("ok").is_empty());
+    assert!(
+        parse_openai_sse_frame(&json!({ "choices": [ { "index": 0, "delta": {} } ] }), &mut state)
+            .expect("ok")
+            .is_empty()
+    );
+    assert_eq!(
+        state.finish().expect("finishes"),
+        parse_openai_response(&json!({ "choices": [ { "message": { "content": null } } ] })).expect("parses"),
+        "empty stream behaves like an empty non-streaming body (finish Unknown)"
+    );
+}
+
+#[test]
+fn parse_sse_frame_decodes_sentinel_blank_and_json() {
+    assert_eq!(parse_sse_frame("[DONE]").expect("ok"), Some(SseFrame::Done));
+    assert_eq!(parse_sse_frame("   \n").expect("ok"), None, "blank frames are skipped");
+    assert!(parse_sse_frame("not json").is_err(), "non-JSON payload is malformed");
+    assert!(matches!(parse_sse_frame("{\"type\":\"ping\"}").expect("ok"), Some(SseFrame::Json(_))));
+}
+
+#[tokio::test]
+async fn anthropic_streaming_text_usage_merge_and_message_stop() {
+    let frames = vec![
+        json!({ "type": "message_start", "message": { "id": "msg_1", "usage": {
+            "input_tokens": 100, "cache_read_input_tokens": 60, "cache_creation_input_tokens": 5 } } }),
+        json!({ "type": "content_block_start", "index": 0, "content_block": { "type": "text", "text": "" } }),
+        json!({ "type": "content_block_delta", "index": 0, "delta": { "type": "text_delta", "text": "bon" } }),
+        json!({ "type": "content_block_delta", "index": 0, "delta": { "type": "text_delta", "text": "jour" } }),
+        json!({ "type": "content_block_stop", "index": 0 }),
+        json!({ "type": "message_delta", "delta": { "stop_reason": "end_turn" }, "usage": { "output_tokens": 40 } }),
+        json!({ "type": "message_stop" }),
+    ];
+    let transport = ScriptedStream::new(sse_chunks(&frames));
+    let client = Client::with_transport(anthropic_endpoint(), transport.clone());
+
+    let (on_event, events) = recorder();
+    let got = client.complete_streaming("claude-sonnet-4", &sample_request(), on_event).await.expect("streams");
+
+    assert_eq!(
+        *events.lock().expect("event lock"),
+        vec![
+            StreamEvent::Text { delta: "bon".into() },
+            StreamEvent::Text { delta: "jour".into() },
+            StreamEvent::Finished,
+        ]
+    );
+    assert_eq!(
+        got,
+        parse_anthropic_response(&json!({
+            "content": [ { "type": "text", "text": "bonjour" } ],
+            "stop_reason": "end_turn",
+            "usage": {
+                "input_tokens": 100, "output_tokens": 40,
+                "cache_read_input_tokens": 60, "cache_creation_input_tokens": 5
+            }
+        }))
+        .expect("parses"),
+        "usage merges message_start input with message_delta output"
+    );
+
+    let captured = transport.captured();
+    assert_eq!(captured.url, "https://api.anthropic.com/v1/messages");
+    assert_eq!(captured.body["stream"], true);
+    assert!(captured.body.get("stream_options").is_none(), "stream_options is OpenAI-only");
+}
+
+#[tokio::test]
+async fn anthropic_streaming_tool_call_reassembly() {
+    let frames = vec![
+        json!({ "type": "message_start", "message": { "usage": { "input_tokens": 10 } } }),
+        json!({ "type": "content_block_start", "index": 0, "content_block": {
+            "type": "tool_use", "id": "toolu_1", "name": "bash", "input": {} } }),
+        json!({ "type": "content_block_delta", "index": 0, "delta": { "type": "input_json_delta", "partial_json": "{\"cmd\":" } }),
+        json!({ "type": "content_block_delta", "index": 0, "delta": { "type": "input_json_delta", "partial_json": "\"ls\"," } }),
+        json!({ "type": "content_block_delta", "index": 0, "delta": { "type": "input_json_delta", "partial_json": "\"n\":2}" } }),
+        json!({ "type": "content_block_stop", "index": 0 }),
+        json!({ "type": "message_delta", "delta": { "stop_reason": "tool_use" }, "usage": { "output_tokens": 20 } }),
+        json!({ "type": "message_stop" }),
+    ];
+    let transport = ScriptedStream::new(sse_chunks(&frames));
+    let client = Client::with_transport(anthropic_endpoint(), transport.clone());
+
+    let (on_event, events) = recorder();
+    let got = client.complete_streaming("claude-sonnet-4", &sample_request(), on_event).await.expect("streams");
+
+    assert_eq!(
+        *events.lock().expect("event lock"),
+        vec![
+            StreamEvent::ToolCallStarted { index: 0, id: "toolu_1".into(), name: "bash".into() },
+            StreamEvent::ToolCallDelta { index: 0, arguments_delta: "{\"cmd\":".into() },
+            StreamEvent::ToolCallDelta { index: 0, arguments_delta: "\"ls\",".into() },
+            StreamEvent::ToolCallDelta { index: 0, arguments_delta: "\"n\":2}".into() },
+            StreamEvent::Finished,
+        ]
+    );
+    assert_eq!(
+        got,
+        parse_anthropic_response(&json!({
+            "content": [ { "type": "tool_use", "id": "toolu_1", "name": "bash", "input": { "cmd": "ls", "n": 2 } } ],
+            "stop_reason": "tool_use",
+            "usage": { "input_tokens": 10, "output_tokens": 20 }
+        }))
+        .expect("parses"),
+        "reassembled partial_json equals the non-streaming input encoding"
+    );
+}
+
+#[tokio::test]
+async fn anthropic_streaming_thinking_then_text() {
+    let frames = vec![
+        json!({ "type": "message_start", "message": { "usage": { "input_tokens": 10 } } }),
+        json!({ "type": "content_block_start", "index": 0, "content_block": { "type": "thinking", "thinking": "" } }),
+        json!({ "type": "content_block_delta", "index": 0, "delta": { "type": "thinking_delta", "thinking": "think" } }),
+        json!({ "type": "content_block_delta", "index": 0, "delta": { "type": "thinking_delta", "thinking": "ing" } }),
+        json!({ "type": "content_block_stop", "index": 0 }),
+        json!({ "type": "content_block_start", "index": 1, "content_block": { "type": "text", "text": "" } }),
+        json!({ "type": "content_block_delta", "index": 1, "delta": { "type": "text_delta", "text": "answer" } }),
+        json!({ "type": "content_block_stop", "index": 1 }),
+        json!({ "type": "message_delta", "delta": { "stop_reason": "stop_sequence" } }),
+        json!({ "type": "message_stop" }),
+    ];
+    let transport = ScriptedStream::new(sse_chunks(&frames));
+    let client = Client::with_transport(anthropic_endpoint(), transport.clone());
+
+    let (on_event, events) = recorder();
+    let got = client.complete_streaming("claude-sonnet-4", &sample_request(), on_event).await.expect("streams");
+
+    assert_eq!(
+        *events.lock().expect("event lock"),
+        vec![
+            StreamEvent::Reasoning { delta: "think".into() },
+            StreamEvent::Reasoning { delta: "ing".into() },
+            StreamEvent::Text { delta: "answer".into() },
+            StreamEvent::Finished,
+        ]
+    );
+    assert_eq!(
+        got,
+        parse_anthropic_response(&json!({
+            "content": [
+                { "type": "thinking", "thinking": "thinking" },
+                { "type": "text", "text": "answer" }
+            ],
+            "stop_reason": "stop_sequence",
+            "usage": { "input_tokens": 10 }
+        }))
+        .expect("parses")
+    );
+}
+
+#[test]
+fn anthropic_stream_unknown_events_ignored_error_fails() {
+    let mut state = AnthropicStreamState::default();
+    assert!(parse_anthropic_sse_frame(&json!({ "type": "ping" }), &mut state).expect("ok").is_empty());
+    assert!(
+        parse_anthropic_sse_frame(&json!({ "type": "content_block_stop", "index": 0 }), &mut state)
+            .expect("ok")
+            .is_empty()
+    );
+    assert!(
+        parse_anthropic_sse_frame(&json!({ "type": "sigil_delta", "index": 0 }), &mut state)
+            .expect("ok")
+            .is_empty(),
+        "unknown event types are ignored"
+    );
+    let err = parse_anthropic_sse_frame(
+        &json!({ "type": "error", "error": { "message": "overloaded" } }),
+        &mut state,
+    )
+    .expect_err("error events fail the stream");
+    assert!(matches!(err, ProviderError::Malformed(ref m) if m == "overloaded"), "got {err:?}");
+}
+
+#[tokio::test]
+async fn anthropic_stream_frames_split_across_byte_chunks() {
+    // The whole SSE payload split at arbitrary byte boundaries still frames
+    // correctly (a frame may straddle chunks, including the `\n\n`).
+    let frames = vec![
+        json!({ "type": "message_start", "message": { "usage": { "input_tokens": 3 } } }),
+        json!({ "type": "content_block_start", "index": 0, "content_block": { "type": "text", "text": "" } }),
+        json!({ "type": "content_block_delta", "index": 0, "delta": { "type": "text_delta", "text": "hi" } }),
+        json!({ "type": "message_delta", "delta": { "stop_reason": "end_turn" }, "usage": { "output_tokens": 4 } }),
+        json!({ "type": "message_stop" }),
+    ];
+    let payload: String = frames.iter().map(|f| format!("data: {f}\n\n")).collect();
+    let chunks: Vec<Result<Bytes, ProviderError>> = payload
+        .as_bytes()
+        .chunks(7)
+        .map(|slice| Ok(Bytes::copy_from_slice(slice)))
+        .collect();
+    let transport = ScriptedStream::new(chunks);
+    let client = Client::with_transport(anthropic_endpoint(), transport);
+
+    let (on_event, events) = recorder();
+    let got = client.complete_streaming("claude-sonnet-4", &sample_request(), on_event).await.expect("streams");
+    assert_eq!(
+        *events.lock().expect("event lock"),
+        vec![
+            StreamEvent::Text { delta: "hi".into() },
+            StreamEvent::Finished,
+        ]
+    );
+    assert_eq!(got.text.as_deref(), Some("hi"));
+    assert_eq!(got.finish, FinishReason::Stop);
+    assert_eq!(got.usage, Some(LlmUsage { input: 3.0, output: 4.0, ..Default::default() }));
+}
+
+#[tokio::test]
+async fn streaming_falls_back_to_complete_without_post_stream() {
+    // MockTransport only implements post_json: the default post_stream
+    // reports "streaming not supported" and complete_streaming falls back.
+    let transport = MockTransport::ok(json!({
+        "choices": [ { "message": { "content": "plain" }, "finish_reason": "stop" } ]
+    }));
+    let client = Client::with_transport(openai_endpoint(), transport.clone());
+
+    let (on_event, events) = recorder();
+    let got = client.complete_streaming("gpt-5", &sample_request(), on_event).await.expect("falls back");
+
+    let captured = transport.captured();
+    assert!(captured.body.get("stream").is_none(), "the fallback body must not stream");
+    assert_eq!(got.text.as_deref(), Some("plain"));
+    assert_eq!(got.finish, FinishReason::Stop);
+    assert!(events.lock().expect("event lock").is_empty(), "no events are emitted on the fallback path");
+}

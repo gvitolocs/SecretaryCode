@@ -9,6 +9,7 @@ members = [
     "crates/oc-agent",
     "crates/oc-server",
     "crates/oc-cli",
+    "crates/oc-mcp",
 ]
 
 [workspace.package]
@@ -23,6 +24,7 @@ oc-store = { path = "crates/oc-store" }
 oc-tools = { path = "crates/oc-tools" }
 oc-provider = { path = "crates/oc-provider" }
 oc-agent = { path = "crates/oc-agent" }
+oc-mcp = { path = "crates/oc-mcp" }
 tokio = { version = "1", features = ["full"] }
 axum = "0.8"
 serde = { version = "1", features = ["derive"] }
