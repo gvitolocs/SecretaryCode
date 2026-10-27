@@ -133,7 +133,7 @@
 }
 
 /* Short windows: the same rail with tighter wells and spacing, as in the mock. */
-@media (max-height: 800px) {
+@media (max-height: 940px) {
   [data-slot="shell-rail"] {
     gap: 1px;
     padding: 10px 5px;
@@ -194,7 +194,7 @@
   border-color: var(--rail-ring);
 }
 
-@media (max-height: 800px) {
+@media (max-height: 940px) {
   [data-slot="rail-owner"] {
     width: 32px;
     height: 32px;

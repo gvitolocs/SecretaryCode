@@ -1,4 +1,5 @@
 import { session, shell, WebContentsView } from "electron"
+import { join } from "node:path"
 import { nativeT } from "../native/translations"
 import { LUCINA_PARTITION } from "./lucina-web-policy"
 import { applyWebLanguage, ensureWebSession } from "./web-session"
@@ -26,6 +27,8 @@ export function computerView() {
       contextIsolation: true,
       sandbox: true,
       nodeIntegration: false,
+      // window.secretaryShell, so her page knows the shell frames it: no rail, stage dock or back link of its own.
+      preload: join(import.meta.dirname, "../preload/lucina.cjs"),
     },
   })
   view = created
@@ -55,6 +58,11 @@ export function computerView() {
     .then(() => created.webContents.loadURL(page))
     .catch(() => {})
   return created
+}
+
+/** The Computer view's webContents while it exists. Never creates the view. */
+export function computerWebContents() {
+  return view && !view.webContents.isDestroyed() ? view.webContents : undefined
 }
 
 /** Reloads the Computer tab if it exists, e.g. after the device signs in or out; never creates it. */

@@ -4,7 +4,7 @@ import { forgetDevice, lucinaView, lucinaWebContents, openLucinaPath } from "./i
 import { isLucinaUrl } from "./lucina-web-policy"
 import { isNavigatePath, parseShellCommand } from "./shell-command"
 import { codingLanesView } from "./lane-window"
-import { computerView } from "./computer-view"
+import { computerView, computerWebContents } from "./computer-view"
 
 export type CompanionPanel = "lucina" | "agents" | "computer"
 
@@ -43,8 +43,8 @@ export function setupCompanionPanels() {
     if (isNavigatePath(path)) openLucinaPath(path)
   })
 
-  // window.secretaryShell in Lucina's web view. Only her own top frame is heard; the window hosting the companion
-  // (or else the focused one) gets the validated command.
+  // window.secretaryShell in her web views (Lucina, Computer). Only their own top frames are heard; the window hosting
+  // the companion (or else the focused one) gets the validated command.
   ipcMain.on("secretary:shell", (event, message: unknown) => {
     if (!fromLucina(event)) return
     const command = parseShellCommand(message)
@@ -62,12 +62,12 @@ export function setupCompanionPanels() {
   })
 }
 
-/** Whether an IPC message comes from Lucina's own view, in its top frame, on her origin. */
+/** Whether an IPC message comes from one of her views (Lucina or Computer), in its top frame, on her origin. */
 function fromLucina(event: { sender: unknown; senderFrame?: { url: string; parent: unknown } | null }) {
-  const lucina = lucinaWebContents()
+  const views = [lucinaWebContents(), computerWebContents()].filter((contents) => !!contents)
   const frame = event.senderFrame
 
-  return !!lucina && event.sender === lucina && !!frame && !frame.parent && isLucinaUrl(frame.url)
+  return views.includes(event.sender as never) && !!frame && !frame.parent && isLucinaUrl(frame.url)
 }
 
 function place(window: BrowserWindow, panel: CompanionPanel | undefined, rect: Rect | undefined, zoom: number) {

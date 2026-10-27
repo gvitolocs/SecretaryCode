@@ -42,7 +42,11 @@ mock.module("../src/main/secretary/index", () => ({
   },
 }))
 mock.module("../src/main/secretary/lane-window", () => ({ codingLanesView: () => ({}) }))
-mock.module("../src/main/secretary/computer-view", () => ({ computerView: () => ({}) }))
+const computer = new Contents()
+mock.module("../src/main/secretary/computer-view", () => ({
+  computerView: () => ({}),
+  computerWebContents: () => computer,
+}))
 const { setupCompanionPanels } = await import("../src/main/secretary/panel")
 setupCompanionPanels()
 
@@ -77,7 +81,8 @@ assert.deepEqual(sent, [
 sent.length = 0
 
 const rejected = [
-  { sender: new Contents(), senderFrame: fromLucina.senderFrame }, // another view (Computer, image viewer)
+  { sender: new Contents(), senderFrame: fromLucina.senderFrame }, // another view (the image viewer)
+  { sender: computer, senderFrame: { url: "https://getsecretary.tech/computer", parent: {} } }, // the viewer frame
   { sender: renderer.sender, senderFrame: renderer.senderFrame }, // the app renderer itself
   { sender: lucina, senderFrame: { url: "https://getsecretary.tech/", parent: {} } }, // a subframe
   { sender: lucina, senderFrame: { url: "https://evil.test/", parent: null } },
@@ -97,6 +102,14 @@ assert.deepEqual(sent, [])
 await handlers.get("secretary:sign-out")!(fromLucina)
 assert.equal(signedOut, 1)
 assert.deepEqual(sent, [])
+
+// The Computer view's own top frame is heard too: its page has the shell preload.
+ipc.emit("secretary:shell", { sender: computer, senderFrame: { url: "https://getsecretary.tech/computer", parent: null } }, {
+  action: "show",
+  view: "lucina",
+})
+assert.deepEqual(sent, [["host:secretary:shell-command", { action: "show", view: "lucina" }]])
+sent.length = 0
 
 // A view that does not exist hears nothing.
 lucinaExists = false

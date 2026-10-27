@@ -1,7 +1,18 @@
 // What Lucina's web app may ask of the desktop shell, and where the shell may send her web view. Kept free of Electron
 // so the main process, the web view's sandboxed preload and the tests all validate with the same rules.
 
-export const SHELL_VIEWS = ["lucina", "code", "computer", "gallery", "films", "chats", "secrets", "health"] as const
+export const SHELL_VIEWS = [
+  "lucina",
+  "code",
+  "computer",
+  "shopping",
+  "training",
+  "gallery",
+  "films",
+  "chats",
+  "secrets",
+  "health",
+] as const
 
 export type ShellView = (typeof SHELL_VIEWS)[number]
 
