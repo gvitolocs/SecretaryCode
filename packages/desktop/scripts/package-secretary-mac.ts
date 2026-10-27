@@ -17,7 +17,8 @@ const identity =
   process.env.SECRETARY_SIGN_IDENTITY ??
   (await $`security find-identity -v -p codesigning`.text())
     .split("\n")
-    .find((line) => line.includes("Apple Development"))
+    // This Mac has two development certificates; macOS ties privacy grants to the team, so always use the same one.
+    .find((line) => line.includes("Apple Development: Giuseppe Vitolo"))
     ?.trim()
     .split(/\s+/)[1]
 
