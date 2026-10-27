@@ -8,9 +8,18 @@ export type Data = ServerReadyData & { password: string | null }
 // here so GET requests stay CORS-simple and skip the preflight round trip. Both the initial connection
 // and every reconnect publish the current endpoint.
 let current: Data | undefined
+const listeners = new Set<(data: Data) => void>()
 
 export function set(data: Data) {
   current = data
+  listeners.forEach((listener) => listener(data))
+}
+
+/** Called with every endpoint published from now on: the engine is ready, or reconnected elsewhere. */
+export function subscribe(listener: (data: Data) => void) {
+  listeners.add(listener)
+
+  return () => void listeners.delete(listener)
 }
 
 export function get() {

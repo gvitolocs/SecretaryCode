@@ -95,5 +95,7 @@ export const api: ElectronAPI = {
   recordFatalRendererError: (error) => invoke("AppRecordFatalRendererError", { error }),
   getDiagnosticsSettings: () => invoke("AppGetDiagnosticsSettings"),
   setDiagnosticsSettings: (automatic) => invoke("AppSetDiagnosticsSettings", { automatic }),
+  getAgentsMirrorSettings: () => invoke("AppGetAgentsMirrorSettings"),
+  setAgentsMirrorSettings: (enabled) => invoke("AppSetAgentsMirrorSettings", { enabled }),
   setNativeTranslations: (bundle) => invoke("AppSetNativeTranslations", { value: bundle }),
 }

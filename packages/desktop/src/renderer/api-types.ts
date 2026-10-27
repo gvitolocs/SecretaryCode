@@ -3,6 +3,7 @@ import type { DesktopNativeBundle } from "@opencode/app/i18n/desktop-native"
 import type { RustEngineLatency, RustEngineStatus } from "../shared/ipc-rpc/engine-rs"
 import type { WindowBootstrap } from "../shared/window-bootstrap"
 import type {
+  AgentsMirrorSettings,
   ClipboardImage,
   DiagnosticReportReceipt,
   DiagnosticsSettings,
@@ -75,5 +76,7 @@ export type ElectronAPI = {
   recordFatalRendererError(error: FatalRendererError): Promise<DiagnosticReportReceipt | null>
   getDiagnosticsSettings(): Promise<DiagnosticsSettings>
   setDiagnosticsSettings(automatic: boolean): Promise<DiagnosticsSettings>
+  getAgentsMirrorSettings(): Promise<AgentsMirrorSettings>
+  setAgentsMirrorSettings(enabled: boolean): Promise<AgentsMirrorSettings>
   setNativeTranslations(bundle: DesktopNativeBundle): Promise<void>
 }

@@ -74,6 +74,15 @@ export const AppSetDiagnosticsSettings = Rpc.make("AppSetDiagnosticsSettings", {
   success: Schema.Struct({ automatic: Schema.Boolean }),
 })
 
+export const AppGetAgentsMirrorSettings = Rpc.make("AppGetAgentsMirrorSettings", {
+  success: Schema.Struct({ enabled: Schema.Boolean }),
+})
+
+export const AppSetAgentsMirrorSettings = Rpc.make("AppSetAgentsMirrorSettings", {
+  payload: { enabled: Schema.Boolean },
+  success: Schema.Struct({ enabled: Schema.Boolean }),
+})
+
 export const AppSetNativeTranslations = Rpc.make("AppSetNativeTranslations", {
   payload: { value: Schema.Unknown },
 })
@@ -94,6 +103,8 @@ export const AppRpcs = RpcGroup.make(
   AppRecordFatalRendererError,
   AppGetDiagnosticsSettings,
   AppSetDiagnosticsSettings,
+  AppGetAgentsMirrorSettings,
+  AppSetAgentsMirrorSettings,
   AppSetNativeTranslations,
   AppRelaunch,
 )

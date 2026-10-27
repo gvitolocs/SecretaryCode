@@ -65,6 +65,31 @@ const CrashReportingSetting: Component = () => {
   )
 }
 
+/** Desktop only: whether coding sessions appear in Lucina, where the owner's phone can follow and steer them. */
+const AgentsMirrorSetting: Component = () => {
+  const language = useLanguage()
+  const platform = usePlatform()
+  const [settings, actions] = createResource(() => platform.agentsMirrorSettings?.())
+
+  const change = (checked: boolean) => {
+    const update = platform.setAgentsMirrorEnabled?.(checked)
+
+    if (!update) return
+    void update.then(actions.mutate).catch(() => actions.mutate(undefined))
+  }
+
+  return (
+    <SettingsRow
+      title={language.t("settings.general.row.agentsMirror.title")}
+      description={language.t("settings.general.row.agentsMirror.description")}
+    >
+      <div data-action="settings-agents-mirror">
+        <Switch checked={settings.latest?.enabled ?? false} onChange={change} />
+      </div>
+    </SettingsRow>
+  )
+}
+
 const WorkspaceDestinationSetting: Component = () => {
   const language = useLanguage()
   const settings = useSettings()
@@ -291,6 +316,7 @@ export const SettingsGeneral: Component = () => {
 
         <Show when={desktop()}>
           <CrashReportingSetting />
+          <AgentsMirrorSetting />
           <SettingsRow
             title={language.t("settings.general.row.pinchZoom.title")}
             description={language.t("settings.general.row.pinchZoom.description")}

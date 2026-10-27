@@ -897,6 +897,8 @@ export const dict = {
   "settings.general.row.pinchZoom.description": "Allow trackpad pinch and Ctrl-scroll gestures to zoom",
   "settings.general.row.crashReports.title": "Send crash reports to Lucina",
   "settings.general.row.crashReports.description": "When Secretary Code crashes or cannot start, Lucina gets the logs so she can explain what broke. Turn this off to keep them on this Mac.",
+  "settings.general.row.agentsMirror.title": "Mirror coding sessions to Lucina",
+  "settings.general.row.agentsMirror.description": "Your coding sessions appear in Lucina, where your phone can follow, steer and stop them and answer their permission prompts. File contents and full tool output stay on this Mac.",
 
   "sound.option.none": "None",
   "sound.option.alert01": "Alert 01",
