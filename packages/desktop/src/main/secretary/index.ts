@@ -80,15 +80,7 @@ async function perform(action: string, input: unknown): Promise<unknown> {
     })
     return { authenticated: true }
   }
-  if (action === "signOut") {
-    state.token = undefined
-    await unlink(credentialFile()).catch(() => undefined)
-    // Signing the device out signs the embedded Lucina pages out too.
-    await endWebSession()
-    reloadComputerView()
-    if (state.view && !state.view.webContents.isDestroyed()) state.view.webContents.reload()
-    return { authenticated: false }
-  }
+  if (action === "signOut") return signOutDevice()
   if (!state.token) throw new Error("signInRequired")
   if (action === "chat") {
     const data = object(input)
@@ -113,6 +105,19 @@ async function perform(action: string, input: unknown): Promise<unknown> {
     return json("/v1/avatar", "PUT", data)
   }
   throw new Error("invalidRequest")
+}
+
+/**
+ * Forgets this Mac's Secretary device token. Signing the device out signs the embedded Lucina pages out too; her web
+ * app's own sign-out calls this through window.secretaryShell, or the stored token would sign her straight back in.
+ */
+export async function signOutDevice() {
+  state.token = undefined
+  await unlink(credentialFile()).catch(() => undefined)
+  await endWebSession()
+  reloadComputerView()
+  if (state.view && !state.view.webContents.isDestroyed()) state.view.webContents.reload()
+  return { authenticated: false }
 }
 
 /** The signed-in Secretary device token, shared with the meeting recorder's uploads. */
@@ -171,15 +176,20 @@ export function setupSecretary() {
 }
 
 /** The Lucina panel's view: Lucina's web app (chat, All chats, gallery, films, plugins), created on first use and kept
- * warm while the companion panel is hidden. The signed-in device token signs its requests to Lucina. */
+ * warm while the companion panel is hidden. */
 export function lucinaView() {
   if (!state.registered) throw new Error("Call setupSecretary before app.ready")
   if (state.view && !state.view.webContents.isDestroyed()) return state.view
   // The stored token is read at startup; then the partition gets its cookie session before the first load.
   // A path asked for before the view existed (see openLucinaPath) is where it starts.
-  const view = lucinaWebView("/", () => state.token, state.ready?.then(() => ensureWebSession()), {
-    preload: join(import.meta.dirname, "../preload/lucina.cjs"),
-  })
+  const view = lucinaWebView(
+    "/",
+    async () => {
+      await state.ready
+      await ensureWebSession()
+    },
+    { preload: join(import.meta.dirname, "../preload/lucina.cjs") },
+  )
   if (state.path) void navigateLucinaView(view.webContents, state.path)
   state.path = undefined
   state.view = view

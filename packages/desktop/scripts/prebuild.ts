@@ -19,6 +19,9 @@ await $`bun ./scripts/build-recorder.ts`
 if (Bun.env.SECRETARY_SKIP_ENGINE_RS === "1") console.log("Skipping engine-rs (SECRETARY_SKIP_ENGINE_RS=1)")
 else await $`bun ./scripts/build-engine-rs.ts`
 
+// Lucina's web app ships inside the app (resources/lucina-web); SECRETARY_SKIP_LUCINA_WEB=1 loads it live instead.
+await $`bun ./scripts/bundle-lucina-web.ts`
+
 if (channel === "dev") await downloadCliToResources()
 
 if ((channel === "beta" || channel === "prod") && Bun.env.OPENCODE_CLI_DIST) {

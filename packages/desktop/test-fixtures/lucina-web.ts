@@ -1,19 +1,34 @@
 import assert from "node:assert/strict"
 import { EventEmitter } from "node:events"
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import path from "node:path"
 import { mock } from "bun:test"
 
-type HeadersListener = (
-  details: { url: string; requestHeaders: Record<string, string> },
-  callback: (response: { requestHeaders: Record<string, string> }) => void,
-) => void
+// A development app path whose resources/lucina-web holds a tiny build, with the server's page CSP recorded.
+const appPath = await mkdtemp(path.join(tmpdir(), "lucina-web-app-"))
+const dist = path.join(appPath, "resources", "lucina-web")
+await mkdir(path.join(dist, "assets"), { recursive: true })
+await mkdir(path.join(dist, "privacy"), { recursive: true })
+await writeFile(path.join(dist, "index.html"), "<!doctype html><title>Lucina</title>")
+await writeFile(path.join(dist, "assets", "index-1.js"), "console.log(1)")
+await writeFile(path.join(dist, "privacy", "index.html"), "privacy")
+await writeFile(path.join(dist, "headers.json"), JSON.stringify({ contentSecurityPolicy: "default-src 'none'" }))
+
+type Handler = (request: Request) => Promise<Response>
+const passed: Array<{ url: string; options: unknown }> = []
 const partition = {
-  filter: undefined as { urls: string[] } | undefined,
-  listener: undefined as HeadersListener | undefined,
-  webRequest: {
-    onBeforeSendHeaders(filter: { urls: string[] }, listener: HeadersListener) {
-      partition.filter = filter
-      partition.listener = listener
+  handler: undefined as Handler | undefined,
+  protocol: {
+    isProtocolHandled: () => partition.handler !== undefined,
+    handle(scheme: string, handler: Handler) {
+      assert.equal(scheme, "https")
+      partition.handler = handler
     },
+  },
+  fetch: async (request: Request, options: unknown) => {
+    passed.push({ url: request.url, options })
+    return new Response("server")
   },
 }
 class Contents extends EventEmitter {
@@ -60,7 +75,7 @@ const fromPartition = mock((_name: string) => partition)
 mock.module("electron", () => ({
   WebContentsView: View,
   // A Danish Mac, with Secretary Code on Automatic (so its language is Danish too, below).
-  app: { getPreferredSystemLanguages: () => ["da-DK", "en-DK", "it-DK"] },
+  app: { isPackaged: false, getAppPath: () => appPath, getPreferredSystemLanguages: () => ["da-DK", "en-DK", "it-DK"] },
   net: {},
   session: { fromPartition },
   shell: { openExternal: external },
@@ -68,18 +83,14 @@ mock.module("electron", () => ({
 mock.module("../src/main/native/translations", () => ({ nativeT: (key: string) => key, nativeLocale: () => "da" }))
 const { lucinaWebView, navigateLucinaView } = await import("../src/main/secretary/lucina-web")
 
-let token: string | undefined
 let release!: () => void
-const ready = new Promise<void>((resolve) => (release = resolve))
-const view = lucinaWebView("/", () => token, ready) as unknown as View
+const signedIn = new Promise<void>((resolve) => (release = resolve))
+const view = lucinaWebView("/", () => signedIn) as unknown as View
 assert.equal(fromPartition.mock.calls[0]?.[0], "persist:lucina-web")
-assert.deepEqual(partition.filter, { urls: ["https://getsecretary.tech/*"] })
-// Nothing loads before the stored token was read.
+// Nothing loads before the web sign-in settled.
 await Promise.resolve()
 assert.deepEqual(view.webContents.urls, [])
-token = "sec_mac"
 release()
-await ready
 await new Promise((resolve) => setTimeout(resolve, 0))
 assert.deepEqual(view.webContents.urls, ["https://getsecretary.tech/"])
 // Automatic follows the Mac, so the page stays English from its first request instead of turning Danish.
@@ -87,13 +98,38 @@ assert.deepEqual(view.webContents.commands, [
   ["Emulation.setUserAgentOverride", { userAgent: "Secretary-Test", acceptLanguage: "en-US,en" }],
 ])
 
-// The token is read per request, so a later sign-in applies without a reload.
-let headers: Record<string, string> | undefined
-partition.listener!({ url: "https://getsecretary.tech/v1/timeline?scope=mine", requestHeaders: {} }, (r) => (headers = r.requestHeaders))
-assert.deepEqual(headers, { Authorization: "Bearer sec_mac" })
+// The bundle answers the app's pages and files as getsecretary.tech; the API and unknown files reach the server.
+const serve = (url: string, init?: RequestInit) => partition.handler!(new Request(url, init))
+const route = await serve("https://getsecretary.tech/chats/device%3Aabc")
+assert.equal(await route.text(), "<!doctype html><title>Lucina</title>")
+assert.equal(route.headers.get("content-type"), "text/html; charset=utf-8")
+const asset = await serve("https://getsecretary.tech/assets/index-1.js")
+assert.equal(await asset.text(), "console.log(1)")
+assert.match(asset.headers.get("cache-control") ?? "", /immutable/)
+assert.equal(await (await serve("https://getsecretary.tech/privacy/")).text(), "privacy")
+for (const url of [
+  "https://getsecretary.tech/v1/timeline?scope=mine",
+  "https://getsecretary.tech/assets/missing-2.js",
+  "https://getsecretary.tech/assets/%2e%2e/%2e%2e/secret.txt",
+  "https://maps.example.com/tile.png",
+]) {
+  assert.equal(await (await serve(url)).text(), "server", url)
+}
+assert.equal(await (await serve("https://getsecretary.tech/v1/chat", { method: "POST", body: "{}" })).text(), "server")
+assert.equal(passed.length, 5)
+// Lucina's API sends and stores the partition's cookies; another host keeps its own credentials mode.
+assert.deepEqual(passed[0]?.options, { bypassCustomProtocolHandlers: true, credentials: "include" })
+assert.deepEqual(passed[3]?.options, { bypassCustomProtocolHandlers: true })
 
-// A second view shares the configured partition instead of adding another listener.
-lucinaWebView("/chats", () => token)
+// Bundled pages carry the server's CSP; the image viewer's adds the local file transport.
+assert.equal(route.headers.get("content-security-policy"), "default-src 'none'")
+assert.equal(route.headers.get("referrer-policy"), "no-referrer")
+const viewer = await serve("https://getsecretary.tech/viewer")
+assert.equal(viewer.headers.get("content-security-policy"), "default-src 'none'; img-src 'none' secretary-file:; connect-src 'none' secretary-file:")
+assert.equal(asset.headers.get("content-security-policy"), null)
+
+// A second view shares the configured partition instead of registering the handler again.
+lucinaWebView("/chats")
 assert.equal(fromPartition.mock.calls.length, 1)
 
 // Top-level navigation stays on Lucina; anything else opens in the browser (https only).
@@ -110,7 +146,7 @@ assert.equal(external.mock.calls.length, 1)
 // Routing: a view that has not started loading just starts at the new path, with the shell preload attached.
 let gate!: () => void
 const pending = new Promise<void>((resolve) => (gate = resolve))
-const routed = lucinaWebView("/", () => token, pending, { preload: "/app/out/preload/lucina.cjs" }) as unknown as View
+const routed = lucinaWebView("/", () => pending, { preload: "/app/out/preload/lucina.cjs" }) as unknown as View
 assert.deepEqual(routed.options, {
   webPreferences: {
     session: partition,
