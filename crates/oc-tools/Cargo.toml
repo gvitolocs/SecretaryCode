@@ -1,0 +1,20 @@
+[package]
+name = "oc-tools"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "OpenCode v2 port — the built-in tool registry (bash/read/write/edit/glob/grep/todowrite/webfetch)"
+
+[dependencies]
+oc-schema = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+walkdir = "2"
+regex = { workspace = true }
+async-trait = { workspace = true }
+reqwest = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

@@ -1,0 +1,22 @@
+[package]
+name = "oc-agent"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "OpenCode v2 port — the session runner: step loop, tool settlement, transcript mapping"
+
+[dependencies]
+oc-schema = { workspace = true }
+oc-bus = { workspace = true }
+oc-store = { workspace = true }
+oc-tools = { workspace = true }
+oc-provider = { workspace = true }
+oc-permission = { workspace = true }
+tokio = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+async-trait = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

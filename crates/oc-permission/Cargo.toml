@@ -1,0 +1,11 @@
+[package]
+name = "oc-permission"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "OpenCode v2 port — permission ruleset (allow/deny/ask, wildcard resources)"
+
+[dependencies]
+serde_json = { workspace = true }
+serde = { workspace = true }
+regex = { workspace = true }
