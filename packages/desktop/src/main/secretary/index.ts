@@ -9,6 +9,7 @@ import stagePage from "../../renderer/secretary/stage.html?raw"
 import stageHost from "../../renderer/secretary/stage-host.mjs?raw"
 import stageBundle from "../../renderer/secretary/lucina-stage.standalone.js?raw"
 import copy from "../../renderer/secretary/en.json"
+import { lucinaWebView } from "./lucina-web"
 
 const scheme = "secretary-companion"
 const origins = ["https://getsecretary.tech", "https://secretary-p1.tail75dcfc.ts.net"]
@@ -156,19 +157,13 @@ export function setupSecretary() {
   })
 }
 
-/** The Lucina panel's view, created on first use and kept warm while the companion panel is hidden. */
+/** The Lucina panel's view: Lucina's web app (chat, All chats, gallery, films, plugins), created on first use and kept
+ * warm while the companion panel is hidden. The signed-in device token signs its requests to Lucina. */
 export function lucinaView() {
   if (!state.registered) throw new Error("Call setupSecretary before app.ready")
   if (state.view && !state.view.webContents.isDestroyed()) return state.view
-  const view = new WebContentsView({
-    webPreferences: { preload: join(import.meta.dirname, "../preload/index.cjs"), additionalArguments: ["--opencode-window=" + encodeURIComponent(JSON.stringify({ id: "secretary-companion", packaged: app.isPackaged }))], contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true },
-  })
+  const view = lucinaWebView("/", () => state.token, state.ready)
   state.view = view
-  // Transparent until the page paints, so the panel shows the workspace's own surface instead of a black flash.
-  view.setBackgroundColor("#00000000")
-  view.webContents.setWindowOpenHandler(() => ({ action: "deny" }))
-  view.webContents.on("will-navigate", (event, url) => { if (url !== `${scheme}://app/index.html`) event.preventDefault() })
   view.webContents.once("destroyed", () => { if (state.view === view) state.view = undefined })
-  void state.ready?.then(() => view.webContents.loadURL(`${scheme}://app/index.html`))
   return view
 }

@@ -266,6 +266,7 @@ export const DESKTOP_NATIVE_ENGLISH = {
   "desktop.menu.computer": "Computer",
   "desktop.computer.loadFailed": "Unable to load Computer.",
   "desktop.computer.retry": "Try again",
+  "desktop.lucina.loadFailed": "Unable to load Lucina.",
   "desktop.menu.toggleTerminal": "Toggle Terminal",
   "desktop.menu.toggleFileTree": "Toggle File Tree",
   "desktop.menu.reload": "Reload",
