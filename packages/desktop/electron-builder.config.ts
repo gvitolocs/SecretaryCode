@@ -137,6 +137,8 @@ const getBase = (appId: string): Configuration => {
       "!**/node_modules/js-yaml/bin{,/**/*}",
     ],
     extraResources: [
+      // Lucina's bundled web app, served from disk by lucina-web.ts as getsecretary.tech.
+      { from: "resources/lucina-web", to: "lucina-web" },
       {
         from: "resources/",
         to: "",
