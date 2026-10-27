@@ -21,7 +21,7 @@ use std::sync::{Mutex, MutexGuard};
 
 use rusqlite::Connection;
 
-use super::{message_base, Backend, Message, SessionInfo, Store, StoreError};
+use super::{message_key, Backend, Message, SessionInfo, Store, StoreError};
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, json TEXT NOT NULL);
@@ -115,7 +115,7 @@ pub(super) fn append_message_row(
     session_id: &str,
     msg: &Message,
 ) -> Result<(), StoreError> {
-    let id = message_base(msg).id.clone();
+    let id = message_key(msg);
     conn.execute(
         "INSERT INTO messages (session_id, id, seq, json)
          VALUES (?1, ?2, (SELECT COALESCE(MAX(seq), 0) + 1 FROM messages WHERE session_id = ?1), ?3)",
@@ -131,7 +131,7 @@ pub(super) fn replace_message_row(
     session_id: &str,
     msg: &Message,
 ) -> Result<(), StoreError> {
-    let id = message_base(msg).id.clone();
+    let id = message_key(msg);
     let updated = conn
         .execute(
             "UPDATE messages SET json = ?3 WHERE session_id = ?1 AND id = ?2",
@@ -201,12 +201,18 @@ mod tests {
             syn.text = "edited".into();
         }
         store.replace_message(&s.id, edited).unwrap();
+        let assistant = store.append_message(&s.id, |id, created| crate::assistant_message(
+            "build", oc_schema::ModelRef::parse("local/test").unwrap(),
+            vec![oc_schema::AssistantContent::Text(oc_schema::AssistantText { text: "Café 東京".into() })],
+            id, created,
+        )).unwrap();
         drop(store);
 
         let reopened = Store::open_sqlite(&db_path).unwrap();
         assert_eq!(reopened.get_session(&s.id).unwrap().id, s.id);
         let msgs = reopened.messages(&s.id).unwrap();
-        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[1], assistant);
         match &msgs[0] {
             Message::Synthetic(syn) => assert_eq!(syn.text, "edited"),
             other => panic!("wrong variant: {other:?}"),

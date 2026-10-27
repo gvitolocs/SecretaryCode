@@ -351,8 +351,8 @@ impl Store {
             .messages
             .get_mut(session_id)
             .ok_or_else(|| StoreError::NotFound(session_id.into()))?;
-        let id = message_base(&msg).id.clone();
-        match list.iter_mut().find(|m| message_base(m).id == id) {
+        let id = message_key(&msg).to_string();
+        match list.iter_mut().find(|m| message_key(m) == id) {
             Some(slot) => *slot = msg.clone(),
             None => return Err(StoreError::NotFound(id)),
         }
@@ -374,20 +374,20 @@ impl Store {
             .get(session_id)
             .cloned()
             .ok_or_else(|| StoreError::NotFound(session_id.into()))?;
-        v.sort_by(|a, b| message_base(a).id.cmp(&message_base(b).id));
+        v.sort_by(|a, b| message_key(a).cmp(message_key(b)));
         Ok(v)
     }
 }
 
-fn message_base(m: &Message) -> &MessageBase {
+fn message_key(m: &Message) -> &str {
     match m {
-        Message::User(u) => &u.base,
-        Message::Assistant(a) => &a.base,
-        Message::Synthetic(s) => &s.base,
-        Message::System(s) => &s.base,
-        Message::AgentSwitched(a) => &a.base,
-        Message::ModelSwitched(m) => &m.base,
-        Message::Idle(i) => &i.base,
+        Message::User(u) => &u.base.id,
+        Message::Assistant(a) => &a.base.id,
+        Message::Synthetic(s) => &s.base.id,
+        Message::System(s) => &s.base.id,
+        Message::AgentSwitched(a) => &a.base.id,
+        Message::ModelSwitched(m) => &m.base.id,
+        Message::Idle(i) => &i.base.id,
     }
 }
 
@@ -410,7 +410,7 @@ pub fn assistant_message(
     created: u64,
 ) -> Message {
     Message::Assistant(oc_schema::AssistantMessage {
-        base: MessageBase { id, metadata: None, time: MessageTime { created } },
+        base: MessageBase { id, metadata: None, time: oc_schema::AssistantTime { created, streamed: None, completed: None } },
         agent: agent.to_string(),
         model,
         content,
@@ -419,7 +419,6 @@ pub fn assistant_message(
         cost: None,
         tokens: None,
         error: None,
-        time: oc_schema::AssistantTime { created, streamed: None, completed: None },
     })
 }
 
@@ -584,8 +583,8 @@ mod tests {
             _ => "",
         }).collect();
         assert_eq!(texts, ["first", "second"]);
-        assert_eq!(message_base(&m1).id, message_base(&list[0]).id);
-        assert_eq!(message_base(&m2).id, message_base(&list[1]).id);
+        assert_eq!(message_key(&m1), message_key(&list[0]));
+        assert_eq!(message_key(&m2), message_key(&list[1]));
         assert!(store.messages("ses_missing0000000000000000000").is_err());
     }
 
@@ -623,12 +622,18 @@ mod tests {
             syn.text = "edited".into();
         }
         store.replace_message(&s.id, edited).unwrap();
+        let assistant = store.append_message(&s.id, |id, created| assistant_message(
+            "build", oc_schema::ModelRef::parse("local/test").unwrap(),
+            vec![oc_schema::AssistantContent::Text(oc_schema::AssistantText { text: "Café 東京".into() })],
+            id, created,
+        )).unwrap();
         drop(store);
 
         let reopened = Store::open(&dir).unwrap();
         assert_eq!(reopened.get_session(&s.id).unwrap().id, s.id);
         let msgs = reopened.messages(&s.id).unwrap();
-        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[1], assistant);
         match &msgs[0] {
             Message::Synthetic(syn) => assert_eq!(syn.text, "edited"),
             other => panic!("wrong variant: {other:?}"),

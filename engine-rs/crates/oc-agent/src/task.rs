@@ -104,7 +104,7 @@ impl Tool for TaskTool {
             permissions: oc_permission::Ruleset::default(),
         };
         let output = crate::prompt(
-            &mut *self.store.write().await,
+            &self.store,
             &self.tools,
             &self.client,
             &info.id,

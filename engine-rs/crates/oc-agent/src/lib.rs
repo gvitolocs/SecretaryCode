@@ -8,9 +8,11 @@ pub mod task;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+use tokio::sync::RwLock;
+
 use oc_provider::{ChatMessage, ChatRequest, Client, ToolChoice};
 use oc_schema::{
-    message_id, AssistantContent, AssistantTool, AssistantToolTime, FinishReason, LlmResponse,
+    AssistantContent, AssistantTool, AssistantToolTime, LlmResponse,
     Message, ModelRef, Outcome, ToolContent, ToolState,
 };
 use oc_store::{assistant_message, idle_message, session_error, user_message, Store};
@@ -69,7 +71,7 @@ pub struct RunOutput {
 
 /// Append the user turn, then run the loop. (`session.prompt`'s handler.)
 pub async fn prompt(
-    store: &mut Store,
+    store: &Arc<RwLock<Store>>,
     registry: &Registry,
     client: &Client,
     session_id: &str,
@@ -77,24 +79,29 @@ pub async fn prompt(
     text: &str,
     opts: &RunOptions,
 ) -> Result<RunOutput, AgentError> {
-    store.append_message(session_id, |id, t| user_message(text.to_string(), Vec::new(), id, t))?;
+    store.write().await.append_message(session_id, |id, t| user_message(text.to_string(), Vec::new(), id, t))?;
     run_turn(store, registry, client, session_id, model, opts).await
 }
 
 /// One runner turn: step until the model answers without tool calls, the
 /// step limit gates, an abort fires, or a provider error ends the run.
 pub async fn run_turn(
-    store: &mut Store,
+    store: &Arc<RwLock<Store>>,
     registry: &Registry,
     client: &Client,
     session_id: &str,
     model: ModelRef,
     opts: &RunOptions,
 ) -> Result<RunOutput, AgentError> {
-    if store.get_session(session_id).is_err() {
+    if store.read().await.get_session(session_id).is_err() {
         return Err(AgentError::NotFound(session_id.to_string()));
     }
-    let system = system_prompt(&model);
+    let mut system = system_prompt(&model);
+    let worktree = worktree_of(&*store.read().await, session_id);
+    if let Some(instructions) = worktree_instructions(&worktree) {
+        system.push_str("\n\n");
+        system.push_str(&instructions);
+    }
     let mut step: u32 = 0;
     let mut last_text: Option<String> = None;
     let outcome = loop {
@@ -102,7 +109,7 @@ pub async fn run_turn(
             break Outcome::Interrupted;
         }
         let limit_reached = opts.max_steps.is_some_and(|m| step >= m);
-        let history = store.messages(session_id)?;
+        let history = store.read().await.messages(session_id)?;
         let mut messages = to_llm_messages(&history);
         if limit_reached {
             // runner/llm.ts: the gate appends the gate text as an assistant
@@ -127,14 +134,14 @@ pub async fn run_turn(
                 // recorded on a terminal assistant message, the idle marker
                 // lands, and the session outcome flips (upstream's retry
                 // ladder lives in SessionRunnerRetry; the port stops).
-                record_provider_failure(store, session_id, &opts.agent, &model, &e.to_string())?;
-                store.append_message(session_id, |id, t| idle_message(Outcome::Failed, id, t))?;
-                store.set_outcome(session_id, Outcome::Failed)?;
+                record_provider_failure(&mut *store.write().await, session_id, &opts.agent, &model, &e.to_string())?;
+                store.write().await.append_message(session_id, |id, t| idle_message(Outcome::Failed, id, t))?;
+                store.write().await.set_outcome(session_id, Outcome::Failed)?;
                 return Ok(RunOutput { outcome: Outcome::Failed, steps: step, text: None });
             }
         };
         settle_step(store, registry, session_id, &opts.agent, &model, &resp, &opts.permissions).await?;
-        fold_usage(store, session_id, &resp)?;
+        fold_usage(&mut *store.write().await, session_id, &resp)?;
         last_text = resp.text.clone();
         let has_calls = !resp.tool_calls.is_empty();
         if !has_calls || limit_reached || opts.abort.load(Ordering::Relaxed) {
@@ -146,8 +153,8 @@ pub async fn run_turn(
         }
         step += 1;
     };
-    store.append_message(session_id, |id, t| idle_message(outcome, id, t))?;
-    store.set_outcome(session_id, outcome)?;
+    store.write().await.append_message(session_id, |id, t| idle_message(outcome, id, t))?;
+    store.write().await.set_outcome(session_id, outcome)?;
     Ok(RunOutput { outcome, steps: step + 1, text: last_text })
 }
 
@@ -155,7 +162,7 @@ pub async fn run_turn(
 /// reasoning parts verbatim, one tool part per call in `running` state, then
 /// execute each call and settle its part to `completed`/`error` in place.
 async fn settle_step(
-    store: &mut Store,
+    store: &Arc<RwLock<Store>>,
     registry: &Registry,
     session_id: &str,
     agent: &str,
@@ -187,7 +194,7 @@ async fn settle_step(
         }));
         tool_inputs.push((call.id.clone(), input));
     }
-    let stored = store.append_message(session_id, |id, t| {
+    let stored = store.write().await.append_message(session_id, |id, t| {
         assistant_message(agent, model.clone(), content, id, t)
     })?;
     let assistant_id = message_id_of(&stored).to_string();
@@ -195,7 +202,7 @@ async fn settle_step(
     for (call, (call_id, input)) in resp.tool_calls.iter().zip(tool_inputs.iter()) {
         let ran = now_ms();
         let ctx = ToolContext {
-            worktree: worktree_of(store, session_id),
+            worktree: worktree_of(&*store.read().await, session_id),
             session_id: session_id.to_string(),
             call_id: call_id.clone(),
         };
@@ -214,7 +221,7 @@ async fn settle_step(
         };
         let completed = now_ms();
 
-        let history = store.messages(session_id)?;
+        let history = store.read().await.messages(session_id)?;
         let mut msg = history
             .into_iter()
             .find(|m| message_id_of(m) == assistant_id)
@@ -243,7 +250,7 @@ async fn settle_step(
                 metadata: None,
             },
         };
-        store.replace_message(session_id, msg)?;
+        store.write().await.replace_message(session_id, msg)?;
     }
     Ok(())
 }
@@ -290,7 +297,7 @@ fn record_provider_failure(
         let mut m = assistant_message(agent, model.clone(), Vec::new(), id, t);
         if let Message::Assistant(a) = &mut m {
             a.error = Some(session_error("ProviderError", message));
-            a.time.completed = Some(now);
+            a.base.time.completed = Some(now);
         }
         m
     })?;
@@ -328,6 +335,7 @@ mod tests {
     use async_trait::async_trait;
     use oc_provider::{ProviderError, Transport};
     use oc_store::Store;
+    use oc_schema::FinishReason;
 
     /// A transport playing back scripted OpenAI-shaped response bodies and
     /// recording every request it was given.
@@ -391,7 +399,7 @@ mod tests {
         })
     }
 
-    fn session() -> (tempfile::TempDir, Store, String) {
+    fn session() -> (tempfile::TempDir, Arc<RwLock<Store>>, String) {
         let dir = tempfile::tempdir().unwrap();
         let mut store = Store::open(dir.path()).unwrap();
         let s = store
@@ -404,7 +412,7 @@ mod tests {
                 project_id: "global".into(),
             })
             .unwrap();
-        (dir, store, s.id)
+        (dir, Arc::new(RwLock::new(store)), s.id)
     }
 
     fn model() -> ModelRef {
@@ -414,7 +422,7 @@ mod tests {
 
     #[tokio::test]
     async fn text_only_run_succeeds() {
-        let (_dir, mut store, sid) = session();
+        let (_dir, store, sid) = session();
         let client = Client::with_transport(
             oc_provider::Endpoint {
                 protocol: oc_provider::Protocol::OpenAI,
@@ -424,15 +432,15 @@ mod tests {
             Arc::new(Scripted::new(vec![openai_text("all done")])),
         );
         let registry = Registry::builtin(std::path::Path::new("/tmp"));
-        let out = prompt(&mut store, &registry, &client, &sid, model(), "fix it", &opts())
+        let out = prompt(&store, &registry, &client, &sid, model(), "fix it", &opts())
             .await
             .unwrap();
         assert_eq!(out.outcome, Outcome::Succeeded);
         assert_eq!(out.text.as_deref(), Some("all done"));
-        let msgs = store.messages(&sid).unwrap();
+        let msgs = store.read().await.messages(&sid).unwrap();
         let kinds: Vec<&str> = msgs.iter().map(|m| kind(m)).collect();
         assert_eq!(kinds, ["user", "assistant", "idle"]);
-        let s = store.get_session(&sid).unwrap();
+        let s = store.read().await.get_session(&sid).unwrap();
         assert_eq!(s.outcome, Some(Outcome::Succeeded));
         assert_eq!(s.tokens.input, 10.0);
         assert_eq!(s.tokens.output, 5.0);
@@ -440,7 +448,8 @@ mod tests {
 
     #[tokio::test]
     async fn tool_call_settles_then_text_arrives() {
-        let (dir, mut store, sid) = session();
+        let (dir, store, sid) = session();
+        std::fs::write(dir.path().join("AGENTS.md"), "Project instruction: use the note file.").unwrap();
         let scripted = Arc::new(Scripted::new(vec![
             openai_text("done: created the file"),
             openai_tool_call("call_1", "write", r#"{"path":"note.txt","content":"hi"}"#),
@@ -454,7 +463,7 @@ mod tests {
             scripted.clone(),
         );
         let registry = Registry::builtin(dir.path());
-        let out = prompt(&mut store, &registry, &client, &sid, model(), "write note.txt", &opts())
+        let out = prompt(&store, &registry, &client, &sid, model(), "write note.txt", &opts())
             .await
             .unwrap();
         assert_eq!(out.outcome, Outcome::Succeeded);
@@ -468,6 +477,7 @@ mod tests {
 
         // step 2's request carried the tool result for call_1
         let requests = scripted.requests();
+        assert!(requests[0]["messages"][0]["content"].as_str().unwrap().contains("Project instruction: use the note file."));
         let second = &requests[1];
         let roles: Vec<&str> = second["messages"]
             .as_array()
@@ -481,7 +491,7 @@ mod tests {
         assert_eq!(tool_msg["tool_call_id"], "call_1");
 
         // the stored tool part is completed with executed=true
-        let msgs = store.messages(&sid).unwrap();
+        let msgs = store.read().await.messages(&sid).unwrap();
         let kinds: Vec<&str> = msgs.iter().map(|m| kind(m)).collect();
         assert_eq!(kinds, ["user", "assistant", "assistant", "idle"]);
         for m in &msgs {
@@ -503,7 +513,7 @@ mod tests {
 
     #[tokio::test]
     async fn max_steps_gate_pins_tool_choice_and_gates_text() {
-        let (_dir, mut store, sid) = session();
+        let (_dir, store, sid) = session();
         let scripted = Arc::new(Scripted::new(vec![openai_text("summary of work")]));
         let client = Client::with_transport(
             oc_provider::Endpoint {
@@ -515,7 +525,7 @@ mod tests {
         );
         let registry = Registry::builtin(std::path::Path::new("/tmp"));
         let o = RunOptions { max_steps: Some(0), ..opts() };
-        let out = prompt(&mut store, &registry, &client, &sid, model(), "go", &o).await.unwrap();
+        let out = prompt(&store, &registry, &client, &sid, model(), "go", &o).await.unwrap();
         assert_eq!(out.outcome, Outcome::Succeeded);
         let requests = scripted.requests();
         let body = &requests[0];
@@ -527,7 +537,7 @@ mod tests {
 
     #[tokio::test]
     async fn provider_failure_marks_session_failed() {
-        let (_dir, mut store, sid) = session();
+        let (_dir, store, sid) = session();
         let client = Client::with_transport(
             oc_provider::Endpoint {
                 protocol: oc_provider::Protocol::OpenAI,
@@ -537,11 +547,11 @@ mod tests {
             Arc::new(Scripted::failing(ProviderError::Http { status: 500, body: "boom".into() })),
         );
         let registry = Registry::builtin(std::path::Path::new("/tmp"));
-        let out = prompt(&mut store, &registry, &client, &sid, model(), "go", &opts()).await.unwrap();
+        let out = prompt(&store, &registry, &client, &sid, model(), "go", &opts()).await.unwrap();
         assert_eq!(out.outcome, Outcome::Failed);
-        let s = store.get_session(&sid).unwrap();
+        let s = store.read().await.get_session(&sid).unwrap();
         assert_eq!(s.outcome, Some(Outcome::Failed));
-        let msgs = store.messages(&sid).unwrap();
+        let msgs = store.read().await.messages(&sid).unwrap();
         let kinds: Vec<&str> = msgs.iter().map(|m| kind(m)).collect();
         assert_eq!(kinds, ["user", "assistant", "idle"]);
         let failed = msgs.iter().find_map(|m| match m {
@@ -557,7 +567,7 @@ mod tests {
 
     #[tokio::test]
     async fn abort_before_run_interrupts() {
-        let (_dir, mut store, sid) = session();
+        let (_dir, store, sid) = session();
         let client = Client::with_transport(
             oc_provider::Endpoint {
                 protocol: oc_provider::Protocol::OpenAI,
@@ -569,7 +579,7 @@ mod tests {
         let registry = Registry::builtin(std::path::Path::new("/tmp"));
         let abort = Arc::new(AtomicBool::new(true));
         let o = RunOptions { abort: abort.clone(), ..opts() };
-        let out = prompt(&mut store, &registry, &client, &sid, model(), "go", &o).await.unwrap();
+        let out = prompt(&store, &registry, &client, &sid, model(), "go", &o).await.unwrap();
         assert_eq!(out.outcome, Outcome::Interrupted);
         let _ = &client; // scripted transport was empty: any call would fail the test via script exhaustion
 
@@ -632,10 +642,19 @@ mod tests {
 
 }
 
+#[cfg(test)]
 fn opts() -> RunOptions {
-    RunOptions::default()
+    RunOptions {
+        permissions: oc_permission::Ruleset {
+            rules: vec![oc_permission::Rule {
+                action: "*".into(), resource: "*".into(), effect: oc_permission::Effect::Allow,
+            }],
+        },
+        ..RunOptions::default()
+    }
 }
 
+#[cfg(test)]
 fn kind(m: &Message) -> &'static str {
     match m {
         Message::User(_) => "user",
@@ -951,16 +970,17 @@ mod multi_agent_tests {
         );
         let registry = Registry::builtin(dir.path()).with_tools(vec![Arc::new(task)]);
         let model = ModelRef::parse("openai/gpt-test").unwrap();
-        let out = prompt(
-            &mut *store.write().await,
+        let out = tokio::time::timeout(std::time::Duration::from_secs(5), prompt(
+            &store,
             &registry,
             &client,
             &parent.id,
             model,
             "delegate the probe",
             &opts(),
-        )
+        ))
         .await
+        .expect("delegated turn must not hold the parent store lock")
         .unwrap();
 
         assert_eq!(out.outcome, Outcome::Succeeded);
@@ -1032,12 +1052,13 @@ mod multi_agent_tests {
                 effect: oc_permission::Effect::Deny,
             }],
         };
+        let store = Arc::new(RwLock::new(store));
         let o = RunOptions { permissions, ..opts() };
-        let out = prompt(&mut store, &registry, &client, &sid, ModelRef::parse("openai/gpt-test").unwrap(), "go", &o)
+        let out = prompt(&store, &registry, &client, &sid, ModelRef::parse("openai/gpt-test").unwrap(), "go", &o)
             .await
             .unwrap();
         assert_eq!(out.outcome, Outcome::Succeeded);
-        let msgs = store.messages(&sid).unwrap();
+        let msgs = store.read().await.messages(&sid).unwrap();
         for m in &msgs {
             if let Message::Assistant(a) = m {
                 for part in &a.content {

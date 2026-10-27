@@ -206,11 +206,11 @@ pub enum Message {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct MessageBase {
+pub struct MessageBase<T = MessageTime> {
     pub id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<serde_json::Value>,
-    pub time: MessageTime,
+    pub time: T,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -387,7 +387,7 @@ pub enum FinishReason {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AssistantMessage {
     #[serde(flatten)]
-    pub base: MessageBase,
+    pub base: MessageBase<AssistantTime>,
     pub agent: String,
     pub model: ModelRef,
     pub content: Vec<AssistantContent>,
@@ -403,7 +403,6 @@ pub struct AssistantMessage {
     pub tokens: Option<TokenUsage>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<SessionErrorValue>,
-    pub time: AssistantTime,
 }
 
 /// A provider-neutral tool definition — port of `@opencode/ai`
@@ -557,7 +556,7 @@ mod tests {
             base: MessageBase {
                 id: message_id::create(),
                 metadata: None,
-                time: MessageTime { created: 1 },
+                time: AssistantTime { created: 1, streamed: None, completed: Some(9) },
             },
             agent: "build".into(),
             model: ModelRef::parse("x/y").unwrap(),
@@ -581,8 +580,9 @@ mod tests {
             cost: Some(0.5),
             tokens: None,
             error: None,
-            time: AssistantTime { created: 1, streamed: None, completed: Some(9) },
         });
+        let encoded = serde_json::to_string(&a).unwrap();
+        assert_eq!(serde_json::from_str::<Message>(&encoded).unwrap(), a);
         let json = serde_json::to_value(&a).unwrap();
         assert_eq!(json["type"], "assistant");
         assert_eq!(json["content"][0]["type"], "text");

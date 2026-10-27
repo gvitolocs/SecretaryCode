@@ -738,6 +738,7 @@ dependencies = [
  "futures-util",
  "oc-agent",
  "oc-bus",
+ "oc-permission",
  "oc-provider",
  "oc-schema",
  "oc-store",

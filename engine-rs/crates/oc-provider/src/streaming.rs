@@ -305,7 +305,7 @@ pub fn parse_anthropic_sse_frame(
     let mut events = Vec::new();
     match event.get("type").and_then(Value::as_str) {
         Some("message_start") => {
-            if let Some(u) = event.pointer("/message/usage").and_then(non_null) {
+            if let Some(u) = non_null(event.pointer("/message/usage")) {
                 state.usage = Some(anthropic_usage(u));
             }
         }
@@ -378,7 +378,7 @@ pub fn parse_anthropic_sse_frame(
         Some("message_delta") => {
             // The final delta carries the authoritative totals; right-biased
             // merge per field (upstream `mergeUsage`).
-            if let Some(u) = event.get("usage").and_then(non_null) {
+            if let Some(u) = non_null(event.get("usage")) {
                 let next = anthropic_usage(u);
                 match &mut state.usage {
                     None => state.usage = Some(next),
@@ -475,7 +475,7 @@ pub async fn drive_sse(
     let mut terminal = false;
 
     'outer: while let Some(chunk) = stream.next().await {
-        for frame in buffer.push(chunk?) {
+        for frame in buffer.push(&chunk?) {
             if handle_frame(&frame, protocol, &mut openai, &mut anthropic, &on_event)? {
                 terminal = true;
                 break 'outer;

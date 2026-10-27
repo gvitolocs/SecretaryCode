@@ -1,6 +1,7 @@
 //! Tests for the oc-provider protocol subset. No network: the `Client` is
 //! exercised through a mock `Transport` that captures what was posted.
 
+use crate::{drive_sse, StreamEvent};
 use std::sync::{Arc, Mutex};
 
 use crate::{
@@ -737,4 +738,44 @@ async fn client_empty_model_id_falls_back_to_request_model() {
     let client = Client::with_transport(openai_endpoint(), transport.clone());
     client.complete("", &sample_request()).await.expect("completes");
     assert_eq!(transport.captured().body["model"], "fallback-model");
+}
+
+
+/// The transport may split JSON, UTF-8 characters and CRLF delimiters at any byte.
+#[tokio::test]
+async fn streaming_reassembles_text_tools_and_usage_for_both_protocols() {
+    let cases = [
+        (Protocol::OpenAI, vec![
+            json!({"choices":[{"delta":{"content":"Café 東京","tool_calls":[{"index":0,"id":"call_1","function":{"name":"read","arguments":"{\"path\":"}}]}}]}),
+            json!({"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"note.txt\"}"}}]},"finish_reason":"tool_calls"}]}),
+            json!({"choices":[],"usage":{"prompt_tokens":7,"completion_tokens":3}}),
+        ], "[DONE]"),
+        (Protocol::Anthropic, vec![
+            json!({"type":"message_start","message":{"usage":{"input_tokens":7,"cache_read_input_tokens":2}}}),
+            json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Café 東京"}}),
+            json!({"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"call_1","name":"read","input":{}}}),
+            json!({"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"path\":\"note.txt\"}"}}),
+            json!({"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":3}}),
+            json!({"type":"message_stop"}),
+        ], ""),
+    ];
+    for (protocol, frames, terminal) in cases {
+        let mut wire = String::from(": keepalive\r\n\r\n");
+        for frame in frames { wire.push_str(&format!("data: {frame}\r\n\r\n")); }
+        if !terminal.is_empty() { wire.push_str(&format!("data: {terminal}\r\n\r\n")); }
+        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let captured = events.clone();
+        let stream = futures_util::stream::iter(wire.into_bytes().into_iter().map(|b| Ok(bytes::Bytes::from(vec![b]))));
+        let response = drive_sse(Box::pin(stream), protocol, Arc::new(move |event| captured.lock().unwrap().push(event))).await.unwrap();
+        assert_eq!(response.text.as_deref(), Some("Café 東京"));
+        assert_eq!(response.finish, FinishReason::ToolCalls);
+        assert_eq!(response.tool_calls.len(), 1);
+        assert_eq!(response.tool_calls[0].id, "call_1");
+        assert_eq!(response.tool_calls[0].name, "read");
+        assert_eq!(response.tool_calls[0].arguments, r#"{"path":"note.txt"}"#);
+        let usage = response.usage.unwrap();
+        assert_eq!((usage.input, usage.output), (7.0, 3.0));
+        assert!(events.lock().unwrap().contains(&StreamEvent::Text { delta: "Café 東京".into() }));
+        assert!(events.lock().unwrap().contains(&StreamEvent::Finished));
+    }
 }

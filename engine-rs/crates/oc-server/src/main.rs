@@ -36,6 +36,7 @@ struct AppState {
     client: Arc<Client>,
     model: ModelRef,
     max_steps: Option<u32>,
+    permissions: oc_permission::Ruleset,
     /// One abort flag per running session (`session.abort`).
     aborts: Arc<std::sync::Mutex<HashMap<String, Arc<AtomicBool>>>>,
 }
@@ -64,6 +65,10 @@ async fn main() {
         client: Arc::new(Client::new(oc_agent::endpoint_from_env())),
         model: oc_agent::model_from_env(),
         max_steps: oc_agent::max_steps_from_env(),
+        permissions: std::env::var("OC_PERMISSIONS")
+            .ok()
+            .map(|json| serde_json::from_str(&json).expect("OC_PERMISSIONS must be a JSON array of permission rules"))
+            .unwrap_or_default(),
         aborts: Arc::new(std::sync::Mutex::new(HashMap::new())),
     };
     let bind = std::env::var("OC_BIND").unwrap_or_else(|_| DEFAULT_BIND.into());
@@ -255,8 +260,8 @@ struct PromptBody {
 
 /// `session.prompt` — append the user message and run the full agent turn
 /// (provider steps + tool execution) synchronously; the SSE feed carries the
-/// transcript events as they land. The write lock is held for the whole turn
-/// (single-operator port; concurrent turns on one store serialize).
+/// transcript events after completion. Store locks cover individual mutations,
+/// allowing reads and other sessions to continue during model/tool work.
 async fn session_prompt(
     State(st): State<AppState>,
     Path(id): Path<String>,
@@ -270,20 +275,24 @@ async fn session_prompt(
         model.id = mid.clone();
     }
     let abort = Arc::new(AtomicBool::new(false));
-    st.aborts.lock().unwrap().insert(id.clone(), abort.clone());
+    {
+        let mut active = st.aborts.lock().unwrap();
+        if active.contains_key(&id) {
+            return Ok((StatusCode::CONFLICT, Json(serde_json::json!({ "error": "session is already running" }))).into_response());
+        }
+        active.insert(id.clone(), abort.clone());
+    }
     let opts = RunOptions {
         agent: "build".into(),
         max_steps: st.max_steps,
         abort,
+        permissions: st.permissions.clone(),
     };
     let registry = st.registry.clone();
     let client = st.client.clone();
-    let output = {
-        let mut store = st.store.write().await;
-        oc_agent::prompt(&mut store, &registry, &client, &id, model, &body.text, &opts)
-            .await
-            .map_err(|e| ApiError::Agent(e.to_string()))?
-    };
+    let result = oc_agent::prompt(&st.store, &registry, &client, &id, model, &body.text, &opts).await;
+    st.aborts.lock().unwrap().remove(&id);
+    let output = result.map_err(|e| ApiError::Agent(e.to_string()))?;
     let msgs = st.store.read().await.messages(&id).map_err(ApiError::from)?;
     for m in &msgs {
         st.bus
@@ -430,6 +439,7 @@ mod tests {
             })),
             model: oc_schema::ModelRef::parse("openai/gpt-test").unwrap(),
             max_steps: None,
+            permissions: oc_permission::Ruleset::default(),
             aborts: Arc::new(std::sync::Mutex::new(HashMap::new())),
         }
     }
@@ -629,4 +639,56 @@ mod tests {
         let v = json_body(res).await;
         assert_eq!(v["data"].as_array().unwrap().len(), 1);
     }
+
+    #[tokio::test]
+    async fn prompt_releases_store_and_cleans_up_session_admission() {
+        let started = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let entered = started.clone();
+        let proceed = release.clone();
+        let provider = Router::new().route("/v1/chat/completions", post(move || {
+            let entered = entered.clone();
+            let proceed = proceed.clone();
+            async move {
+                entered.notify_one();
+                proceed.notified().await;
+                Json(serde_json::json!({"choices":[{"message":{"content":"finished"},"finish_reason":"stop"}]}))
+            }
+        }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let provider_task = tokio::spawn(async move { axum::serve(listener, provider).await.unwrap() });
+        let mut state = test_state();
+        state.client = Arc::new(Client::new(oc_provider::Endpoint {
+            protocol: oc_provider::Protocol::OpenAI,
+            base_url: format!("http://{address}/v1"),
+            api_key: None,
+        }));
+        let info = state.store.write().await.create_session(CreateInput {
+            title: None, parent_id: None, agent: None, model: None,
+            directory: "/tmp".into(), project_id: "global".into(),
+        }).unwrap();
+        let app = router(state.clone());
+        let request = || Request::builder().method("POST")
+            .uri(format!("/api/session/{}/message", info.id))
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"text":"hello"}"#)).unwrap();
+        let running = tokio::spawn(app.clone().oneshot(request()));
+        tokio::time::timeout(std::time::Duration::from_secs(2), started.notified()).await.unwrap();
+        let read = tokio::time::timeout(std::time::Duration::from_secs(2), app.clone().oneshot(
+            Request::builder().uri(format!("/api/session/{}", info.id)).body(Body::empty()).unwrap()
+        )).await.expect("a model request must not block session reads").unwrap();
+        assert_eq!(read.status(), StatusCode::OK);
+        assert_eq!(app.clone().oneshot(request()).await.unwrap().status(), StatusCode::CONFLICT);
+        let aborted = session_abort(State(state.clone()), Path(info.id.clone())).await;
+        assert_eq!(aborted.0["aborted"], true);
+        release.notify_one();
+        let finished = tokio::time::timeout(std::time::Duration::from_secs(2), running).await.unwrap().unwrap().unwrap();
+        assert_eq!(finished.status(), StatusCode::CREATED);
+        assert_eq!(json_body(finished).await["output"]["outcome"], "interrupted");
+        assert_eq!(session_abort(State(state.clone()), Path(info.id.clone())).await.0["aborted"], false);
+        assert!(state.aborts.lock().unwrap().is_empty());
+        provider_task.abort();
+    }
+
 }

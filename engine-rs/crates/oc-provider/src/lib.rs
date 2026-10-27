@@ -6,19 +6,18 @@
 //! - Anthropic Messages (`anthropic-messages.ts`): `POST {base}/v1/messages`
 //!
 //! `Client::complete` is the non-streaming path (single JSON document);
-//! `Client::complete_streaming` adds SSE streaming (`stream: true`) with
+//! `drive_sse` decodes SSE streaming with
 //! protocol-neutral [`StreamEvent`]s and the same `LlmResponse` result. The
 //! upstream protocols are stream-first (`stream: true` is hardcoded in both
-//! `fromRequest`s); this port makes streaming opt-in and keeps the
-//! non-streaming path for transports that cannot stream.
+//! `fromRequest`s); this port's HTTP client still uses non-streaming requests.
+//! The SSE driver is available separately for future transport integration.
 //!
 //! Documented deltas vs upstream (all upstream file references are
 //! `packages/ai/src/protocols/{openai-chat,anthropic-messages}.ts`):
 //! - Non-streaming: no `stream`, `stream_options`, `tool_stream`; no SSE
 //!   parsing. Bodies are the upstream shape minus streaming fields.
-//!   Streaming bodies add `stream: true` (plus `stream_options`:
-//!   `{"include_usage": true}` for OpenAI); zai's `tool_stream` is not
-//!   ported. Streaming deltas and semantics are documented in the
+//!   HTTP streaming request bodies and zai's `tool_stream` are not ported.
+//!   Standalone streaming deltas and semantics are documented in the
 //!   `streaming` module.
 //! - OpenAI tool-result text parts are joined with `\n\n` (task contract);
 //!   upstream `lowerToolMessages` joins with `"\n"`.
@@ -118,7 +117,7 @@ pub enum ProviderError {
 /// The HTTP boundary. `Client` builds URL/headers/body; the transport does
 /// the POST and hands back the decoded JSON document. Transports that can
 /// stream also implement `post_stream`; implementors that do not keep the
-/// default (streaming then falls back to `post_json` via `complete`).
+/// default. HTTP streaming is not wired into `Client` yet.
 #[async_trait::async_trait]
 pub trait Transport: Send + Sync {
     async fn post_json(
@@ -141,7 +140,7 @@ pub trait Transport: Send + Sync {
 }
 
 /// The `ProviderError::Transport` message a transport without streaming
-/// support produces; `complete_streaming` falls back to `complete` on it.
+/// support produces. The HTTP client currently uses non-streaming completion.
 pub const STREAMING_UNSUPPORTED: &str = "streaming not supported by this transport";
 
 /// One protocol client over one endpoint.
@@ -431,7 +430,14 @@ pub fn parse_openai_response(v: &Value) -> Result<LlmResponse, ProviderError> {
         Some(_) => return Err(ProviderError::Malformed("choices[0].message.tool_calls is not a list".into())),
     };
 
-    let (finish, raw_finish) = match choice.get("finish_reason").and_then(Value::as_str) {
+    let (finish, raw_finish) = openai_finish_reason(choice.get("finish_reason").and_then(Value::as_str));
+    let usage = v.get("usage").filter(|u| !u.is_null()).map(openai_usage);
+
+    Ok(LlmResponse { text, reasoning: None, tool_calls, finish, raw_finish, usage })
+}
+
+fn openai_finish_reason(reason: Option<&str>) -> (FinishReason, Option<String>) {
+    match reason {
         Some("stop") | Some("end") => (FinishReason::Stop, None),
         Some("length") => (FinishReason::Length, None),
         Some("tool_calls") | Some("function_call") => (FinishReason::ToolCalls, None),
@@ -440,32 +446,29 @@ pub fn parse_openai_response(v: &Value) -> Result<LlmResponse, ProviderError> {
         Some("error") => (FinishReason::Error, None),
         Some(other) => (FinishReason::Unknown, Some(other.to_owned())),
         None => (FinishReason::Unknown, None),
-    };
+    }
+}
 
-    let usage = match v.get("usage") {
-        None | Some(Value::Null) => None,
-        Some(u) => Some(LlmUsage {
-            input: json_f64(u.get("prompt_tokens")),
-            output: json_f64(u.get("completion_tokens")),
-            reasoning: json_f64(
-                u.get("completion_tokens_details")
-                    .and_then(|d| d.get("reasoning_tokens")),
-            ),
-            // OpenAI reports cached reads under `prompt_tokens_details`;
-            // DeepSeek-compatible surfaces use the flat fallbacks.
-            cache_read: first_f64(&[
-                u.get("prompt_tokens_details").and_then(|d| d.get("cached_tokens")),
-                u.get("prompt_cache_hit_tokens"),
-                u.get("cached_tokens"),
-            ]),
-            cache_write: first_f64(&[
-                u.get("prompt_tokens_details").and_then(|d| d.get("cache_write_tokens")),
-                u.get("cache_created_input_tokens"),
-            ]),
-        }),
-    };
-
-    Ok(LlmResponse { text, reasoning: None, tool_calls, finish, raw_finish, usage })
+fn openai_usage(u: &Value) -> LlmUsage {
+    LlmUsage {
+        input: json_f64(u.get("prompt_tokens")),
+        output: json_f64(u.get("completion_tokens")),
+        reasoning: json_f64(
+            u.get("completion_tokens_details")
+                .and_then(|d| d.get("reasoning_tokens")),
+        ),
+        // OpenAI reports cached reads under `prompt_tokens_details`;
+        // DeepSeek-compatible surfaces use the flat fallbacks.
+        cache_read: first_f64(&[
+            u.get("prompt_tokens_details").and_then(|d| d.get("cached_tokens")),
+            u.get("prompt_cache_hit_tokens"),
+            u.get("cached_tokens"),
+        ]),
+        cache_write: first_f64(&[
+            u.get("prompt_tokens_details").and_then(|d| d.get("cache_write_tokens")),
+            u.get("cache_created_input_tokens"),
+        ]),
+    }
 }
 
 /// Tool-call id lives on the call itself (`call.id`).
@@ -629,7 +632,14 @@ pub fn parse_anthropic_response(v: &Value) -> Result<LlmResponse, ProviderError>
     let text = if texts.is_empty() { None } else { Some(texts.join("\n")) };
     let reasoning = if thinkings.is_empty() { None } else { Some(thinkings.join("\n")) };
 
-    let (finish, raw_finish) = match v.get("stop_reason").and_then(Value::as_str) {
+    let (finish, raw_finish) = anthropic_finish_reason(v.get("stop_reason").and_then(Value::as_str));
+    let usage = v.get("usage").filter(|u| !u.is_null()).map(anthropic_usage);
+
+    Ok(LlmResponse { text, reasoning, tool_calls, finish, raw_finish, usage })
+}
+
+fn anthropic_finish_reason(reason: Option<&str>) -> (FinishReason, Option<String>) {
+    match reason {
         Some("end_turn") | Some("stop_sequence") | Some("pause_turn") => (FinishReason::Stop, None),
         Some("max_tokens") | Some("model_context_window_exceeded") => (FinishReason::Length, None),
         Some("tool_use") => (FinishReason::ToolCalls, None),
@@ -637,26 +647,23 @@ pub fn parse_anthropic_response(v: &Value) -> Result<LlmResponse, ProviderError>
         Some("refusal") | Some("refuse") => (FinishReason::ContentFilter, None),
         Some(other) => (FinishReason::Unknown, Some(other.to_owned())),
         None => (FinishReason::Unknown, None),
-    };
+    }
+}
 
-    let usage = match v.get("usage") {
-        None | Some(Value::Null) => None,
-        Some(u) => Some(LlmUsage {
-            // Raw disjoint fields: `input_tokens` is the *non-cached* count
-            // (upstream sums cache into an inclusive total; this port keeps
-            // the split so totals are not double-counted downstream).
-            input: json_f64(u.get("input_tokens")),
-            output: json_f64(u.get("output_tokens")),
-            reasoning: json_f64(
-                u.get("output_tokens_details")
-                    .and_then(|d| d.get("thinking_tokens")),
-            ),
-            cache_read: json_f64(u.get("cache_read_input_tokens")),
-            cache_write: json_f64(u.get("cache_creation_input_tokens")),
-        }),
-    };
-
-    Ok(LlmResponse { text, reasoning, tool_calls, finish, raw_finish, usage })
+fn anthropic_usage(u: &Value) -> LlmUsage {
+    LlmUsage {
+        // Raw disjoint fields: `input_tokens` is the *non-cached* count
+        // (upstream sums cache into an inclusive total; this port keeps
+        // the split so totals are not double-counted downstream).
+        input: json_f64(u.get("input_tokens")),
+        output: json_f64(u.get("output_tokens")),
+        reasoning: json_f64(
+            u.get("output_tokens_details")
+                .and_then(|d| d.get("thinking_tokens")),
+        ),
+        cache_read: json_f64(u.get("cache_read_input_tokens")),
+        cache_write: json_f64(u.get("cache_creation_input_tokens")),
+    }
 }
 
 // =============================================================================

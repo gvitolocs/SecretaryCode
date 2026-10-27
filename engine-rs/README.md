@@ -15,15 +15,10 @@ so.
 
 ## Status
 
-- `cargo test --workspace`: **81 passed, 0 failed** (schema 10, store 13 incl.
-  persistence roundtrip, bus 4, provider 30, tools 13, agent 6 incl. the
-  MAX_STEPS gate + abort + provider-failure paths, server 5)
-- Live smoke (2026-10-27, on-box): `oc-cli ask` against a scripted
-  OpenAI-compatible endpoint ran a real 2-step turn — the shell tool executed
-  (`printf ... > smoke.txt` in the session worktree), the transcript recorded
-  the tool part `completed` with its exact input, the session landed
-  `succeeded` with tokens accumulated, and the JSON persistence files exist.
-  See `bench/mock_llm.py`.
+- Mac verification (2026-10-27): `cargo test --workspace` — **92 passed, 0 failed**. This includes the previously hanging child-session test, concurrent session reads and duplicate prompt admission, permission rules, SQLite roundtrips, and byte-fragmented SSE parsing for both provider protocols.
+- Native ARM64 release smoke on this Mac: CLI → server → local scripted provider → shell tool → persisted transcript → server restart passed. A second run with default permissions refused the shell command and preserved that error across restart. Assistant timestamps now serialize once, fixing history reopening.
+- Fixed the imported snapshot's compilation failures in streaming parsers and server run options. Parent and child runs now hold the shared store lock only during individual store operations; model and tool work releases it. The server rejects simultaneous prompts for the same session with HTTP 409 and removes abort registrations when execution finishes.
+- The installed **Secretary Code** app continues to use the complete Bun/TypeScript engine. This Rust subtree is experimental and is not yet a compatible replacement for the desktop service.
 
 ## What v0.2 ports (the agent runtime)
 
@@ -31,11 +26,21 @@ so.
 | --- | --- |
 | `oc-schema` messages | `packages/schema/src/session-message.ts` — full union (user / assistant with content parts / synthetic / system / agent-switched / model-switched / idle), `ToolState` running/completed/error, `Session.Error`, `LLM.FinishReason` |
 | `oc-tools` | `packages/core/src/tool/plugin/*.ts` — bash, read, write, edit, glob, grep, todowrite, webfetch; names + descriptions verbatim from the plugins |
-| `oc-provider` | `packages/ai/src/protocols/openai-chat.ts` + `anthropic-messages.ts` — non-streaming request/response both ways, tool calls, usage + finish-reason mapping |
+| `oc-provider` | `packages/ai/src/protocols/openai-chat.ts` + `anthropic-messages.ts` — non-streaming request/response both ways, tool calls, usage + finish-reason mapping; standalone SSE decoder for OpenAI and Anthropic (not yet connected to the HTTP client or agent loop) |
 | `oc-agent` | `packages/core/src/session/runner/` — the step loop, per-step assistant messages, tool settlement (running → completed/error, in place), `MAX_STEPS_PROMPT` gate (verbatim) + `toolChoice: none`, transcript mapping per `to-llm-message.ts` (synthetic → user role, idle/agent-switched dropped, executed tool parts → tool results), AGENTS.md instruction loading |
-| `oc-store` v0.2 | session surface + JSON-file persistence under `OC_DATA` (`session/sessions.json` + `session/message/<id>.json`, atomic tmp+rename). Upstream persists through Effect/drizzle into SQLite — documented delta |
+| `oc-store` v0.2 | session surface + JSON-file persistence under `OC_DATA` (`session/sessions.json` + `session/message/<id>.json`, atomic tmp+rename). An optional `Store::open_sqlite` document backend is available in the library; the server still uses JSON files, unlike upstream Effect/drizzle |
+| `oc-permission` | upstream JSON rule arrays, action/resource wildcards, last match wins; unmatched rules require approval. Headless runs refuse both `ask` and `deny`. |
 | `oc-server` v0.2 | + `POST /api/session/:id/message` (full turn, returns transcript + outcome), `POST /api/session/:id/abort` |
 | `oc-cli` v0.2 | + `ask` (one-shot session), `run`, `abort` |
+
+## Permissions
+
+The server accepts an explicit rules array through `OC_PERMISSIONS`. For example,
+`OC_PERMISSIONS='[{"action":"read","resource":"*","effect":"allow"}]'`
+permits reads while unmatched operations require approval. This experimental
+headless server cannot present approval requests, so those tool calls return an
+error to the model. Defaults do not implicitly approve tools. Rule names use the
+tool's actual name, such as `shell`, `read`, or `write`.
 
 ## Run
 
@@ -107,14 +112,17 @@ Mixed session round (POST create → GET → GET list → POST synthetic;
 
 ## Not ported (v0.2 boundary)
 
-Streaming (SSE) provider transport (non-streaming complete calls only),
-provider retry ladder, compaction, hosted tools, subagent/task tool,
-patch/skill/MCP tools, permission gating (tools run with an implicit allow),
-pricing/cost (tokens accumulate, cost stays 0), TUI, plugins, the SQL
-persistence layer (JSON files instead — see oc-store header).
+HTTP streaming transport/client wiring (the standalone SSE decoder exists,
+but the agent still uses non-streaming completions), provider retry ladder,
+compaction, hosted tools, patch/skill/MCP tools, interactive permission approval,
+pricing/cost (tokens accumulate, cost stays 0), TUI, plugins, upstream SQL
+schema/migrations. The task tool is available as a library component with child
+sessions and one-level delegation, but is not registered by the server. SQLite
+storage is available as a document backend in the library; server wiring still
+uses JSON files. Server events are published after the prompt finishes, not as
+live token updates. The server also lacks the desktop service's authentication,
+registration, project configuration and full API surface.
 
 The prompt path is now the real one: user message → model → tool calls →
 executed against the workspace → settled into the transcript → next step →
 final text, with every message persisted and abortable.
-
-## Benchmarks (2026-10-26, nezopt, same box/client)

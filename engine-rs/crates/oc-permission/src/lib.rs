@@ -24,19 +24,18 @@ pub struct Rule {
 
 /// `Permission.Ruleset` — ordered; the LAST matching rule decides.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct Ruleset {
-    #[serde(default)]
     pub rules: Vec<Rule>,
 }
 
 impl Ruleset {
     /// The effect for `action` + `resource`: the last matching rule wins;
-    /// no match means allowed (upstream's default is unrestricted unless a
-    /// rule denies).
+    /// no match requires approval, as in upstream `Permission.evaluate`.
     pub fn decide(&self, action: &str, resource: &str) -> Effect {
-        let mut effect = Effect::Allow;
+        let mut effect = Effect::Ask;
         for rule in &self.rules {
-            if rule.action == action
+            if wildcard_match(action, &rule.action)
                 && (rule.resource == "*" || wildcard_match(resource, &rule.resource))
             {
                 effect = rule.effect;
@@ -59,7 +58,10 @@ pub fn wildcard_match(input: &str, pattern: &str) -> bool {
         let cut = escaped.len() - 3;
         escaped = format!("{}( .*)?", &escaped[..cut]);
     }
-    regex::Regex::new(&format!("^{escaped}$"))
+    regex::RegexBuilder::new(&format!("^{escaped}$"))
+        .dot_matches_new_line(true)
+        .case_insensitive(cfg!(windows))
+        .build()
         .map(|re| re.is_match(&normalized))
         .unwrap_or(false)
 }
@@ -72,11 +74,13 @@ mod tests {
     fn wildcard_matches_like_upstream() {
         assert!(wildcard_match("src/main.rs", "*.rs"));
         assert!(wildcard_match("src/main.rs", "src/*"));
-        assert!(wildcard_match("/repo/src", "/repo"));
-        assert!(wildcard_match("/repo/src/deep", "/repo"));
+        assert!(!wildcard_match("/repo/src", "/repo"));
+        assert!(!wildcard_match("/repo/src/deep", "/repo"));
         assert!(!wildcard_match("other/main.rs", "src/*"));
         assert!(wildcard_match("a/b/c", "a/*")); // `*` spans `/` like upstream
-        assert!(wildcard_match("file.txt ", "file.txt")); // trailing space tolerance via `?`-free path
+        assert!(!wildcard_match("file.txt ", "file.txt"));
+        assert!(wildcard_match("git", "git *"));
+        assert!(wildcard_match("git status\nnext", "git *"));
     }
 
     #[test]
@@ -89,7 +93,8 @@ mod tests {
         };
         assert_eq!(rs.decide("bash", "git status"), Effect::Allow);
         assert_eq!(rs.decide("bash", "rm -rf /"), Effect::Deny);
-        assert_eq!(rs.decide("read", "anything"), Effect::Allow); // no rule → allowed
+        assert_eq!(rs.decide("read", "anything"), Effect::Ask); // unmatched actions need approval
+        assert_eq!(Ruleset { rules: vec![Rule { action: "*".into(), resource: "*".into(), effect: Effect::Deny }] }.decide("read", "anything"), Effect::Deny);
     }
 
     #[test]
