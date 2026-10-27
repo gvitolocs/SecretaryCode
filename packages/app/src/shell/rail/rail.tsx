@@ -1,0 +1,129 @@
+import { For, type JSX } from "solid-js"
+import lucina from "../../../../ui/src/assets/images/secretary-lucina.png"
+import { useLanguage } from "@/runtime/i18n/language"
+import type { ShellView } from "@/runtime/platform/platform"
+import { useSettingsSurface } from "@/settings/surface"
+import { useWorkspace } from "@/shell/workspace/workspace"
+import "./rail.css"
+
+type RailIcon = "code" | "computer" | "gallery" | "film" | "inbox" | "key" | "pulse" | "gear"
+
+// Stroke icons on a 24px grid, the same artwork as the approved mock.
+const ICONS: Record<RailIcon, () => JSX.Element> = {
+  code: () => <path d="m8.5 7.5-5 4.5 5 4.5M15.5 7.5l5 4.5-5 4.5M13.5 4.5l-3 15" />,
+  computer: () => (
+    <>
+      <rect x="3" y="4" width="18" height="12" rx="2" />
+      <path d="M8.5 20h7M12 16v4" />
+    </>
+  ),
+  gallery: () => (
+    <>
+      <rect x="3.5" y="4.5" width="17" height="15" rx="2.5" />
+      <circle cx="9" cy="9.5" r="1.8" />
+      <path d="m4 17 5-4.5 3.5 3 3-2.5 4.5 4" />
+    </>
+  ),
+  film: () => (
+    <>
+      <rect x="3.5" y="5" width="17" height="14" rx="2.5" />
+      <path d="M10 9.2v5.6l4.6-2.8z" />
+    </>
+  ),
+  inbox: () => (
+    <>
+      <path d="M4 13.5 6.3 5.6A1.5 1.5 0 0 1 7.7 4.5h8.6a1.5 1.5 0 0 1 1.4 1.1L20 13.5v4A2.5 2.5 0 0 1 17.5 20h-11A2.5 2.5 0 0 1 4 17.5z" />
+      <path d="M4 13.5h4.5l1.2 2h4.6l1.2-2H20" />
+    </>
+  ),
+  key: () => (
+    <>
+      <circle cx="8" cy="15" r="4" />
+      <path d="m11 12 8.5-8.5M16.5 6.5l2.5 2.5M14.5 8.5l2 2" />
+    </>
+  ),
+  pulse: () => <path d="M3 12h4l2-5 4 10 2-5h6" />,
+  gear: () => (
+    <>
+      <circle cx="12" cy="12" r="3" />
+      <path d="M12 3v2.5M12 18.5V21M3 12h2.5M18.5 12H21M5.6 5.6l1.8 1.8M16.6 16.6l1.8 1.8M5.6 18.4l1.8-1.8M16.6 7.4l1.8-1.8" />
+    </>
+  ),
+}
+
+/** The views below Lucina, in rail order. */
+const VIEW_ICONS: { view: ShellView; icon: RailIcon }[] = [
+  { view: "code", icon: "code" },
+  { view: "computer", icon: "computer" },
+  { view: "gallery", icon: "gallery" },
+  { view: "films", icon: "film" },
+  { view: "chats", icon: "inbox" },
+  { view: "secrets", icon: "key" },
+  { view: "health", icon: "pulse" },
+]
+
+function Glyph(props: { icon: RailIcon }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="1.7"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+      aria-hidden="true"
+    >
+      {ICONS[props.icon]()}
+    </svg>
+  )
+}
+
+/** The slim pill rail on the far left: Lucina first, her plugins below, Settings at the bottom. */
+export function ShellRail() {
+  const workspace = useWorkspace()
+  const language = useLanguage()
+  const settings = useSettingsSurface()
+
+  // Settings covers the view while it is open, so the ring moves to it and returns when it closes.
+  const current = (view: ShellView) => !settings.active() && workspace.view.current() === view
+
+  const item = (view: ShellView, icon: JSX.Element) => (
+    <button
+      type="button"
+      data-slot="rail-item"
+      data-action={`rail-${view}`}
+      aria-current={current(view) ? "page" : undefined}
+      onClick={() => workspace.view.show(view)}
+    >
+      <span data-slot="rail-well">{icon}</span>
+      <span data-slot="rail-label">{language.t(`shell.view.${view}`)}</span>
+    </button>
+  )
+
+  return (
+    <div data-slot="shell-rail-region">
+      <nav data-slot="shell-rail" aria-label={language.t("shell.rail")}>
+        <div data-slot="rail-group">
+          {item("lucina", <img src={lucina} alt="" draggable={false} />)}
+          <div data-slot="rail-sep" />
+          <For each={VIEW_ICONS}>{(entry) => item(entry.view, <Glyph icon={entry.icon} />)}</For>
+        </div>
+        <div data-slot="rail-spacer" />
+        <div data-slot="rail-group">
+          <button
+            type="button"
+            data-slot="rail-item"
+            data-action="rail-settings"
+            aria-current={settings.active() ? "page" : undefined}
+            onClick={() => settings.open()}
+          >
+            <span data-slot="rail-well">
+              <Glyph icon="gear" />
+            </span>
+            <span data-slot="rail-label">{language.t("sidebar.settings")}</span>
+          </button>
+        </div>
+      </nav>
+    </div>
+  )
+}

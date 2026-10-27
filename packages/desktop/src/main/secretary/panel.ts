@@ -1,6 +1,8 @@
 import { BrowserWindow, ipcMain, type WebContentsView } from "electron"
 import { isRendererUrl } from "../windows/scheme"
-import { lucinaView } from "./index"
+import { lucinaView, lucinaWebContents, openLucinaPath } from "./index"
+import { isLucinaUrl } from "./lucina-web-policy"
+import { isNavigatePath, parseShellCommand } from "./shell-command"
 import { codingLanesView } from "./lane-window"
 import { computerView } from "./computer-view"
 
@@ -32,6 +34,27 @@ export function setupCompanionPanels() {
       readRect(rect, zoom),
       zoom,
     )
+  })
+
+  // Routes Lucina's warm view to a path of her web app (the rail's Gallery, Films, All chats ...) without a reload.
+  ipcMain.on("secretary:navigate", (event, path: unknown) => {
+    if (!event.senderFrame || event.senderFrame.parent || !isRendererUrl(event.senderFrame.url)) return
+
+    if (isNavigatePath(path)) openLucinaPath(path)
+  })
+
+  // window.secretaryShell in Lucina's web view. Only her own top frame is heard; the window hosting the companion
+  // (or else the focused one) gets the validated command.
+  ipcMain.on("secretary:shell", (event, message: unknown) => {
+    const lucina = lucinaWebContents()
+    const frame = event.senderFrame
+
+    if (!lucina || event.sender !== lucina || !frame || frame.parent || !isLucinaUrl(frame.url)) return
+    const command = parseShellCommand(message)
+    const host = state.host && !state.host.isDestroyed() ? state.host : BrowserWindow.getFocusedWindow()
+
+    if (!command || !host || host.isDestroyed()) return
+    host.webContents.send("secretary:shell-command", command)
   })
 }
 

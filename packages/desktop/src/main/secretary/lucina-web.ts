@@ -1,4 +1,4 @@
-import { app, session, shell, WebContentsView, type Session } from "electron"
+import { app, session, shell, WebContentsView, type Session, type WebContents } from "electron"
 import { existsSync } from "node:fs"
 import { readFileSync } from "node:fs"
 import { readFile, stat } from "node:fs/promises"
@@ -90,16 +90,27 @@ export function lucinaWebSession() {
   return web
 }
 
+// Where each view's first page goes, until that load has started. A route asked for before then replaces the path.
+const firstLoad = new WeakMap<WebContents, { path: string; started: boolean }>()
+
 /**
  * A warm view of Lucina's web app at `path` (the chat at "/"). It loads once `beforeLoad` settles (the web sign-in,
  * ensureWebSession), so the first page already has its session; the page speaks the app's language
  * (applyWebLanguage). Links elsewhere open in the default browser.
+ * `preload` is the sandboxed script that gives her page `window.secretaryShell`.
  */
-export function lucinaWebView(path: string, beforeLoad?: () => Promise<unknown>) {
-  const page = `${LUCINA_ORIGIN}${path}`
+export function lucinaWebView(path: string, beforeLoad?: () => Promise<unknown>, options: { preload?: string } = {}) {
   const view = new WebContentsView({
-    webPreferences: { session: lucinaWebSession(), contextIsolation: true, sandbox: true, nodeIntegration: false },
+    webPreferences: {
+      session: lucinaWebSession(),
+      contextIsolation: true,
+      sandbox: true,
+      nodeIntegration: false,
+      ...(options.preload ? { preload: options.preload } : {}),
+    },
   })
+  const first = { path, started: false }
+  firstLoad.set(view.webContents, first)
   // Transparent until the page paints, so the panel shows the workspace's own surface instead of a black flash.
   view.setBackgroundColor("#00000000")
   const navigate = (event: { url: string; isMainFrame?: boolean; preventDefault(): void }) => {
@@ -116,16 +127,50 @@ export function lucinaWebView(path: string, beforeLoad?: () => Promise<unknown>)
   view.webContents.on("did-fail-load", (_event, code, _description, url, mainFrame) => {
     // Aborted navigations include links deliberately handed to the system browser.
     if (!mainFrame || code === -3 || !isLucinaUrl(url)) return
-    const html = `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width"><style>body{font:14px system-ui;padding:24px}a{color:inherit}</style><p>${escapeHTML(nativeT("desktop.lucina.loadFailed"))}</p><a href="${page}">${escapeHTML(nativeT("desktop.computer.retry"))}</a>`
+    const html = `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width"><style>body{font:14px system-ui;padding:24px}a{color:inherit}</style><p>${escapeHTML(nativeT("desktop.lucina.loadFailed"))}</p><a href="${escapeHTML(url)}">${escapeHTML(nativeT("desktop.computer.retry"))}</a>`
     void view.webContents.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`).catch(() => {})
   })
   applyWebLanguage(view.webContents)
   void Promise.resolve()
     .then(beforeLoad)
     .catch(() => {})
-    .then(() => view.webContents.loadURL(page))
+    .then(() => {
+      first.started = true
+
+      return view.webContents.loadURL(`${LUCINA_ORIGIN}${first.path}`)
+    })
     .catch(() => {})
   return view
+}
+
+/**
+ * Routes a Lucina web view to `path` (already validated) without a reload. Her router is @solidjs/router, which follows
+ * history changes, so pushState plus a popstate event is enough once her app is loaded. Before the first load, in an error
+ * page or on another origin the view loads the URL instead; a view that has not started loading just changes where it starts.
+ */
+export async function navigateLucinaView(contents: WebContents, path: string) {
+  if (contents.isDestroyed()) return
+  const first = firstLoad.get(contents)
+
+  if (first && !first.started) {
+    first.path = path
+
+    return
+  }
+
+  const target = `${LUCINA_ORIGIN}${path}`
+  const reload = () => contents.loadURL(target).catch(() => {})
+
+  if (!isLucinaUrl(contents.getURL())) return reload()
+  const script = `(() => {
+    if (location.origin !== ${JSON.stringify(LUCINA_ORIGIN)}) throw new Error("not Lucina")
+    const path = ${JSON.stringify(path)}
+    if (location.pathname + location.search === path) return
+    history.pushState(null, "", path)
+    dispatchEvent(new PopStateEvent("popstate"))
+  })()`
+
+  await contents.executeJavaScript(script).catch(reload)
 }
 
 function openExternal(value: string) {

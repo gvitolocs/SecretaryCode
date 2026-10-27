@@ -129,3 +129,15 @@ test("bundles one Effect runtime and Drizzle while keeping native dependencies e
     if (previousTarget !== undefined) process.env.OPENCODE_CLI_TARGET = previousTarget
   }
 }, 30_000)
+
+test("builds a separate self-contained preload for Lucina's web view", async () => {
+  const preload = (await load("build")).config.preload
+  const output = preload?.build?.rolldownOptions?.output
+
+  expect(preload?.build?.rolldownOptions?.input).toEqual({
+    index: "src/preload/index.ts",
+    lucina: "src/preload/lucina.ts",
+  })
+  // The sandboxed preload cannot require sibling files, so the entries are CJS files named after their entry.
+  expect(output && !Array.isArray(output) ? [output.format, output.entryFileNames] : []).toEqual(["cjs", "[name].cjs"])
+})

@@ -58,6 +58,7 @@ export {
   gruvboxTheme,
   kanagawaTheme,
   lucentOrngTheme,
+  lucinaTheme,
   materialTheme,
   matrixTheme,
   mercuryTheme,

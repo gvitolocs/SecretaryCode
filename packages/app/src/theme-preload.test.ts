@@ -21,23 +21,31 @@ beforeEach(() => {
 
 describe("theme preload", () => {
   test.each([
-    { stored: undefined, systemDark: false, scheme: "light", background: "#fafafa" },
-    { stored: "dark", systemDark: false, scheme: "dark", background: "#080808" },
-    { stored: "light", systemDark: true, scheme: "light", background: "#fafafa" },
-    { stored: "system", systemDark: true, scheme: "dark", background: "#080808" },
+    { stored: undefined, systemDark: false, scheme: "light", background: "#f2f2f7" },
+    { stored: "dark", systemDark: false, scheme: "dark", background: "#090c1e" },
+    { stored: "light", systemDark: true, scheme: "light", background: "#f2f2f7" },
+    { stored: "system", systemDark: true, scheme: "dark", background: "#090c1e" },
   ])(
-    "paints the default theme in $scheme for stored scheme $stored (system dark: $systemDark)",
+    "paints the Lucina default theme in $scheme for stored scheme $stored (system dark: $systemDark)",
     ({ stored, systemDark, scheme, background }) => {
       setSystemDark(systemDark)
 
       if (stored) localStorage.setItem("opencode-color-scheme", stored)
       run()
 
-      expect(document.documentElement.dataset.theme).toBe("oc-2")
+      expect(document.documentElement.dataset.theme).toBe("lucina")
       expect(document.documentElement.dataset.colorScheme).toBe(scheme)
       expect(document.documentElement.style.backgroundColor).toBe(background)
     },
   )
+
+  test("keeps an explicitly stored OpenCode theme", () => {
+    localStorage.setItem("opencode-theme-id", "oc-2")
+    run()
+
+    expect(document.documentElement.dataset.theme).toBe("oc-2")
+    expect(document.documentElement.style.backgroundColor).toBe("#fafafa")
+  })
 
   test.each([
     { scheme: undefined, key: "opencode-theme-css-light", css: "--background-base:#fff;", expected: "light" },

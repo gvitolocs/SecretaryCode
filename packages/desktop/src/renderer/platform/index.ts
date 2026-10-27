@@ -52,7 +52,11 @@ export function createDesktopPlatform(api: ElectronAPI, windowState: DesktopWind
     },
     extensions: createExtensionBridge(),
     rustEngine: createDesktopRustEngine(api),
-    companion: { place: (panel, rect) => window.electron.secretary.place(panel, rect) },
+    companion: {
+      place: (panel, rect) => window.electron.secretary.place(panel, rect),
+      navigate: (path) => window.electron.secretary.navigate(path),
+      onCommand: (listener) => window.electron.secretary.onCommand(listener),
+    },
   }
 }
 

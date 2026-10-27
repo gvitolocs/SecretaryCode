@@ -1,5 +1,6 @@
 import type { StorageSnapshot, WindowSnapshot } from "../shared/ipc-transport"
 import type { WindowBootstrap } from "../shared/window-bootstrap"
+import type { ShellCommand } from "../main/secretary/shell-command"
 
 export type ElectronNative = {
   secretary: {
@@ -7,6 +8,8 @@ export type ElectronNative = {
       panel: "lucina" | "agents" | "computer" | undefined,
       rect?: { x: number; y: number; width: number; height: number },
     ): void
+    navigate(path: string): void
+    onCommand(listener: (command: ShellCommand) => void): () => void
     request(action: string, input?: unknown): Promise<{ ok: boolean; data?: unknown; error?: string }>
   }
   codingLanes: CodingLanes

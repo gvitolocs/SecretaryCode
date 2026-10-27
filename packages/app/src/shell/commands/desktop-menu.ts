@@ -192,7 +192,7 @@ export const DESKTOP_MENU: DesktopMenu[] = [
       {
         type: "item",
         labelKey: "desktop.menu.codingAgents",
-        command: "secretary.agents.open",
+        command: "secretary.code.open",
         accelerator: { macos: "Cmd+Option+A" },
       },
       {
