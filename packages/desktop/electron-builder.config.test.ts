@@ -97,6 +97,7 @@ test("shared packaging defaults", async () => {
   expect(await Bun.file(include).exists()).toBe(true)
   expect(config.files).toContain("!resources/opencode-cli*")
   expect(config.extraResources).toEqual([
+    { from: "resources/lucina-web", to: "lucina-web" },
     {
       from: "resources/",
       to: "",
