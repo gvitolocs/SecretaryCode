@@ -19,6 +19,11 @@ const focused = makeWindow("focused")
 class Contents extends EventEmitter {
   getZoomFactor = () => 1
   focus() {}
+  isDestroyed = () => false
+  sent: [string, unknown][] = []
+  send(channel: string, payload: unknown) {
+    this.sent.push([channel, payload])
+  }
 }
 const lucina = new Contents()
 let lucinaExists = true
@@ -44,7 +49,7 @@ mock.module("../src/main/secretary/index", () => ({
 mock.module("../src/main/secretary/lane-window", () => ({ codingLanesView: () => ({}) }))
 const computer = new Contents()
 mock.module("../src/main/secretary/computer-view", () => ({
-  computerView: () => ({}),
+  computerView: () => ({ webContents: computer, setBounds() {}, setBorderRadius() {} }),
   computerWebContents: () => computer,
   onComputerFocusRequest: () => {},
   setComputerFocusMode: () => {},
@@ -113,6 +118,48 @@ ipc.emit("secretary:shell", { sender: computer, senderFrame: { url: "https://get
   view: "lucina",
 })
 assert.deepEqual(sent, [["host:secretary:shell-command", { action: "show", view: "lucina" }]])
+sent.length = 0
+
+// Focus mode: only the view the window shows may switch it, and it ends when that view leaves, reloads or goes away.
+// Lucina is placed and turned focus mode on above.
+const computerFrame = { sender: computer, senderFrame: { url: "https://getsecretary.tech/computer", parent: null } }
+const area = { x: 0, y: 0, width: 100, height: 100 }
+const on = ["host:secretary:shell-command", { action: "focus", on: true }]
+const off = ["host:secretary:shell-command", { action: "focus", on: false }]
+// The Computer view in the background (reloading after a sign-in, say) is ignored, both ways.
+ipc.emit("secretary:shell", computerFrame, { action: "focus", on: true })
+ipc.emit("secretary:shell", computerFrame, { action: "focus", on: false })
+assert.deepEqual(sent, [], "a view in the background never switches focus mode")
+// Her own history changes and subframes keep it; a main-frame load ends it, once.
+lucina.emit("did-start-navigation", { isMainFrame: true, isSameDocument: true })
+lucina.emit("did-start-navigation", { isMainFrame: false, isSameDocument: false })
+assert.deepEqual(sent, [])
+lucina.emit("did-start-navigation", { isMainFrame: true, isSameDocument: false })
+lucina.emit("did-start-navigation", { isMainFrame: true, isSameDocument: false })
+assert.deepEqual(sent, [off], "a reload ends focus mode")
+sent.length = 0
+// Another view taking the window ends it.
+ipc.emit("secretary:shell", fromLucina, { action: "focus", on: true })
+ipc.emit("secretary:place", renderer, "computer", area)
+assert.deepEqual(sent, [on, off], "the focused view left the window")
+sent.length = 0
+// The card hidden (settings over it) ends it too.
+ipc.emit("secretary:shell", computerFrame, { action: "focus", on: true })
+ipc.emit("secretary:place", renderer, undefined, undefined)
+assert.deepEqual(sent, [on, off])
+sent.length = 0
+// The window leaving focus mode itself (Esc, Exit focus) stops the watch: a later reload sends nothing.
+ipc.emit("secretary:place", renderer, "computer", area)
+ipc.emit("secretary:shell", computerFrame, { action: "focus", on: true })
+ipc.emit("secretary:focus-mode", renderer, false)
+computer.emit("did-start-navigation", { isMainFrame: true, isSameDocument: false })
+assert.deepEqual(sent, [on])
+assert.deepEqual(computer.sent.at(-1), ["secretary:focus-mode", false])
+sent.length = 0
+// The focused view going away ends it.
+ipc.emit("secretary:shell", computerFrame, { action: "focus", on: true })
+computer.emit("destroyed")
+assert.deepEqual(sent, [on, off])
 sent.length = 0
 
 // A view that does not exist hears nothing.

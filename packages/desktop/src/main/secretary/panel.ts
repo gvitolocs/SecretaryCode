@@ -1,4 +1,4 @@
-import { BrowserWindow, ipcMain, type WebContentsView } from "electron"
+import { BrowserWindow, ipcMain, type WebContents, type WebContentsView } from "electron"
 import { isRendererUrl } from "../windows/scheme"
 import { forgetDevice, lucinaView, lucinaWebContents, openLucinaPath } from "./index"
 import { isLucinaUrl } from "./lucina-web-policy"
@@ -18,7 +18,14 @@ const views: Record<CompanionPanel, () => WebContentsView> = {
   computer: computerView,
 }
 
-const state = { host: undefined as BrowserWindow | undefined, created: new Set<WebContentsView>() }
+const state = {
+  host: undefined as BrowserWindow | undefined,
+  created: new Set<WebContentsView>(),
+  // The view the window shows now; only it may switch focus mode.
+  placed: undefined as WebContents | undefined,
+  // The view that turned focus mode on, and how to stop watching it.
+  focused: undefined as { contents: WebContents; unwatch: () => void } | undefined,
+}
 
 /** Call once during startup; the main renderer places the companion panels through `secretary:place`. */
 export function setupCompanionPanels() {
@@ -49,16 +56,23 @@ export function setupCompanionPanels() {
     if (!fromLucina(event)) return
     const command = parseShellCommand(message)
 
-    if (command) toHost(command)
+    if (command?.action === "focus") requestFocus(event.sender, command.on)
+    else if (command) toHost(command)
   })
 
   // The viewer's refused fullscreen and Esc ask the window for focus mode like her page's setFocusMode does.
-  onComputerFocusRequest((on) => toHost({ action: "focus", on }))
+  onComputerFocusRequest((on) => {
+    const contents = computerWebContents()
+
+    if (contents) requestFocus(contents, on)
+  })
 
   // The window's focus mode, relayed to her web views so a page can hide its own header (onFocusModeChange).
   ipcMain.on("secretary:focus-mode", (event, on: unknown) => {
     if (!event.senderFrame || event.senderFrame.parent || !isRendererUrl(event.senderFrame.url)) return
     const value = on === true
+    // The window left focus mode (Esc, Exit focus, another view): nothing to watch any more.
+    if (!value) unwatchFocus()
     setComputerFocusMode(value)
     for (const contents of [lucinaWebContents(), computerWebContents()])
       if (contents && !contents.isDestroyed()) contents.send("secretary:focus-mode", value)
@@ -70,6 +84,56 @@ export function setupCompanionPanels() {
     if (!fromLucina(event)) return
     await forgetDevice().catch(() => {})
   })
+}
+
+/**
+ * Focus mode asked for by one of her views. Only the view the window shows now may switch it: a view in the background
+ * (the Computer page reloading after a sign-in while the Chat is open) is ignored. The view that turns it on is
+ * watched, so focus mode ends when that view leaves the window, loads another page or goes away; the rail can never
+ * stay hidden behind it.
+ */
+function requestFocus(contents: WebContents, on: boolean) {
+  if (contents !== state.placed) return
+
+  if (on) watchFocus(contents)
+  else unwatchFocus()
+  toHost({ action: "focus", on })
+}
+
+function watchFocus(contents: WebContents) {
+  if (state.focused?.contents === contents) return
+  unwatchFocus()
+  // A reload or another page in the main frame ends it; her own history changes (same document) do not.
+  const navigated = (
+    details: { isMainFrame?: boolean; isSameDocument?: boolean },
+    _url?: string,
+    isInPlace?: boolean,
+    isMainFrame?: boolean,
+  ) => {
+    if ((details?.isMainFrame ?? isMainFrame) && !(details?.isSameDocument ?? isInPlace)) endFocus(contents)
+  }
+  const destroyed = () => endFocus(contents)
+  contents.on("did-start-navigation", navigated as never)
+  contents.once("destroyed", destroyed)
+  state.focused = {
+    contents,
+    unwatch: () => {
+      contents.removeListener("did-start-navigation", navigated as never)
+      contents.removeListener("destroyed", destroyed)
+    },
+  }
+}
+
+function unwatchFocus() {
+  state.focused?.unwatch()
+  state.focused = undefined
+}
+
+/** Ends focus mode when the view that turned it on is no longer the one on screen. */
+function endFocus(contents: WebContents) {
+  if (state.focused?.contents !== contents) return
+  unwatchFocus()
+  toHost({ action: "focus", on: false })
 }
 
 /** A validated command for the window hosting the companion views, or else the focused one. */
@@ -93,6 +157,9 @@ function place(window: BrowserWindow, panel: CompanionPanel | undefined, rect: R
   state.created.forEach((view) => {
     if (view !== target && window.contentView.children.includes(view)) window.contentView.removeChildView(view)
   })
+  state.placed = target?.webContents
+  // The view in focus mode left the window (another view, settings over it, the card hidden).
+  if (state.focused && state.focused.contents !== state.placed) endFocus(state.focused.contents)
 
   if (!target || !rect) return
 
