@@ -208,20 +208,25 @@ const getBase = (appId: string): Configuration => {
       )
     },
     mac: {
-      fileAssociations: imageTypes.map((type) => ({ ext: type.ext, name: type.uti, role: "Viewer", rank: "Default" })),
       category: "public.app-category.developer-tools",
       icon: "resources/secretary-code.icns",
       // A stable certificate keeps macOS privacy grants (Screen Recording, Microphone) across rebuilds;
       // ad-hoc signatures change every build, so macOS treats each build as a new app.
       identity: process.env.SECRETARY_SIGN_IDENTITY || "-",
       extendInfo: {
-        // electron-builder only emits extension declarations; add UTI declarations explicitly.
-        CFBundleDocumentTypes: imageTypes.map((type) => ({
-          CFBundleTypeName: type.uti,
-          LSItemContentTypes: [type.uti],
-          CFBundleTypeRole: "Viewer",
-          LSHandlerRank: "Default",
-        })),
+        // One UTI declaration per image type. Finder's double-click resolves with kLSRolesAll, where an Editor
+        // (Preview) beats a Viewer, so the types Lucina shows are claimed as Editor ("Save to Lucina" writes).
+        // RAW stays with Preview: Chromium can't render it, so it is only an alternate viewer.
+        CFBundleDocumentTypes: imageTypes.map((type) => {
+          const raw = type.uti === "public.camera-raw-image"
+          return {
+            CFBundleTypeName: type.uti,
+            LSItemContentTypes: [type.uti],
+            CFBundleTypeExtensions: [...type.ext],
+            CFBundleTypeRole: raw ? "Viewer" : "Editor",
+            LSHandlerRank: raw ? "Alternate" : "Default",
+          }
+        }),
         NSAutoFillRequiresTextContentTypeForOneTimeCodeOnMac: true,
         // The recorder helper runs as a child of the app, so macOS asks for (and lists) these
         // permissions under Secretary Code.

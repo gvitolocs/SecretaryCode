@@ -224,19 +224,17 @@ test.each(channels)("Mac image document associations for $channel", ({ channel }
     ["public.camera-raw-image", ["raw", "dng", "cr2", "cr3", "nef", "arw", "orf", "rw2", "raf"]],
   ] as const
   const config = load(channel)
-  const associations = config.mac?.fileAssociations
-  expect(Array.isArray(associations)).toBe(true)
-  expect(associations).toHaveLength(types.length)
-  expect(config.mac?.extendInfo?.CFBundleDocumentTypes).toEqual(
-    types.map(([uti]) => ({
-      CFBundleTypeName: uti,
-      LSItemContentTypes: [uti],
-      CFBundleTypeRole: "Viewer",
-      LSHandlerRank: "Default",
-    })),
-  )
+  // electron-builder's fileAssociations would add a second, extension-only set; only the UTI list is declared.
+  expect(config.mac?.fileAssociations).toBeUndefined()
+  const declared = config.mac?.extendInfo?.CFBundleDocumentTypes as Array<Record<string, unknown>>
+  expect(declared).toHaveLength(types.length)
   for (const [uti, extensions] of types) {
-    const entry = Array.isArray(associations) && associations.find((item) => item.name === uti)
-    expect(entry).toMatchObject({ role: "Viewer", rank: "Default", ext: expect.arrayContaining([...extensions]) })
+    const raw = uti === "public.camera-raw-image"
+    expect(declared.find((item) => item.CFBundleTypeName === uti)).toMatchObject({
+      LSItemContentTypes: [uti],
+      CFBundleTypeExtensions: expect.arrayContaining([...extensions]),
+      CFBundleTypeRole: raw ? "Viewer" : "Editor",
+      LSHandlerRank: raw ? "Alternate" : "Default",
+    })
   }
 })
