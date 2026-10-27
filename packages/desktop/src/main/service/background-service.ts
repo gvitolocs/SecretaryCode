@@ -1,8 +1,9 @@
 import { app } from "electron"
-import { Context, Effect, FileSystem, Layer, Path } from "effect"
+import { Cause, Context, Effect, FileSystem, Layer, Path } from "effect"
 import { BackgroundServiceState } from "./background-service-state"
 import { cleanStages } from "./cli-stages"
 import { DesktopCli } from "./desktop-cli"
+import { reportEngineFailure } from "../secretary/diagnostics"
 import { SidecarCredentials } from "./sidecar-credentials"
 import { sidecarProbe } from "./sidecar-probe"
 
@@ -22,12 +23,16 @@ export const layer = Layer.effect(
 
     return Service.of(
       yield* BackgroundServiceState.make({
-        initial: connect("initial").pipe(Effect.provide(context)),
-        reconnect: connect("reconnect").pipe(Effect.provide(context), Effect.orDie),
+        initial: connect("initial").pipe(watch("initial"), Effect.provide(context)),
+        reconnect: connect("reconnect").pipe(watch("reconnect"), Effect.orDie, Effect.provide(context)),
       }),
     )
   }),
 )
+
+/** The engine failed to start: no service, a version clash or the startup timeout reaches Lucina. */
+const watch = (mode: "initial" | "reconnect") =>
+  Effect.onError((cause) => Effect.sync(() => reportEngineFailure(Cause.squash(cause), { mode })))
 
 const connect = Effect.fn("BackgroundService.connect")(function* (mode: "initial" | "reconnect") {
   yield* Effect.logInfo("starting v2 background service")

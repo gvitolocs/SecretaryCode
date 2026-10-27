@@ -142,7 +142,6 @@ export function WorkspaceSidebar() {
       <HomeUtilityNav
         class="flex shrink-0 pe-2"
         onOpenSettings={projects.utility.settings}
-        onOpenHelp={projects.utility.help}
         language={language}
       />
     </aside>

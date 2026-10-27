@@ -165,8 +165,9 @@ function renderControls(active, snapshot) {
   $("record-label").textContent = active.phase === "idle" && !view.selected ? t("chooseSource") : label
   $("pause").hidden = !recording
   $("pause").textContent = active.phase === "paused" ? t("resume") : t("pause")
+  // The clock is the helper's own `elapsed`; until its `started` event there is nothing to count.
   $("timer").textContent = clock(active.elapsed)
-  $("timer").hidden = active.phase === "idle"
+  $("timer").hidden = active.phase === "idle" || active.phase === "starting"
 }
 
 function renderChips(snapshot) {

@@ -484,8 +484,14 @@ export const dict = {
   "error.page.action.checking": "Tjekker…",
   "error.page.action.checkUpdates": "Tjek for opdateringer",
   "error.page.action.updateTo": "Opdater til {{version}}",
-  "error.page.report.prefix": "Rapporter venligst denne fejl til OpenCode-teamet",
-  "error.page.report.discord": "på Discord",
+  "error.page.report.lucina": "Lucina har logfilerne",
+  "error.page.report.queued": "Logfilerne er gemt til Lucina. Hun henter dem næste gang, Secretary Code er online.",
+  "error.page.report.id": "Rapport {{id}}",
+  "error.page.report.failed": "Rapporten kunne ikke gemmes. Eksportér logfilerne i stedet.",
+  "error.page.action.sendToLucina": "Send til Lucina",
+  "error.page.action.sending": "Sender…",
+  "error.page.note.label": "Tilføj en note",
+  "error.page.note.placeholder": "Hvad lavede du, da det skete?",
   "error.page.version": "Version: {{version}}",
 
   "error.dev.rootNotFound":
@@ -618,6 +624,8 @@ export const dict = {
 
   "settings.general.row.pinchZoom.title": "Knib for at zoome",
   "settings.general.row.pinchZoom.description": "Tillad knibebevægelser på pegefeltet og Ctrl-rulning for at zoome",
+  "settings.general.row.crashReports.title": "Send nedbrudsrapporter til Lucina",
+  "settings.general.row.crashReports.description": "Når Secretary Code går ned eller ikke kan starte, får Lucina logfilerne, så hun kan forklare, hvad der gik galt. Slå det fra for at beholde dem på denne Mac.",
 
   "sound.option.none": "Ingen",
   "sound.option.alert01": "Alarm 01",

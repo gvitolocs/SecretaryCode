@@ -12,6 +12,7 @@ import { setNativeTranslations } from "../native/translations"
 import { IpcPortHandoff } from "../ipc-transport"
 import { ApplicationLifecycle } from "../lifecycle"
 import { finishFirstLaunchOnboarding, isFirstLaunchOnboardingPending } from "../lifecycle/onboarding"
+import { captureFatalRendererError, diagnosticSettings, setDiagnosticAutomatic } from "../secretary/diagnostics"
 import { BackgroundService } from "../service/background-service"
 import { DesktopCli } from "../service/desktop-cli"
 import { SidecarCredentials } from "../service/sidecar-credentials"
@@ -40,7 +41,12 @@ export const appHandlers = AppRpcs.toLayer(
       AppExportDebugLogs: () => logging.exportDebug,
       AppSetForceFocus: ({ enabled }, context) => promise(() => setForceFocus(sender(handoff, context), enabled)),
       AppRecordFatalRendererError: ({ error }) =>
-        scoped("renderer", Effect.logError("fatal renderer error", { ...error })),
+        scoped("renderer", Effect.logError("fatal renderer error", { ...error })).pipe(
+          Effect.andThen(Effect.promise(() => captureFatalRendererError(error))),
+          Effect.map((receipt) => (receipt ? { id: receipt.id, sent: receipt.sent } : null)),
+        ),
+      AppGetDiagnosticsSettings: () => Effect.sync(diagnosticSettings),
+      AppSetDiagnosticsSettings: ({ automatic }) => Effect.sync(() => setDiagnosticAutomatic(automatic)),
       AppSetNativeTranslations: ({ value }, context) =>
         Effect.sync(() => {
           const contents = sender(handoff, context)

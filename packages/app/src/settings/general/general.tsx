@@ -39,6 +39,32 @@ const AutoApprovePermissionsSetting: Component = () => {
   )
 }
 
+/** Desktop only: whether crashes and startup failures are sent to Lucina automatically. */
+const CrashReportingSetting: Component = () => {
+  const language = useLanguage()
+  const platform = usePlatform()
+  const [settings, actions] = createResource(() => platform.diagnosticsSettings?.())
+  const automatic = () => settings.latest?.automatic ?? true
+
+  const change = (checked: boolean) => {
+    const update = platform.setDiagnosticsAutomatic?.(checked)
+
+    if (!update) return
+    void update.then(actions.mutate).catch(() => actions.mutate(undefined))
+  }
+
+  return (
+    <SettingsRow
+      title={language.t("settings.general.row.crashReports.title")}
+      description={language.t("settings.general.row.crashReports.description")}
+    >
+      <div data-action="settings-crash-reports">
+        <Switch checked={automatic()} onChange={change} />
+      </div>
+    </SettingsRow>
+  )
+}
+
 const WorkspaceDestinationSetting: Component = () => {
   const language = useLanguage()
   const settings = useSettings()
@@ -264,6 +290,7 @@ export const SettingsGeneral: Component = () => {
         <FollowUpBehaviorSetting />
 
         <Show when={desktop()}>
+          <CrashReportingSetting />
           <SettingsRow
             title={language.t("settings.general.row.pinchZoom.title")}
             description={language.t("settings.general.row.pinchZoom.description")}

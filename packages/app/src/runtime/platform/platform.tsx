@@ -33,7 +33,16 @@ export type FatalRendererErrorLog = {
   version?: string
   platform: PlatformName
   os?: DesktopOS
+  /** The owner's note from the fatal screen, sent with an explicit "Send to Lucina". */
+  note?: string
+  /** True when the owner pressed "Send to Lucina" rather than automatic reporting. */
+  userInitiated?: boolean
 }
+
+/** What the fatal screen shows after a report was recorded: its id and whether Lucina has it. */
+export type FatalRendererReport = { id: string; sent: boolean }
+
+export type DiagnosticsSettings = { automatic: boolean }
 
 type PlatformBase = {
   /** App version */
@@ -114,8 +123,14 @@ type PlatformBase = {
   /** Force focus styles on interactive elements through desktop devtools (desktop only) */
   setForceFocus?(enabled: boolean): Promise<void>
 
-  /** Record a fatal renderer error in platform logs (desktop only) */
-  recordFatalRendererError?(error: FatalRendererErrorLog): Promise<void>
+  /** Record a fatal renderer error with Lucina, and report the id the fatal screen shows (desktop only) */
+  recordFatalRendererError?(error: FatalRendererErrorLog): Promise<FatalRendererReport | null>
+
+  /** Whether crashes and errors are sent to Lucina automatically (desktop only) */
+  diagnosticsSettings?(): Promise<DiagnosticsSettings>
+
+  /** Turns automatic crash reporting on or off (desktop only) */
+  setDiagnosticsAutomatic?(automatic: boolean): Promise<DiagnosticsSettings>
 
   /** GUI extension bridge to the main-process extension host (desktop only). */
   extensions?: Bridge

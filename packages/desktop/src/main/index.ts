@@ -9,6 +9,7 @@ import { createEarlyWindow } from "./windows/early"
 import { rendererAssetsServed } from "./windows/protocol"
 import { registerRendererScheme } from "./windows/scheme"
 import { setupSecretary } from "./secretary"
+import { setupDiagnostics } from "./secretary/diagnostics"
 import { setupCodingLanes } from "./secretary/lane-window"
 import { setupCompanionPanels } from "./secretary/panel"
 import { setupRecorder } from "./secretary/recorder"
@@ -18,6 +19,8 @@ import { setupRecorder } from "./secretary/recorder"
 // hundred milliseconds of module evaluation and layers — loads. Configuration and the scheme must
 // precede ready; the window is created the moment ready fires; everything else is imported after.
 configureApplication()
+// Crash reporting hooks attach before ready so an early main-process failure is captured too.
+setupDiagnostics()
 setupSecretary()
 setupCodingLanes()
 setupCompanionPanels()

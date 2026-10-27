@@ -42,6 +42,12 @@ export const AppSetForceFocus = Rpc.make("AppSetForceFocus", {
   payload: { enabled: Schema.Boolean },
 })
 
+/** What the fatal screen shows after recording: the report's id and whether Lucina has it yet. */
+export const DiagnosticReportReceipt = Schema.Struct({
+  id: Schema.String,
+  sent: Schema.Boolean,
+})
+
 export const AppRecordFatalRendererError = Rpc.make("AppRecordFatalRendererError", {
   payload: {
     error: Schema.Struct({
@@ -50,8 +56,22 @@ export const AppRecordFatalRendererError = Rpc.make("AppRecordFatalRendererError
       version: Schema.optionalKey(Schema.String),
       platform: Schema.String,
       os: Schema.optionalKey(Schema.String),
+      /** The owner's note from the fatal screen. */
+      note: Schema.optionalKey(Schema.String),
+      /** True for "Send to Lucina", which ignores the automatic-reporting setting. */
+      userInitiated: Schema.optionalKey(Schema.Boolean),
     }),
   },
+  success: Schema.NullOr(DiagnosticReportReceipt),
+})
+
+export const AppGetDiagnosticsSettings = Rpc.make("AppGetDiagnosticsSettings", {
+  success: Schema.Struct({ automatic: Schema.Boolean }),
+})
+
+export const AppSetDiagnosticsSettings = Rpc.make("AppSetDiagnosticsSettings", {
+  payload: { automatic: Schema.Boolean },
+  success: Schema.Struct({ automatic: Schema.Boolean }),
 })
 
 export const AppSetNativeTranslations = Rpc.make("AppSetNativeTranslations", {
@@ -72,6 +92,8 @@ export const AppRpcs = RpcGroup.make(
   AppExportDebugLogs,
   AppSetForceFocus,
   AppRecordFatalRendererError,
+  AppGetDiagnosticsSettings,
+  AppSetDiagnosticsSettings,
   AppSetNativeTranslations,
   AppRelaunch,
 )

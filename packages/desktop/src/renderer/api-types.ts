@@ -3,6 +3,8 @@ import type { DesktopNativeBundle } from "@opencode/app/i18n/desktop-native"
 import type { WindowBootstrap } from "../shared/window-bootstrap"
 import type {
   ClipboardImage,
+  DiagnosticReportReceipt,
+  DiagnosticsSettings,
   DirectoryPickerOptions,
   FatalRendererError,
   FilePickerOptions,
@@ -66,6 +68,8 @@ export type ElectronAPI = {
   setBackgroundColor(color: string): Promise<void>
   exportDebugLogs(): Promise<string>
   setForceFocus(enabled: boolean): Promise<void>
-  recordFatalRendererError(error: FatalRendererError): Promise<void>
+  recordFatalRendererError(error: FatalRendererError): Promise<DiagnosticReportReceipt | null>
+  getDiagnosticsSettings(): Promise<DiagnosticsSettings>
+  setDiagnosticsSettings(automatic: boolean): Promise<DiagnosticsSettings>
   setNativeTranslations(bundle: DesktopNativeBundle): Promise<void>
 }
