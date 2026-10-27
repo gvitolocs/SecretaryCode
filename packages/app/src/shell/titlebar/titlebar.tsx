@@ -810,6 +810,18 @@ export function Titlebar(props: { verticalTabs?: { mount?: HTMLElement } }) {
                     <TitlebarRightMount />
                   </div>
                 </Show>
+                <Show when={workspace.focus.on()}>
+                  {/* Focus mode's way back, next to Esc. */}
+                  <button
+                    type="button"
+                    data-action="titlebar-exit-focus"
+                    class="flex h-[26px] shrink-0 items-center gap-1.5 rounded-[7px] border border-v2-border-border-base bg-v2-background-bg-layer-01 px-2.5 text-[12.5px] leading-4 text-v2-text-text-base [font-weight:600] hover:bg-v2-background-bg-layer-02 focus-visible:outline-none focus-visible:bg-v2-background-bg-layer-02 [app-region:no-drag]"
+                    onClick={() => workspace.focus.set(false)}
+                  >
+                    {language.t("shell.exitFocus")}
+                    <span class="text-v2-text-text-faint">Esc</span>
+                  </button>
+                </Show>
                 <Show when={rail()}>
                   {/* Lucina's notifications, which her web app's hidden top bar used to hold. */}
                   <Tooltip placement="bottom" value={language.t("shell.notifications")} class="shrink-0">

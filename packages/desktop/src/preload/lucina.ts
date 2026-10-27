@@ -2,10 +2,10 @@ import { contextBridge, ipcRenderer } from "electron"
 import { LUCINA_ORIGIN } from "../main/secretary/lucina-web-policy"
 import { isProjectPath, isShellView, parseShellCommand, type ShellCommand } from "../main/secretary/shell-command"
 
-// The preload of Lucina's own web view (the Lucina panel only; the Computer and image-viewer views have none). It runs
-// sandboxed, so it is a self-contained bundle (out/preload/lucina.cjs) that may import nothing but Electron.
-// window.secretaryShell lets her web app ask the desktop shell to show Code or another view. Each call sends one plain
-// message; the main process checks the sender again before it forwards anything.
+// The preload of her web views the shell frames (Lucina and Computer; the image viewer has none). It runs sandboxed, so
+// it is a self-contained bundle (out/preload/lucina.cjs) that may import nothing but Electron.
+// window.secretaryShell lets her web app ask the desktop shell to show Code or another view, or to enter focus mode.
+// Each call sends one plain message; the main process checks the sender again before it forwards anything.
 
 function send(command: ShellCommand) {
   ipcRenderer.send("secretary:shell", command)
@@ -34,6 +34,21 @@ if (location.origin === LUCINA_ORIGIN && window.top === window) {
         if (!isShellView(view)) throw new TypeError("unknown view")
         const command = parseShellCommand({ action: "show", view })
         if (command) send(command)
+      },
+      /** Focus mode: her page takes nearly the whole window; the shell's rail and Lucina step aside. */
+      setFocusMode(on: boolean) {
+        if (typeof on !== "boolean") throw new TypeError("on must be a boolean")
+        send({ action: "focus", on })
+      },
+      /** The shell's focus mode as it changes, including when the shell itself leaves it. Returns the unsubscribe. */
+      onFocusModeChange(listener: (on: boolean) => void) {
+        if (typeof listener !== "function") throw new TypeError("listener must be a function")
+        const handler = (_event: unknown, on: unknown) => listener(on === true)
+        ipcRenderer.on("secretary:focus-mode", handler)
+
+        return () => {
+          ipcRenderer.removeListener("secretary:focus-mode", handler)
+        }
       },
     }),
   )

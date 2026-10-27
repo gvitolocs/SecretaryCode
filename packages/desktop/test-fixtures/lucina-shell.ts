@@ -46,6 +46,8 @@ const computer = new Contents()
 mock.module("../src/main/secretary/computer-view", () => ({
   computerView: () => ({}),
   computerWebContents: () => computer,
+  onComputerFocusRequest: () => {},
+  setComputerFocusMode: () => {},
 }))
 const { setupCompanionPanels } = await import("../src/main/secretary/panel")
 setupCompanionPanels()
@@ -74,9 +76,11 @@ sent.length = 0
 ipc.emit("secretary:place", renderer, "lucina", { x: 0, y: 0, width: 100, height: 100 })
 ipc.emit("secretary:shell", fromLucina, { action: "showCode", projectPath: "/Users/me/app" })
 ipc.emit("secretary:shell", fromLucina, { action: "hideCode" })
+ipc.emit("secretary:shell", fromLucina, { action: "focus", on: true })
 assert.deepEqual(sent, [
   ["host:secretary:shell-command", { action: "showCode", projectPath: "/Users/me/app" }],
   ["host:secretary:shell-command", { action: "hideCode" }],
+  ["host:secretary:shell-command", { action: "focus", on: true }],
 ])
 sent.length = 0
 
@@ -94,7 +98,7 @@ for (const event of rejected) ipc.emit("secretary:shell", event, { action: "hide
 for (const event of rejected) await handlers.get("secretary:sign-out")!(event)
 ipc.emit("secretary:shell", fromLucina, { action: "signOut" })
 assert.equal(signedOut, 0, "only Lucina's own top frame may sign the Mac out, and only through its invoke channel")
-for (const message of [undefined, null, "hideCode", [], {}, { action: "nope" }, { action: "show" }, { action: "show", view: "x" }, { action: "showCode", projectPath: "rel" }])
+for (const message of [undefined, null, "hideCode", [], {}, { action: "nope" }, { action: "show" }, { action: "show", view: "x" }, { action: "showCode", projectPath: "rel" }, { action: "focus" }, { action: "focus", on: "yes" }])
   ipc.emit("secretary:shell", fromLucina, message)
 assert.deepEqual(sent, [])
 

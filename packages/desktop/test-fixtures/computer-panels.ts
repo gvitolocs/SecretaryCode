@@ -34,6 +34,10 @@ class Contents extends EventEmitter {
     },
   }
   getUserAgent = () => "Secretary-Test"
+  sent: [string, unknown][] = []
+  send(channel: string, payload: unknown) {
+    this.sent.push([channel, payload])
+  }
   focus = mock(() => {})
   getZoomFactor = () => 1
   isDestroyed = () => this.destroyed
@@ -57,6 +61,7 @@ class View {
 }
 const window = Object.assign(new EventEmitter(), {
   isDestroyed: () => false,
+  webContents: { sent: [] as [string, unknown][], send(channel: string, payload: unknown) { this.sent.push([channel, payload]) } },
   contentView: {
     children: [] as View[],
     addChildView(view: View) {
@@ -169,15 +174,39 @@ for (const [url, trusted] of [
     "unknown",
   ] as const) {
     const allowed = trusted && ["pointerLock", "fullscreen", "clipboard-sanitized-write"].includes(permission)
+    // Other views of the partition (Films' player) keep the HTML fullscreen.
     assert.equal(partition.check?.(null, permission, url, { isMainFrame: false }), allowed, `${url}: ${permission}`)
+    // The viewer's own fullscreen is refused from any frame: the shell's focus mode replaces it.
+    const viewer = permission === "fullscreen" ? false : allowed
+    const contents = view.webContents as unknown as WebContents
+    assert.equal(partition.check?.(contents, permission, url, { isMainFrame: false }), viewer, `${url}: ${permission}`)
     const callback = mock((_allowed: boolean) => {})
-    partition.request?.(view.webContents as unknown as WebContents, permission, callback, {
-      requestingUrl: url,
-      isMainFrame: false,
-    })
-    assert.deepEqual(callback.mock.calls, [[allowed]], `${url}: ${permission}`)
+    window.webContents.sent.length = 0
+    partition.request?.(contents, permission, callback, { requestingUrl: url, isMainFrame: false })
+    assert.deepEqual(callback.mock.calls, [[viewer]], `${url}: ${permission}`)
+    assert.deepEqual(
+      window.webContents.sent,
+      permission === "fullscreen" ? [["secretary:shell-command", { action: "focus", on: true }]] : [],
+      `${url}: ${permission} asks the window for focus mode`,
+    )
   }
 }
+
+// Esc leaves focus mode only while the window has it on; the window relays its focus mode to the viewer.
+window.webContents.sent.length = 0
+const escape = { type: "keyDown", key: "Escape" }
+view.webContents.emit("before-input-event", {}, escape)
+assert.deepEqual(window.webContents.sent, [], "no focus mode, nothing to leave")
+ipc.emit("secretary:focus-mode", event, true)
+assert.deepEqual(view.webContents.sent.at(-1), ["secretary:focus-mode", true])
+view.webContents.emit("before-input-event", {}, { type: "keyUp", key: "Escape" })
+view.webContents.emit("before-input-event", {}, { type: "keyDown", key: "a" })
+view.webContents.emit("before-input-event", {}, escape)
+assert.deepEqual(window.webContents.sent, [["secretary:shell-command", { action: "focus", on: false }]])
+ipc.emit("secretary:focus-mode", { sender, senderFrame: { url: "https://getsecretary.tech/", parent: null } }, false)
+assert.deepEqual(view.webContents.sent.at(-1), ["secretary:focus-mode", true], "only the app renderer sets focus mode")
+ipc.emit("secretary:focus-mode", event, false)
+assert.deepEqual(view.webContents.sent.at(-1), ["secretary:focus-mode", false])
 for (const [code, mainFrame] of [
   [-3, true],
   [-105, false],

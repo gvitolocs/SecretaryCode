@@ -10,18 +10,36 @@ const origin = "https://getsecretary.tech"
 const page = withShellFlag(`${origin}/computer`)
 const permissions = new Set(["pointerLock", "fullscreen", "clipboard-sanitized-write"])
 let view: WebContentsView | undefined
+// The shell's focus mode as the main process last relayed it, and who to ask when the view wants it on or off.
+const focus = { on: false, request: (_on: boolean) => {} }
+
+/** Where the Computer view's focus-mode requests go (its refused fullscreen, Esc). Set once by the panels. */
+export function onComputerFocusRequest(request: (on: boolean) => void) {
+  focus.request = request
+}
+
+/** The shell's focus mode, as relayed to the web views. */
+export function setComputerFocusMode(on: boolean) {
+  focus.on = on
+}
 
 /** The web login and desktop stream stay warm while another companion tab is selected. */
 export function computerView() {
   if (view && !view.webContents.isDestroyed()) return view
 
   const partition = session.fromPartition(LUCINA_PARTITION)
-  partition.setPermissionCheckHandler(
-    (_contents, permission, requestingOrigin) => allowedOrigin(requestingOrigin) && permissions.has(permission),
+  // The viewer's fullscreen (from her page or the stream frame) never takes the Mac window into macOS full screen
+  // inside the shell: it is refused and becomes the shell's focus mode. The green button keeps macOS full screen.
+  const viewerFullscreen = (contents: unknown, permission: string) =>
+    permission === "fullscreen" && !!view && contents === view.webContents
+  partition.setPermissionCheckHandler((contents, permission, requestingOrigin) =>
+    viewerFullscreen(contents, permission) ? false : allowedOrigin(requestingOrigin) && permissions.has(permission),
   )
-  partition.setPermissionRequestHandler((_contents, permission, callback, details) =>
-    callback(allowedOrigin(details.requestingUrl) && permissions.has(permission)),
-  )
+  partition.setPermissionRequestHandler((contents, permission, callback, details) => {
+    if (!viewerFullscreen(contents, permission)) return callback(allowedOrigin(details.requestingUrl) && permissions.has(permission))
+    callback(false)
+    focus.request(true)
+  })
 
   const created = new WebContentsView({
     webPreferences: {
@@ -34,6 +52,10 @@ export function computerView() {
     },
   })
   view = created
+  // Esc leaves focus mode, wherever the view's focus is (her page or the stream frame). The key still reaches the page.
+  created.webContents.on("before-input-event", (_event, input) => {
+    if (focus.on && input.type === "keyDown" && input.key === "Escape") focus.request(false)
+  })
   // Only the top page is pinned to Lucina's origin: the viewer frame may move to the home-network host the server offers.
   const navigate = (event: { url: string; isMainFrame?: boolean; preventDefault(): void }) => {
     if (event.isMainFrame === false || allowedOrigin(event.url)) return

@@ -10,6 +10,7 @@ export type ElectronNative = {
     ): void
     navigate(path: string): void
     onCommand(listener: (command: ShellCommand) => void): () => void
+    setFocusMode(on: boolean): void
     request(action: string, input?: unknown): Promise<{ ok: boolean; data?: unknown; error?: string }>
   }
   codingLanes: CodingLanes

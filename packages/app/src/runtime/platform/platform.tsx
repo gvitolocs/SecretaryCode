@@ -43,6 +43,8 @@ export type ShellCommand =
   | { action: "showCode"; projectPath?: string }
   | { action: "hideCode" }
   | { action: "show"; view: ShellView }
+  /** Focus mode: the plugin's page takes nearly the whole window; the rail and Lucina step aside. */
+  | { action: "focus"; on: boolean }
 
 type DesktopOS = "macos" | "windows" | "linux"
 
@@ -167,6 +169,8 @@ type PlatformBase = {
     navigate?(path: string): void
     /** Commands from Lucina's web app (`window.secretaryShell`). Returns the unsubscribe function. */
     onCommand?(listener: (command: ShellCommand) => void): () => void
+    /** Tells her web views whether the shell is in focus mode, so a page can hide its own header. */
+    setFocusMode?(on: boolean): void
   }
 }
 

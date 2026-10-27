@@ -2,9 +2,9 @@ import { BrowserWindow, ipcMain, type WebContentsView } from "electron"
 import { isRendererUrl } from "../windows/scheme"
 import { forgetDevice, lucinaView, lucinaWebContents, openLucinaPath } from "./index"
 import { isLucinaUrl } from "./lucina-web-policy"
-import { isNavigatePath, parseShellCommand } from "./shell-command"
+import { isNavigatePath, parseShellCommand, type ShellCommand } from "./shell-command"
 import { codingLanesView } from "./lane-window"
-import { computerView, computerWebContents } from "./computer-view"
+import { computerView, computerWebContents, onComputerFocusRequest, setComputerFocusMode } from "./computer-view"
 
 export type CompanionPanel = "lucina" | "agents" | "computer"
 
@@ -48,10 +48,20 @@ export function setupCompanionPanels() {
   ipcMain.on("secretary:shell", (event, message: unknown) => {
     if (!fromLucina(event)) return
     const command = parseShellCommand(message)
-    const host = state.host && !state.host.isDestroyed() ? state.host : BrowserWindow.getFocusedWindow()
 
-    if (!command || !host || host.isDestroyed()) return
-    host.webContents.send("secretary:shell-command", command)
+    if (command) toHost(command)
+  })
+
+  // The viewer's refused fullscreen and Esc ask the window for focus mode like her page's setFocusMode does.
+  onComputerFocusRequest((on) => toHost({ action: "focus", on }))
+
+  // The window's focus mode, relayed to her web views so a page can hide its own header (onFocusModeChange).
+  ipcMain.on("secretary:focus-mode", (event, on: unknown) => {
+    if (!event.senderFrame || event.senderFrame.parent || !isRendererUrl(event.senderFrame.url)) return
+    const value = on === true
+    setComputerFocusMode(value)
+    for (const contents of [lucinaWebContents(), computerWebContents()])
+      if (contents && !contents.isDestroyed()) contents.send("secretary:focus-mode", value)
   })
 
   // window.secretaryShell.signOut(): her web app awaits this before it ends its own session and clears its data, so
@@ -60,6 +70,13 @@ export function setupCompanionPanels() {
     if (!fromLucina(event)) return
     await forgetDevice().catch(() => {})
   })
+}
+
+/** A validated command for the window hosting the companion views, or else the focused one. */
+function toHost(command: ShellCommand) {
+  const host = state.host && !state.host.isDestroyed() ? state.host : BrowserWindow.getFocusedWindow()
+
+  if (host && !host.isDestroyed()) host.webContents.send("secretary:shell-command", command)
 }
 
 /** Whether an IPC message comes from one of her views (Lucina or Computer), in its top frame, on her origin. */

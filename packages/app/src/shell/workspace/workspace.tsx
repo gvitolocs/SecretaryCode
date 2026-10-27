@@ -92,7 +92,19 @@ export const { use: useWorkspace, provider: WorkspaceProvider } = createSimpleCo
       if (added) layout.home.setSelection({ server: ServerConnection.key(conn), directory: added })
     }
 
+    // Focus mode: a plugin's page takes nearly the whole window while the rail steps aside (the viewer's fullscreen
+    // inside the shell). Code has no web page to focus; changing the view or Esc leaves it.
+    const [focus, setFocus] = createSignal(false)
+    const focused = () => focus() && railAvailable() && !codeVisible()
+    createEffect(on(view, () => setFocus(false), { defer: true }))
+    // Her web views follow it, so a page can hide its own header (secretaryShell.onFocusModeChange).
+    createEffect(() => platform.companion?.setFocusMode?.(focused()))
+    makeEventListener(window, "keydown", (event) => {
+      if (event.key === "Escape" && focused()) setFocus(false)
+    })
+
     const run = (next: ShellCommand) => {
+      if (next.action === "focus") return void setFocus(next.on)
       show(reduceView(untrack(view), next))
       const project = commandProject(next)
 
@@ -167,6 +179,10 @@ export const { use: useWorkspace, provider: WorkspaceProvider } = createSimpleCo
       },
       rail: {
         available: railAvailable,
+      },
+      focus: {
+        on: focused,
+        set: setFocus,
       },
       view: {
         current: view,

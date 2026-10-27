@@ -21,6 +21,7 @@ export type ShellCommand =
   | { action: "showCode"; projectPath?: string }
   | { action: "hideCode" }
   | { action: "show"; view: ShellView }
+  | { action: "focus"; on: boolean }
 
 /** An absolute project path: starts with "/", at most 4096 characters, no NUL. */
 export function isProjectPath(value: unknown): value is string {
@@ -37,6 +38,8 @@ export function parseShellCommand(value: unknown): ShellCommand | undefined {
   const message = value as Record<string, unknown>
 
   if (message.action === "hideCode") return { action: "hideCode" }
+
+  if (message.action === "focus") return typeof message.on === "boolean" ? { action: "focus", on: message.on } : undefined
 
   if (message.action === "show") return isShellView(message.view) ? { action: "show", view: message.view } : undefined
 

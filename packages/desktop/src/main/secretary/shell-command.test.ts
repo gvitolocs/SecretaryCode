@@ -105,3 +105,9 @@ test("withShellFlag marks a page as framed by the shell and keeps its route and 
   expect(withShellFlag("https://getsecretary.tech/chats?tab=all")).toBe("https://getsecretary.tech/chats?tab=all&shell=1")
   expect(withShellFlag("https://getsecretary.tech/computer?shell=1")).toBe("https://getsecretary.tech/computer?shell=1")
 })
+
+test("focus takes only a boolean", () => {
+  expect(parseShellCommand({ action: "focus", on: true })).toEqual({ action: "focus", on: true })
+  expect(parseShellCommand({ action: "focus", on: false, extra: 1 })).toEqual({ action: "focus", on: false })
+  for (const on of [undefined, null, "true", 1, {}]) expect(parseShellCommand({ action: "focus", on })).toBeUndefined()
+})

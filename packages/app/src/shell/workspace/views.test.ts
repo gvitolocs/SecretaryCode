@@ -86,3 +86,8 @@ test("settings never brings Code forward, a new screen does", () => {
   expect(revealsCode(shown, { type: "draft", draftID: "d1" })).toBe(true)
   expect(revealsCode(shown, { type: "home" })).toBe(true)
 })
+
+test("focus mode never changes the view", () => {
+  expect(reduceView("computer", { action: "focus", on: true })).toBe("computer")
+  expect(reduceView("lucina", { action: "focus", on: false })).toBe("lucina")
+})

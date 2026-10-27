@@ -20,5 +20,7 @@ export const secretaryBridge = Object.freeze({
       ipcRenderer.removeListener("secretary:shell-command", handler)
     }
   },
+  /** Tells her web views whether the shell is in focus mode. */
+  setFocusMode: (on: boolean) => ipcRenderer.send("secretary:focus-mode", on === true),
   request: (action: string, input?: unknown) => ipcRenderer.invoke("secretary:request", action, input),
 })

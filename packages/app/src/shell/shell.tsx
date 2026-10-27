@@ -64,7 +64,8 @@ function Workspace(props: ParentProps) {
       >
         <Titlebar verticalTabs={verticalTabs() ? { mount: state.tabsMount } : undefined} />
         <div class="flex flex-1 min-h-0 min-w-0 flex-row">
-          <Show when={workspace.rail.available()}>
+          {/* Focus mode gives the plugin's page the rail's room too; the titlebar's Exit focus and Esc bring it back. */}
+          <Show when={workspace.rail.available() && !workspace.focus.on()}>
             <ShellRail />
           </Show>
           <Show when={workspace.sidebar.visible()}>
