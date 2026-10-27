@@ -1,6 +1,6 @@
 import { describe, expect, mock, test } from "bun:test"
 import type { CookiesSetDetails } from "electron"
-import { acceptLanguage, endWebSession, ensure, parseSetCookie, shared, webLanguages, type WebSessionContext } from "./web-session-core"
+import { endWebSession, ensure, parseSetCookie, shared, throttled, webLanguages, type WebSessionContext } from "./web-session-core"
 
 const TOKEN = "sec_test_web_session_token_1234567890"
 const SESSION_COOKIE = "sec_session=abc123; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=2592000"
@@ -179,6 +179,19 @@ describe("ensure", () => {
   })
 })
 
+test("onUnauthorized-style throttling: one sign-in attempt per interval", async () => {
+  let clock = 0
+  const run = mock(async () => "failed" as const)
+  const retry = throttled(run, 30_000, () => clock)
+  expect(await retry()).toBe("failed")
+  clock = 29_999
+  await retry()
+  expect(run).toHaveBeenCalledTimes(1)
+  clock = 30_000
+  await retry()
+  expect(run).toHaveBeenCalledTimes(2)
+})
+
 describe("endWebSession", () => {
   test("ends the server session with the CSRF header, then drops the cookies", async () => {
     const calls: string[] = []
@@ -207,5 +220,4 @@ describe("endWebSession", () => {
 
 test("the embedded pages default to English", () => {
   expect(webLanguages()).toEqual(["en-US", "en"])
-  expect(acceptLanguage()).toBe("en-US,en;q=0.8")
 })

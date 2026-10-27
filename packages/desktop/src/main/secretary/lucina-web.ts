@@ -1,6 +1,7 @@
 import { session, shell, WebContentsView, type Session } from "electron"
 import { nativeT } from "../native/translations"
 import { isLucinaUrl, LUCINA_ORIGIN, LUCINA_PARTITION, withDeviceToken } from "./lucina-web-policy"
+import { applyWebLanguage } from "./web-session"
 
 // Lucina's web app in the companion panel: the same app as getsecretary.tech and the iPhone, so the Mac gets the
 // synced chat (its own per-device conversation, cached in IndexedDB), All chats, the gallery, films and every plugin.
@@ -48,6 +49,7 @@ export function lucinaWebView(path: string, token: () => string | undefined, rea
     const html = `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width"><style>body{font:14px system-ui;padding:24px}a{color:inherit}</style><p>${escapeHTML(nativeT("desktop.lucina.loadFailed"))}</p><a href="${page}">${escapeHTML(nativeT("desktop.computer.retry"))}</a>`
     void view.webContents.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`).catch(() => {})
   })
+  applyWebLanguage(view.webContents)
   void Promise.resolve(ready)
     .catch(() => {})
     .then(() => view.webContents.loadURL(page))

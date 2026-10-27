@@ -18,6 +18,20 @@ const partition = {
 }
 class Contents extends EventEmitter {
   urls: string[] = []
+  commands: [string, unknown][] = []
+  // Like Electron before the view's first page: the command does not settle, so the load must not wait for it.
+  debugger = {
+    attached: false,
+    isAttached: () => this.debugger.attached,
+    attach: () => {
+      this.debugger.attached = true
+    },
+    sendCommand: (method: string, params: unknown) => {
+      this.commands.push([method, params])
+      return new Promise<never>(() => {})
+    },
+  }
+  getUserAgent = () => "Secretary-Test"
   loadURL = async (url: string) => {
     this.urls.push(url)
   }
@@ -35,10 +49,11 @@ const external = mock(async (_url: string) => {})
 const fromPartition = mock((_name: string) => partition)
 mock.module("electron", () => ({
   WebContentsView: View,
+  net: {},
   session: { fromPartition },
   shell: { openExternal: external },
 }))
-mock.module("../src/main/native/translations", () => ({ nativeT: (key: string) => key }))
+mock.module("../src/main/native/translations", () => ({ nativeT: (key: string) => key, nativeLocale: () => "da" }))
 const { lucinaWebView } = await import("../src/main/secretary/lucina-web")
 
 let token: string | undefined
@@ -55,6 +70,10 @@ release()
 await ready
 await new Promise((resolve) => setTimeout(resolve, 0))
 assert.deepEqual(view.webContents.urls, ["https://getsecretary.tech/"])
+// The page follows the app's language (Danish here), not the Mac locale, from its first request.
+assert.deepEqual(view.webContents.commands, [
+  ["Emulation.setUserAgentOverride", { userAgent: "Secretary-Test", acceptLanguage: "da,en" }],
+])
 
 // The token is read per request, so a later sign-in applies without a reload.
 let headers: Record<string, string> | undefined

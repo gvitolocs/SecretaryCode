@@ -3,8 +3,6 @@ import { EventEmitter } from "node:events"
 import { mock } from "bun:test"
 import type { Session, WebContents } from "electron"
 
-type HeadersListener = (details: unknown, callback: (response: unknown) => void) => void
-
 const partition = {
   check: undefined as NonNullable<Parameters<Session["setPermissionCheckHandler"]>[0]> | undefined,
   request: undefined as NonNullable<Parameters<Session["setPermissionRequestHandler"]>[0]> | undefined,
@@ -17,12 +15,6 @@ const partition = {
   // Already signed in: the Computer tab must not trade the device token again.
   fetch: mock(async (_url: string) => Response.json({ authenticated: true })),
   cookies: { set: mock(async () => {}) },
-  headers: undefined as { filter: unknown; listener: HeadersListener } | undefined,
-  webRequest: {
-    onBeforeSendHeaders(filter: unknown, listener: HeadersListener) {
-      partition.headers = { filter, listener }
-    },
-  },
 }
 const netFetch = mock(async () => new Response(null, { status: 500 }))
 class Contents extends EventEmitter {
@@ -108,10 +100,6 @@ assert.equal(netFetch.mock.calls.length, 0, "a signed-in partition needs no toke
 assert.deepEqual(view.webContents.commands, [
   ["Emulation.setUserAgentOverride", { userAgent: "Secretary-Test", acceptLanguage: "en-US,en" }],
 ])
-assert.deepEqual(partition.headers?.filter, { urls: ["https://getsecretary.tech/*"] })
-const sent = mock((_response: unknown) => {})
-partition.headers?.listener({ requestHeaders: { "Accept-Language": "da-DK", Cookie: "c" } }, sent)
-assert.deepEqual(sent.mock.calls, [[{ requestHeaders: { "Accept-Language": "en-US,en;q=0.8", Cookie: "c" } }]])
 assert.deepEqual(view.options, {
   webPreferences: { session: partition, contextIsolation: true, sandbox: true, nodeIntegration: false },
 })

@@ -1,6 +1,7 @@
-import { shell, WebContentsView } from "electron"
+import { session, shell, WebContentsView } from "electron"
 import { nativeT } from "../native/translations"
-import { applyWebLanguage, ensureWebSession, lucinaWebPartition } from "./web-session"
+import { LUCINA_PARTITION } from "./lucina-web-policy"
+import { applyWebLanguage, ensureWebSession } from "./web-session"
 
 const origin = "https://getsecretary.tech"
 const page = `${origin}/computer`
@@ -11,7 +12,7 @@ let view: WebContentsView | undefined
 export function computerView() {
   if (view && !view.webContents.isDestroyed()) return view
 
-  const partition = lucinaWebPartition()
+  const partition = session.fromPartition(LUCINA_PARTITION)
   partition.setPermissionCheckHandler(
     (_contents, permission, requestingOrigin) => allowedOrigin(requestingOrigin) && permissions.has(permission),
   )

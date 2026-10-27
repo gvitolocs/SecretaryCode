@@ -2,10 +2,7 @@
 import type { CookiesSetDetails, Session } from "electron"
 import { DESKTOP_NATIVE_LOCALE_TAGS } from "@opencode/app/i18n/desktop-native"
 import { nativeLocale } from "../native/translations"
-
-/** The partition every embedded Lucina web view shares: the Computer tab, the image viewer and the web app. */
-export const LUCINA_PARTITION = "persist:lucina-web"
-export const origin = "https://getsecretary.tech"
+import { LUCINA_ORIGIN as origin } from "./lucina-web-policy"
 
 export type WebSessionResult = "ok" | "no-device" | "failed"
 
@@ -52,11 +49,6 @@ export function webLanguages() {
   return tag === "en" ? ["en-US", "en"] : [tag, "en"]
 }
 
-export function acceptLanguage() {
-  return webLanguages()
-    .map((tag, index) => (index ? `${tag};q=0.8` : tag))
-    .join(",")
-}
 
 type Partition = {
   fetch(url: string, init?: RequestInit): Promise<Response>
@@ -106,6 +98,17 @@ export function shared(run: () => Promise<WebSessionResult>) {
     (current ??= run().finally(() => {
       current = undefined
     }))
+}
+
+/** At most one run per `interval`; calls inside it share the last result, so repeated 401s cannot use up the login limit. */
+export function throttled(run: () => Promise<WebSessionResult>, interval: number, now = () => Date.now()) {
+  let last = 0
+  let result: Promise<WebSessionResult> | undefined
+  return () => {
+    if (result && now() - last < interval) return result
+    last = now()
+    return (result = run())
+  }
 }
 
 /** Device sign-out also signs the web views out: ends the server session, then drops the partition's cookies. */

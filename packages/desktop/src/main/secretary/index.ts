@@ -74,7 +74,9 @@ async function perform(action: string, input: unknown): Promise<unknown> {
     state.token = result.token
     // The embedded Lucina pages share this sign-in.
     void ensureWebSession().then((signedIn) => {
-      if (signedIn === "ok") reloadComputerView()
+      if (signedIn !== "ok") return
+      reloadComputerView()
+      if (state.view && !state.view.webContents.isDestroyed()) state.view.webContents.reload()
     })
     return { authenticated: true }
   }
@@ -84,6 +86,7 @@ async function perform(action: string, input: unknown): Promise<unknown> {
     // Signing the device out signs the embedded Lucina pages out too.
     await endWebSession()
     reloadComputerView()
+    if (state.view && !state.view.webContents.isDestroyed()) state.view.webContents.reload()
     return { authenticated: false }
   }
   if (!state.token) throw new Error("signInRequired")
@@ -172,7 +175,8 @@ export function setupSecretary() {
 export function lucinaView() {
   if (!state.registered) throw new Error("Call setupSecretary before app.ready")
   if (state.view && !state.view.webContents.isDestroyed()) return state.view
-  const view = lucinaWebView("/", () => state.token, state.ready)
+  // The stored token is read at startup; then the partition gets its cookie session before the first load.
+  const view = lucinaWebView("/", () => state.token, state.ready?.then(() => ensureWebSession()))
   state.view = view
   view.webContents.once("destroyed", () => { if (state.view === view) state.view = undefined })
   return view
