@@ -1,4 +1,4 @@
-import { net, session, type WebContents } from "electron"
+import { app, net, session, type WebContents } from "electron"
 import { LUCINA_ORIGIN, LUCINA_PARTITION } from "./lucina-web-policy"
 import { endWebSession as signOut, ensure, shared, throttled, webLanguages, type WebSessionResult } from "./web-session-core"
 
@@ -41,7 +41,7 @@ export const onUnauthorized: () => Promise<WebSessionResult> = throttled(() => e
 
 /**
  * The web app reads `navigator.languages`, which Electron takes from the Mac locale for every page. A per-view
- * DevTools-protocol override sets them, and the page's `Accept-Language`, from the app's language (no webRequest hook:
+ * DevTools-protocol override sets them, and the page's `Accept-Language`, to English or the language picked for the app (no webRequest hook:
  * a session keeps only one `onBeforeSendHeaders` listener, and `lucina-web.ts` owns it). Call it right before the first
  * `loadURL` and don't wait for it: the command only settles once the view has a page (checked on Electron 44, where it
  * still applies to that first page).
@@ -52,7 +52,7 @@ export function applyWebLanguage(contents: WebContents) {
     void contents.debugger
       .sendCommand("Emulation.setUserAgentOverride", {
         userAgent: contents.getUserAgent(),
-        acceptLanguage: webLanguages().join(","),
+        acceptLanguage: webLanguages(app.getPreferredSystemLanguages()).join(","),
       })
       .catch(() => {})
   } catch {

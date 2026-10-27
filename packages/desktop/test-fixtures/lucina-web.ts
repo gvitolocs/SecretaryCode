@@ -49,6 +49,8 @@ const external = mock(async (_url: string) => {})
 const fromPartition = mock((_name: string) => partition)
 mock.module("electron", () => ({
   WebContentsView: View,
+  // A Danish Mac, with Secretary Code on Automatic (so its language is Danish too, below).
+  app: { getPreferredSystemLanguages: () => ["da-DK", "en-DK", "it-DK"] },
   net: {},
   session: { fromPartition },
   shell: { openExternal: external },
@@ -70,9 +72,9 @@ release()
 await ready
 await new Promise((resolve) => setTimeout(resolve, 0))
 assert.deepEqual(view.webContents.urls, ["https://getsecretary.tech/"])
-// The page follows the app's language (Danish here), not the Mac locale, from its first request.
+// Automatic follows the Mac, so the page stays English from its first request instead of turning Danish.
 assert.deepEqual(view.webContents.commands, [
-  ["Emulation.setUserAgentOverride", { userAgent: "Secretary-Test", acceptLanguage: "da,en" }],
+  ["Emulation.setUserAgentOverride", { userAgent: "Secretary-Test", acceptLanguage: "en-US,en" }],
 ])
 
 // The token is read per request, so a later sign-in applies without a reload.
