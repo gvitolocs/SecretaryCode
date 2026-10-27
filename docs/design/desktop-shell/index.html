@@ -1,0 +1,839 @@
+<!doctype html>
+<html lang="en" data-theme="dark" data-state="chat">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Secretary Code shell</title>
+<!--
+  Static layout mock for the new Secretary Code window (Lucina first, plugins in a rail).
+  No build step. URL parameters: ?state=chat|code|computer|gallery|films|chats|secrets|health
+  &theme=light|dark  &tools=open (expands the tool-call groups). The rail and the theme button switch live.
+
+  Look: the tokens below are copied from SecretaryIOS web/src/styles/lucina-tokens.css (generated from
+  design/tokens.json) and the signed-in palette from web/src/styles/character-shell.css (navy, cyan, violet,
+  pill rail, 20px bubbles, square composer). The avatar on the stage is a crop of the real three.js stage
+  from `npm run dev:mock`; the portrait is web/public/icon-512.png. Icons are the web app's Icons.tsx paths.
+-->
+<style>
+/* ---- design/tokens.json via web/src/styles/lucina-tokens.css (dark default) ---- */
+:root {
+  color-scheme: dark;
+  --lu-bg: #000000; --lu-card: #1c1c1e; --lu-card-raised: #2c2c2e; --lu-separator: #38383a;
+  --lu-text: #ffffff; --lu-text-secondary: #ebebf599; --lu-text-tertiary: #ebebf54d;
+  --lu-accent: #7f8fe0; --lu-accent-fill: #4a5bb5; --lu-accent-soft: #7f8fe02e;
+  --lu-positive: #30d158; --lu-negative: #ff453a; --lu-warning: #ff9f0a; --lu-info: #64d2ff;
+  --lu-font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI Variable", "Segoe UI", Roboto, "Helvetica Neue", system-ui, sans-serif;
+  --lu-font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+  --lu-radius-card: 18px; --lu-radius-tile: 14px; --lu-radius-field: 12px; --lu-radius-pill: 999px;
+  --lu-motion-fast: 120ms; --lu-motion-base: 220ms;
+
+  /* ---- character-shell.css: the signed-in Secretary framing ---- */
+  --bg: #090c1e;
+  --bg-glow: radial-gradient(ellipse at 90% 20%, #49327224, transparent 60%), radial-gradient(ellipse at 20% 85%, #123b5925, transparent 60%);
+  --surface: #11172bd9; --surface-solid: #11172a; --surface-2: #ffffff08; --surface-3: #ffffff12;
+  --border: #7286ba2e; --border-strong: #8c9fce55; --hairline: #ffffff17;
+  --text: #f0f0f2; --text-muted: #a9afb9; --text-dim: #818995;
+  --cyan: #50dfff; --cyan-rail: #5ee3e7; --violet: #9b7bea; --accent: #50dfff; --accent-ink: #12242a;
+  --lucina-edge: #65d7e4;
+  --user-bubble: linear-gradient(130deg, #23436b, #45356b); --user-text: #f0f0f2;
+  --rail-bg: linear-gradient(90deg, #292b2ff0, #16191ef0 70%, #23262bee); --rail-border: #4c4f54;
+  --rail-ico-bg: #20252d; --rail-ico-border: #575c64; --rail-ico: #aeb8c6; --rail-label: #929ba9;
+  --rail-on-bg: #243d42; --rail-on-ico: #8ceef0; --rail-on-label: #d2f8fa; --rail-on-glow: 0 0 0 3px #5ee3e714;
+  --chip-bg: #161a20; --chip-border: #ffffff26; --chip-text: #9ba4b0;
+  --chip-on-bg: #334148; --chip-on-border: #5ee3e77a; --chip-on-text: #e1ffff;
+  --badge-bg: #1d2c32; --badge-text: #8fd1da; --badge-border: #5ee3e733;
+  --field-bg: #141a20; --field-border: #ffffff33; --field-text: #e6eaf0;
+  --send-bg: #5ee3e7; --send-text: #12242a;
+  --stage-bg: #0a0d23; --stage-img: url(assets/stage-dark.png);
+  --hud-bg: #15191ddb; --hud-border: #ffffff28; --hud-text: #a6b0bd; --hud-name: #f1f2f5;
+  --stage-btn-bg: #161b21d9; --stage-btn-border: #ffffff3a; --stage-btn-text: #d5d9e1;
+  --search-bg: #ffffff0d; --search-border: #ffffff1f;
+  --code-bg: #0c1124; --diff-add: #30d15824; --diff-add-text: #7ee2a0; --diff-del: #ff453a22; --diff-del-text: #ff9a93;
+  --shadow-float: 0 15px 45px #0006;
+}
+
+/* Light: the light half of design/tokens.json (the iOS look). The web chat shell is dark-only on
+   desktop today, so these pair the same structure with the lu light palette and the light stage. */
+:root[data-theme="light"] {
+  color-scheme: light;
+  --lu-bg: #f2f2f7; --lu-card: #ffffff; --lu-card-raised: #f2f2f7; --lu-separator: #c6c6c8;
+  --lu-text: #000000; --lu-text-secondary: #3c3c4399; --lu-text-tertiary: #3c3c434d;
+  --lu-accent: #4a5bb5; --lu-accent-fill: #4a5bb5; --lu-accent-soft: #4a5bb51f;
+  --lu-positive: #34c759; --lu-negative: #ff3b30; --lu-warning: #ff9500; --lu-info: #32ade6;
+
+  --bg: #f2f2f7;
+  --bg-glow: radial-gradient(ellipse at 90% 15%, #e4defc, transparent 55%), radial-gradient(ellipse at 15% 90%, #dff3f6, transparent 55%);
+  --surface: #ffffffe6; --surface-solid: #ffffff; --surface-2: #7676800f; --surface-3: #7676801f;
+  --border: #c6c6c8a6; --border-strong: #b4b4bb; --hairline: #3c3c431a;
+  --text: #000000; --text-muted: #3c3c43b3; --text-dim: #3c3c4380;
+  --cyan: #0f8fa6; --cyan-rail: #4a5bb5; --violet: #6a54b8; --accent: #4a5bb5; --accent-ink: #ffffff;
+  --lucina-edge: #3cc4d4;
+  --user-bubble: linear-gradient(130deg, #4a5bb5, #6a54b8); --user-text: #ffffff;
+  --rail-bg: linear-gradient(90deg, #fffffff2, #f4f4f8f2 70%, #fbfbfdf2); --rail-border: #d6d6dc;
+  --rail-ico-bg: #f2f2f7; --rail-ico-border: #d1d1d6; --rail-ico: #3c3c43b3; --rail-label: #3c3c4399;
+  --rail-on-bg: #4a5bb51f; --rail-on-ico: #4a5bb5; --rail-on-label: #4a5bb5; --rail-on-glow: 0 0 0 3px #4a5bb514;
+  --chip-bg: #ffffff; --chip-border: #d1d1d6; --chip-text: #3c3c43b3;
+  --chip-on-bg: #4a5bb51f; --chip-on-border: #4a5bb566; --chip-on-text: #4a5bb5;
+  --badge-bg: #4a5bb514; --badge-text: #4a5bb5; --badge-border: #4a5bb533;
+  --field-bg: #ffffff; --field-border: #c6c6c8; --field-text: #000000;
+  --send-bg: #4a5bb5; --send-text: #ffffff;
+  --stage-bg: #eeeafd; --stage-img: url(assets/stage-light.png);
+  --hud-bg: #ffffffd9; --hud-border: #00000014; --hud-text: #3c3c4399; --hud-name: #000000;
+  --stage-btn-bg: #ffffffd9; --stage-btn-border: #0000001a; --stage-btn-text: #3c3c43;
+  --search-bg: #7676801a; --search-border: transparent;
+  --code-bg: #f7f7fa; --diff-add: #34c7591f; --diff-add-text: #1f7a3a; --diff-del: #ff3b301a; --diff-del-text: #b3261e;
+  --shadow-float: 0 12px 36px #1b1f4a26;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; overflow: hidden; }
+body {
+  font-family: var(--lu-font); font-size: 15px; line-height: 1.4; color: var(--text);
+  background: var(--bg-glow), var(--bg);
+  -webkit-font-smoothing: antialiased;
+}
+button { font: inherit; color: inherit; cursor: pointer; }
+.icon { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+.icon--sm { width: 16px; height: 16px; }
+.icon--xs { width: 14px; height: 14px; stroke-width: 1.9; }
+
+/* ---------- window ---------- */
+.window { position: fixed; inset: 0; display: grid; grid-template-columns: auto minmax(0, 1fr); grid-template-rows: 52px minmax(0, 1fr); }
+
+/* Hidden-inset titlebar: traffic lights sit in the draggable top bar. */
+.titlebar {
+  grid-column: 1 / -1; display: flex; align-items: center; gap: 14px; padding: 0 18px 0 20px;
+  -webkit-app-region: drag; user-select: none;
+}
+.lights { display: flex; gap: 8px; width: 92px; flex: none; }
+.lights i { width: 12px; height: 12px; border-radius: 50%; display: block; box-shadow: inset 0 0 0 0.5px #0000002e; }
+.lights i:nth-child(1) { background: #ff5f57; } .lights i:nth-child(2) { background: #febc2e; } .lights i:nth-child(3) { background: #28c840; }
+.where { display: flex; align-items: center; gap: 10px; min-width: 0; width: 260px; flex: none; }
+.where-title { font-weight: 650; font-size: 14px; letter-spacing: 0.01em; white-space: nowrap; }
+.where-sub { font-size: 12px; color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.search {
+  -webkit-app-region: no-drag; flex: 1; max-width: 520px; margin: 0 auto; height: 32px; display: flex; align-items: center; gap: 8px;
+  padding: 0 10px 0 12px; border-radius: 9px; background: var(--search-bg); border: 1px solid var(--search-border); color: var(--text-dim); font-size: 13px;
+}
+.search span:not(.kbd) { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.kbd { flex: none; font-size: 11px; padding: 1px 6px; border-radius: 5px; border: 1px solid var(--border-strong); color: var(--text-dim); }
+.tb-actions { -webkit-app-region: no-drag; display: flex; align-items: center; gap: 8px; flex: none; }
+.tb-btn {
+  height: 32px; min-width: 32px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 0 8px;
+  border-radius: 9px; border: 1px solid transparent; background: transparent; color: var(--text-muted);
+}
+.tb-btn:hover { background: var(--surface-3); }
+.tb-btn .icon { width: 18px; height: 18px; }
+.new-chat { padding: 0 14px 0 10px; background: var(--send-bg); color: var(--send-text); font-weight: 650; font-size: 13px; }
+.new-chat:hover { background: var(--send-bg); filter: brightness(1.08); }
+.bell { position: relative; }
+.bell b { position: absolute; top: 3px; right: 3px; min-width: 15px; height: 15px; padding: 0 4px; border-radius: 8px; font-size: 9.5px; line-height: 15px; color: #fff; background: linear-gradient(120deg, #4fa8e8, #a07ae0); }
+
+/* ---------- rail (the character shell's pill rail) ---------- */
+.rail {
+  width: 88px; margin: 4px 0 20px 20px; display: flex; flex-direction: column; align-items: center; gap: 4px;
+  padding: 14px 5px 14px; border: 2px solid var(--rail-border); border-radius: 46px; background: var(--rail-bg);
+  box-shadow: inset 1px 0 #ffffff0a;
+}
+.rail-group { display: flex; flex-direction: column; align-items: center; gap: 4px; width: 100%; }
+.rail-sep { width: 34px; height: 1px; background: var(--hairline); margin: 6px 0; }
+.rail-spacer { flex: 1; }
+.rail-item {
+  position: relative; display: flex; flex-direction: column; align-items: center; gap: 4px; width: 100%; min-height: 64px; padding: 3px 2px;
+  border: 0; background: none; color: var(--rail-label); font-size: 9.5px; font-weight: 600; letter-spacing: 0.01em;
+}
+.rail-ico {
+  width: 44px; height: 44px; display: grid; place-items: center; border-radius: 50%;
+  border: 2px solid var(--rail-ico-border); background: var(--rail-ico-bg); color: var(--rail-ico);
+  transition: border-color var(--lu-motion-base), background var(--lu-motion-base);
+}
+.rail-ico .icon { width: 20px; height: 20px; }
+.rail-ico img { width: 40px; height: 40px; border-radius: 50%; display: block; }
+.rail-item:hover .rail-ico { border-color: var(--border-strong); }
+.rail-item[aria-current="page"] { color: var(--rail-on-label); }
+.rail-item[aria-current="page"] .rail-ico { background: var(--rail-on-bg); border-color: var(--cyan-rail); color: var(--rail-on-ico); box-shadow: var(--rail-on-glow); }
+.rail-item .pip { position: absolute; top: 4px; right: 14px; width: 10px; height: 10px; border-radius: 50%; background: var(--cyan); border: 2px solid var(--surface-solid); }
+.rail-item .pip--run { animation: pulse 1.6s ease-in-out infinite; }
+.owner { width: 36px; height: 36px; border-radius: 50%; display: grid; place-items: center; font-size: 13px; font-weight: 700; color: #fff; background: linear-gradient(135deg, #3b6ea8, #7a5bc4); border: 2px solid var(--rail-border); margin-top: 6px; }
+@keyframes pulse { 50% { opacity: 0.35; } }
+
+/* ---------- main ---------- */
+.main { position: relative; min-width: 0; min-height: 0; display: flex; padding: 4px 20px 20px 24px; gap: 22px; }
+.view { display: none; min-width: 0; min-height: 0; flex: 1; gap: 22px; }
+[data-state="chat"] .view--chat, [data-state="code"] .view--code, [data-state="computer"] .view--computer { display: flex; }
+[data-state="gallery"] .view--placeholder, [data-state="films"] .view--placeholder, [data-state="chats"] .view--placeholder,
+[data-state="secrets"] .view--placeholder, [data-state="health"] .view--placeholder { display: flex; }
+
+/* ---------- chat (web Chat.tsx + character shell) ---------- */
+.chat { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.chat-inner { width: 100%; max-width: 820px; margin: 0 auto; display: flex; flex-direction: column; min-height: 0; flex: 1; }
+.chat-bar { display: flex; gap: 6px; padding: 6px 0 14px; border-bottom: 1px solid var(--hairline); flex-wrap: wrap; }
+.chip { padding: 6px 13px; border-radius: 4px; border: 1px solid var(--chip-border); background: var(--chip-bg); color: var(--chip-text); font-size: 11px; font-weight: 650; }
+.chip[aria-pressed="true"] { background: var(--chip-on-bg); color: var(--chip-on-text); border-color: var(--chip-on-border); }
+.messages {
+  flex: 1; min-height: 0; overflow: hidden; display: flex; flex-direction: column; justify-content: flex-end; gap: 14px; padding: 18px 2px 8px;
+  mask-image: linear-gradient(transparent, #000 28px, #000 calc(100% - 8px), transparent);
+}
+.day-sep { display: flex; align-items: center; gap: 12px; color: var(--text-dim); font-size: 11px; font-weight: 650; letter-spacing: 0.08em; text-transform: uppercase; }
+.day-sep::before, .day-sep::after { content: ""; flex: 1; height: 1px; background: linear-gradient(to right, transparent, var(--border-strong)); }
+.day-sep::after { background: linear-gradient(to left, transparent, var(--border-strong)); }
+.msg { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
+.msg--user { align-items: flex-end; }
+.bubble {
+  max-width: min(84%, 620px); padding: 12px 17px; border-radius: 20px; border: 1px solid var(--border);
+  background: var(--surface); backdrop-filter: blur(10px); font-size: 15.5px; line-height: 1.45;
+}
+.msg--lucina .bubble { border-left: 2px solid var(--lucina-edge); border-bottom-left-radius: 5px; }
+.msg--user .bubble { background: var(--user-bubble); color: var(--user-text); border-color: #ffffff22; border-bottom-right-radius: 5px; }
+.bubble p { margin: 0; } .bubble p + p, .bubble ul { margin-top: 6px; }
+.bubble ul { padding-left: 18px; margin-bottom: 0; } .bubble li + li { margin-top: 2px; }
+.bubble a { color: var(--cyan); text-decoration: underline; text-underline-offset: 2px; }
+.bubble b { font-weight: 650; }
+.msg-info { display: flex; align-items: center; gap: 8px; padding: 0 4px; font-size: 10.5px; color: var(--text-dim); }
+.src-badge { display: inline-flex; align-items: center; gap: 4px; padding: 1px 8px 1px 6px; border-radius: 999px; border: 1px solid var(--badge-border); background: var(--badge-bg); color: var(--badge-text); font-weight: 700; letter-spacing: 0.08em; font-size: 9.5px; }
+.src-badge .icon { width: 11px; height: 11px; stroke-width: 2; }
+
+/* Quiet tool calls: one line per group, steps only when expanded. */
+.tools { max-width: min(84%, 620px); margin: 0 0 -2px 2px; }
+.tools-head {
+  display: inline-flex; align-items: center; gap: 7px; padding: 4px 10px 4px 6px; margin-left: -6px; border: 0; border-radius: 8px;
+  background: none; color: var(--text-dim); font-size: 13px;
+}
+.tools-head:hover { background: var(--surface-2); color: var(--text-muted); }
+.tools-head b { font-weight: 600; color: var(--text-muted); }
+.tools-ico { width: 20px; height: 20px; border-radius: 6px; display: grid; place-items: center; background: var(--surface-3); color: var(--text-muted); }
+.tools-ico .icon { width: 13px; height: 13px; stroke-width: 1.9; }
+.tools-head .chev { width: 13px; height: 13px; transition: transform var(--lu-motion-fast); }
+.tools[data-open="true"] .tools-head .chev { transform: rotate(90deg); }
+.tools-time { font-size: 11.5px; color: var(--text-dim); opacity: 0.8; }
+.tools-steps { display: none; list-style: none; margin: 4px 0 6px 3px; padding: 2px 0 2px 16px; border-left: 1px solid var(--border-strong); }
+.tools[data-open="true"] .tools-steps { display: block; }
+.tools-steps li { display: flex; align-items: center; gap: 8px; padding: 3.5px 0; font-size: 12.5px; color: var(--text-muted); }
+.tools-steps .ok { color: var(--lu-positive); }
+.tools-steps .tool { font-family: var(--lu-font-mono); font-size: 11px; padding: 1px 6px; border-radius: 5px; background: var(--surface-3); color: var(--text-dim); }
+.tools-steps .meta { margin-left: auto; padding-left: 12px; color: var(--text-dim); font-size: 11.5px; white-space: nowrap; }
+.tools-steps .raw { color: var(--text-dim); font-size: 11.5px; padding-top: 6px; }
+.tools-steps .raw u { text-underline-offset: 2px; }
+
+.card { max-width: min(84%, 620px); display: flex; align-items: center; gap: 12px; padding: 12px 16px; border-radius: 14px; border: 1px solid var(--border); background: var(--surface); }
+.card-ico { width: 36px; height: 36px; border-radius: 10px; display: grid; place-items: center; background: var(--lu-accent-soft); color: var(--lu-accent); }
+.card-title { font-weight: 650; font-size: 14.5px; }
+.card-sub { font-size: 12.5px; color: var(--text-dim); }
+.card-actions { margin-left: auto; display: flex; gap: 6px; }
+.pill-btn { padding: 6px 12px; border-radius: 999px; border: 1px solid var(--border-strong); background: var(--surface-2); font-size: 12.5px; font-weight: 600; color: var(--text-muted); }
+
+.composer { display: flex; align-items: center; gap: 10px; padding: 12px 0 0; }
+.composer-input {
+  flex: 1; min-width: 0; height: 50px; display: flex; align-items: center; gap: 10px; padding: 0 8px 0 16px; border-radius: 4px;
+  background: var(--field-bg); border: 1px solid var(--field-border); color: var(--text-dim); font-size: 15px;
+}
+.composer-input > span { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cbtn { width: 36px; height: 36px; border-radius: 50%; display: grid; place-items: center; border: 0; background: transparent; color: var(--text-muted); }
+.cbtn:hover { background: var(--surface-3); }
+.cbtn .icon { width: 20px; height: 20px; }
+.send-btn { width: 50px; height: 50px; border-radius: 4px; display: grid; place-items: center; border: 0; background: var(--send-bg); color: var(--send-text); }
+.mic-btn { width: 50px; height: 50px; border-radius: 50%; border: 1px solid var(--field-border); background: var(--field-bg); color: var(--text-muted); display: grid; place-items: center; }
+
+/* ---------- Lucina's stage (LucinaDock side dock) ---------- */
+.stage {
+  position: relative; flex: none; width: clamp(340px, 37vw, 580px); border-radius: 30px; overflow: hidden;
+  background: var(--stage-img) center top / cover no-repeat, var(--stage-bg);
+}
+.stage::after { content: ""; position: absolute; left: 0; top: 0; width: 1px; height: 100%; background: linear-gradient(transparent, #ffffff1a 25%, #ffffff1a 75%, transparent); }
+.stage-hud {
+  position: absolute; top: 24px; left: 24px; display: inline-flex; align-items: center; gap: 8px; padding: 8px 12px;
+  border-radius: 3px; background: var(--hud-bg); border: 1px solid var(--hud-border); color: var(--hud-text);
+  font-size: 10px; letter-spacing: 0.15em; text-transform: uppercase; backdrop-filter: blur(10px);
+}
+.stage-hud b { color: var(--hud-name); font-weight: 700; }
+.stage-hud .dot { width: 6px; height: 6px; border-radius: 50%; background: #3dffa8; box-shadow: 0 0 8px #3dffa8; }
+.stage-hud .sep { width: 1px; height: 10px; background: currentColor; opacity: 0.4; }
+.stage-controls { position: absolute; top: 22px; right: 22px; display: flex; flex-direction: column; gap: 9px; }
+.stage-btn { width: 46px; height: 46px; border-radius: 50%; display: grid; place-items: center; background: var(--stage-btn-bg); border: 1px solid var(--stage-btn-border); color: var(--stage-btn-text); backdrop-filter: blur(10px); }
+.stage-btn .icon { width: 19px; height: 19px; }
+.stage-btn--mic { width: 56px; height: 56px; background: #5ee3e7; border-color: #8aeef1; color: #13272c; }
+.stage-caption {
+  position: absolute; left: 50%; bottom: 24px; transform: translateX(-50%); max-width: calc(100% - 48px); white-space: nowrap;
+  padding: 8px 14px; border-radius: 999px; background: var(--hud-bg); border: 1px solid var(--hud-border); color: var(--hud-text); font-size: 12px; backdrop-filter: blur(10px);
+}
+.stage-caption b { color: var(--hud-name); font-weight: 600; }
+
+/* Lucina, minimised into the top bar while a plugin has the window: talk to her or reopen her chat. */
+.mini-lucina {
+  -webkit-app-region: no-drag; display: none; align-items: center; gap: 8px; height: 34px; padding: 3px 4px 3px 3px;
+  border-radius: 999px; background: var(--surface-solid); border: 1px solid var(--border-strong); cursor: pointer;
+}
+[data-state="code"] .mini-lucina, [data-state="computer"] .mini-lucina, [data-state="gallery"] .mini-lucina, [data-state="films"] .mini-lucina,
+[data-state="chats"] .mini-lucina, [data-state="secrets"] .mini-lucina, [data-state="health"] .mini-lucina { display: flex; }
+.mini-lucina img { width: 26px; height: 26px; border-radius: 50%; border: 1.5px solid var(--cyan-rail); }
+.mini-lucina .t { font-size: 12.5px; font-weight: 650; white-space: nowrap; }
+.mini-lucina .dot { width: 6px; height: 6px; border-radius: 50%; background: #3dffa8; box-shadow: 0 0 6px #3dffa8; }
+.mini-lucina .mic { width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; background: #5ee3e7; color: #13272c; border: 0; margin-left: 2px; }
+.mini-lucina .mic .icon { width: 14px; height: 14px; }
+
+/* ---------- shared panel bits ---------- */
+.panel { background: var(--surface); border: 1px solid var(--border); border-radius: var(--lu-radius-card); backdrop-filter: blur(10px); }
+.caption { font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-dim); }
+.run-chip { display: inline-flex; align-items: center; gap: 7px; padding: 5px 11px; border-radius: 999px; font-size: 12px; font-weight: 650; background: var(--badge-bg); color: var(--badge-text); border: 1px solid var(--badge-border); white-space: nowrap; }
+.run-chip i { width: 7px; height: 7px; border-radius: 50%; background: var(--cyan); animation: pulse 1.6s ease-in-out infinite; }
+.btn { height: 32px; padding: 0 12px; display: inline-flex; align-items: center; gap: 6px; border-radius: 9px; border: 1px solid var(--border-strong); background: var(--surface-2); color: var(--text-muted); font-size: 12.5px; font-weight: 600; white-space: nowrap; }
+.btn--primary { background: var(--send-bg); color: var(--send-text); border-color: transparent; }
+.btn .icon { width: 15px; height: 15px; }
+.seg { display: inline-flex; padding: 3px; border-radius: 10px; background: var(--surface-2); border: 1px solid var(--border); }
+.seg button { border: 0; background: none; padding: 5px 12px; border-radius: 7px; font-size: 13px; color: var(--text-dim); display: inline-flex; align-items: center; gap: 6px; }
+.seg button[aria-pressed="true"] { background: var(--surface-3); color: var(--text); font-weight: 600; }
+.seg .icon { width: 14px; height: 14px; }
+
+/* ---------- Code plugin (OpenCode sessions inside the shell) ---------- */
+.code-side { width: 272px; flex: none; display: flex; flex-direction: column; padding: 14px 10px 10px; gap: 12px; }
+.project { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 12px; border: 1px solid var(--border); background: var(--surface-2); text-align: left; width: 100%; }
+.project-mark { width: 30px; height: 30px; border-radius: 8px; display: grid; place-items: center; background: linear-gradient(135deg, #2c5e86, #5b3f99); color: #fff; font-weight: 700; font-size: 13px; }
+.project .n { font-weight: 650; font-size: 13.5px; }
+.project .b { font-size: 11.5px; color: var(--text-dim); font-family: var(--lu-font-mono); }
+.project .chev { margin-left: auto; color: var(--text-dim); }
+.side-head { display: flex; align-items: center; justify-content: space-between; padding: 0 6px; }
+.sessions { display: flex; flex-direction: column; gap: 2px; overflow: hidden; }
+.session { display: grid; grid-template-columns: 10px 1fr; column-gap: 9px; padding: 9px 10px; border-radius: 10px; border: 1px solid transparent; }
+.session[aria-current="true"] { background: var(--chip-on-bg); border-color: var(--chip-on-border); }
+.session .st { width: 8px; height: 8px; border-radius: 50%; margin-top: 6px; background: var(--text-dim); }
+.session .st--run { background: var(--cyan); animation: pulse 1.6s ease-in-out infinite; }
+.session .st--ok { background: var(--lu-positive); }
+.session .st--wait { background: var(--lu-warning); }
+.session .st--bad { background: var(--lu-negative); }
+.session .t { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.session .s { grid-column: 2; font-size: 11.5px; color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.code-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.code-head { display: flex; align-items: center; gap: 12px; padding: 4px 4px 14px; border-bottom: 1px solid var(--hairline); }
+.code-head h1 { margin: 0; font-size: 19px; font-weight: 700; letter-spacing: -0.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.code-head .sub { font-size: 12px; color: var(--text-dim); font-family: var(--lu-font-mono); }
+.code-head .grow { flex: 1; min-width: 0; }
+.transcript { flex: 1; min-height: 0; overflow: hidden; display: flex; flex-direction: column; justify-content: flex-end; gap: 13px; padding: 16px 4px 4px; max-width: 860px; width: 100%; margin: 0 auto;
+  mask-image: linear-gradient(transparent, #000 24px); }
+.agent { display: flex; gap: 10px; align-items: flex-start; }
+.agent-mark { width: 26px; height: 26px; border-radius: 8px; flex: none; display: grid; place-items: center; font-size: 11px; font-weight: 800; color: #fff; background: #10a37f; margin-top: 2px; }
+.agent-body { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 8px; }
+.agent-text { font-size: 14.5px; line-height: 1.5; }
+.agent-text code, .bubble code { font-family: var(--lu-font-mono); font-size: 12.5px; padding: 1px 5px; border-radius: 5px; background: var(--surface-3); }
+.diff { border: 1px solid var(--border); border-radius: 12px; overflow: hidden; background: var(--code-bg); font-family: var(--lu-font-mono); font-size: 12px; line-height: 1.6; }
+.diff-head { display: flex; align-items: center; gap: 8px; padding: 7px 12px; border-bottom: 1px solid var(--border); font-size: 11.5px; color: var(--text-muted); }
+.diff-head .plus { color: var(--diff-add-text); } .diff-head .minus { color: var(--diff-del-text); }
+.diff pre { margin: 0; padding: 6px 0; white-space: pre; overflow: hidden; }
+.diff pre span { display: block; padding: 0 12px; }
+.diff .a { background: var(--diff-add); color: var(--diff-add-text); }
+.diff .d { background: var(--diff-del); color: var(--diff-del-text); }
+.diff .c { color: var(--text-dim); }
+.live-line { display: flex; align-items: center; gap: 9px; font-size: 13px; color: var(--text-muted); padding-left: 36px; }
+.spinner { width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--border-strong); border-top-color: var(--cyan); animation: spin 0.9s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.code-composer { max-width: 860px; width: 100%; margin: 0 auto; padding-top: 12px; }
+.code-composer .composer-input { height: auto; flex-direction: column; align-items: stretch; gap: 10px; padding: 12px 10px 10px 16px; }
+.code-composer .row { display: flex; align-items: center; gap: 8px; }
+.code-composer .row .grow { flex: 1; }
+.code-composer .send-btn { width: 36px; height: 36px; }
+.model-pick { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--border); font-size: 12px; color: var(--text-muted); background: var(--surface-2); }
+.model-pick i { width: 8px; height: 8px; border-radius: 50%; background: #10a37f; }
+
+/* ---------- Computer plugin ---------- */
+.computer { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 14px; }
+.computer-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.computer-head h1 { margin: 0 8px 0 0; font-size: 24px; font-weight: 700; letter-spacing: -0.01em; }
+.computer-head .grow { flex: 1; }
+.status-card { display: flex; align-items: center; gap: 12px; padding: 12px 14px 12px 16px; }
+.status-card .live { width: 9px; height: 9px; border-radius: 50%; background: #ff453a; box-shadow: 0 0 0 4px #ff453a26; animation: pulse 1.6s ease-in-out infinite; }
+.status-card .t { font-weight: 650; font-size: 14.5px; }
+.status-card .s { font-size: 12.5px; color: var(--text-dim); }
+.status-card .grow { flex: 1; }
+.computer-body { flex: 1; min-height: 0; display: flex; gap: 16px; }
+.screen-wrap { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+.screen { position: relative; flex: 1; min-height: 0; border-radius: 14px; overflow: hidden; border: 1px solid var(--border-strong); background: #0b0f1d; box-shadow: var(--shadow-float); }
+.screen-foot { display: flex; gap: 14px; font-size: 11.5px; color: var(--text-dim); padding: 0 4px; }
+.screen-foot .grow { flex: 1; }
+/* The remote desktop (drawn, not a screenshot). */
+.rd { position: absolute; inset: 0; background: radial-gradient(ellipse at 80% 10%, #6b4bb4aa, transparent 55%), radial-gradient(ellipse at 10% 90%, #1f6f8baa, transparent 55%), linear-gradient(160deg, #1a2140, #0d1022); font-family: -apple-system, system-ui, sans-serif; }
+.rd-menubar { height: 22px; background: #10132688; display: flex; align-items: center; gap: 14px; padding: 0 12px; font-size: 10.5px; color: #e8eaf6; backdrop-filter: blur(8px); }
+.rd-menubar b { font-weight: 700; } .rd-menubar .grow { flex: 1; }
+.rd-win { position: absolute; left: 7%; top: 9%; width: 70%; height: 80%; border-radius: 10px; overflow: hidden; background: #f6f7fb; box-shadow: 0 20px 60px #0008; color: #1d1d1f; display: flex; flex-direction: column; }
+.rd-tabs { height: 34px; background: #e4e6ee; display: flex; align-items: center; gap: 8px; padding: 0 10px; }
+.rd-tabs .l { display: flex; gap: 5px; } .rd-tabs .l i { width: 9px; height: 9px; border-radius: 50%; background: #c9ccd6; display: block; }
+.rd-tab { background: #f6f7fb; border-radius: 7px 7px 0 0; align-self: flex-end; height: 27px; padding: 0 12px; display: flex; align-items: center; font-size: 10.5px; color: #3a3d4a; }
+.rd-url { margin: 6px 10px; height: 24px; border-radius: 6px; background: #e9ebf2; font-size: 10.5px; color: #555a6b; display: flex; align-items: center; padding: 0 10px; }
+.rd-page { flex: 1; display: flex; gap: 18px; padding: 14px 22px; }
+.rd-page h2 { margin: 0 0 4px; font-size: 16px; } .rd-page p { margin: 0 0 12px; font-size: 11px; color: #6b6f80; }
+.rd-form { flex: 1; }
+.rd-field { margin-bottom: 9px; } .rd-field label { display: block; font-size: 9.5px; color: #6b6f80; margin-bottom: 3px; }
+.rd-field div { height: 26px; border-radius: 6px; border: 1px solid #d5d8e2; background: #fff; font-size: 11px; display: flex; align-items: center; padding: 0 9px; }
+.rd-slots { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-bottom: 12px; }
+.rd-slots span { height: 26px; border-radius: 6px; border: 1px solid #d5d8e2; background: #fff; font-size: 10.5px; display: grid; place-items: center; color: #3a3d4a; }
+.rd-slots .on { background: #2b6de0; color: #fff; border-color: #2b6de0; box-shadow: 0 0 0 3px #2b6de033; }
+.rd-slots .off { color: #b9bccb; background: #f0f1f5; }
+.rd-confirm { height: 30px; border-radius: 7px; background: #1d1d1f; color: #fff; font-size: 11px; display: grid; place-items: center; width: 140px; }
+.rd-aside { width: 34%; border-radius: 10px; background: #fff; border: 1px solid #e3e5ec; padding: 12px; font-size: 10.5px; color: #555a6b; }
+.rd-aside b { color: #1d1d1f; display: block; font-size: 11.5px; margin-bottom: 4px; }
+.rd-map { height: 70px; border-radius: 8px; margin: 8px 0; background: linear-gradient(135deg, #dfe9d8, #cfe0ef); position: relative; }
+.rd-map::after { content: ""; position: absolute; left: 48%; top: 38%; width: 10px; height: 10px; border-radius: 50%; background: #e0452b; box-shadow: 0 0 0 4px #e0452b33; }
+.rd-dock { position: absolute; left: 50%; bottom: 8px; transform: translateX(-50%); display: flex; gap: 8px; padding: 6px 10px; border-radius: 14px; background: #ffffff26; backdrop-filter: blur(10px); }
+.rd-dock i { width: 26px; height: 26px; border-radius: 7px; display: block; background: linear-gradient(135deg, #5ee3e7, #7f8fe0); opacity: 0.85; }
+.rd-dock i:nth-child(2) { background: linear-gradient(135deg, #ffb86b, #ff6b8b); } .rd-dock i:nth-child(3) { background: linear-gradient(135deg, #8ad46b, #2ea36b); } .rd-dock i:nth-child(4) { background: linear-gradient(135deg, #c9cbd6, #8b8fa3); }
+.cursor { position: absolute; left: 43.5%; top: 58%; display: flex; align-items: flex-start; gap: 2px; filter: drop-shadow(0 2px 4px #0006); }
+.cursor svg { width: 20px; height: 20px; }
+.cursor span { margin-top: 14px; padding: 2px 8px; border-radius: 999px; background: #5ee3e7; color: #13272c; font-size: 10.5px; font-weight: 700; }
+.steps { width: 300px; flex: none; padding: 16px; display: flex; flex-direction: column; gap: 4px; }
+.steps h2 { margin: 0 0 8px; font-size: 15px; font-weight: 650; }
+.step { display: flex; gap: 10px; align-items: flex-start; padding: 7px 0; font-size: 13px; color: var(--text-muted); }
+.step .m { width: 20px; height: 20px; border-radius: 50%; flex: none; display: grid; place-items: center; border: 1.5px solid var(--border-strong); }
+.step .m .icon { width: 12px; height: 12px; stroke-width: 2.4; }
+.step--done .m { background: var(--lu-positive); border-color: var(--lu-positive); color: #fff; }
+.step--now { color: var(--text); font-weight: 600; }
+.step--now .m { border-color: var(--cyan); }
+.step--now .m::after { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--cyan); animation: pulse 1.6s ease-in-out infinite; }
+.step .note { display: block; font-weight: 400; font-size: 11.5px; color: var(--text-dim); margin-top: 2px; }
+.steps .ask { margin-top: auto; padding: 12px; border-radius: 12px; background: var(--surface-2); border: 1px solid var(--border); font-size: 12.5px; color: var(--text-muted); }
+.steps .ask b { color: var(--text); }
+
+/* ---------- other plugins (not mocked in detail) ---------- */
+.view--placeholder { align-items: center; justify-content: center; }
+.ph { width: 420px; padding: 32px; text-align: center; }
+.ph .card-ico { width: 56px; height: 56px; margin: 0 auto 14px; border-radius: 16px; }
+.ph .card-ico .icon { width: 26px; height: 26px; }
+.ph h1 { margin: 0 0 6px; font-size: 22px; }
+.ph p { margin: 0; color: var(--text-dim); font-size: 14px; }
+
+/* ---------- narrow window (1100 px and below) ---------- */
+@media (max-width: 1180px) {
+  .where { width: 200px; }
+  .search { max-width: 380px; }
+  .stage { width: clamp(300px, 33vw, 400px); }
+  .stage-caption { display: none; }
+  .code-side { width: 236px; }
+  .steps { width: 250px; }
+}
+@media (max-height: 800px) {
+  .rail { padding: 10px 5px; gap: 1px; }
+  .rail-item { min-height: 54px; gap: 3px; font-size: 9px; }
+  .rail-ico { width: 38px; height: 38px; }
+  .rail-ico img { width: 34px; height: 34px; }
+  .rail-ico .icon { width: 18px; height: 18px; }
+  .rail-sep { margin: 3px 0; }
+  .owner { width: 32px; height: 32px; font-size: 12px; margin-top: 2px; }
+  .messages { gap: 11px; }
+  .bubble { padding: 10px 15px; font-size: 14.5px; }
+}
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <!-- Paths from SecretaryIOS web/src/components/Icons.tsx; Code, Secrets, Gallery and the chevrons are drawn in the same style. -->
+  <symbol id="i-chat" viewBox="0 0 24 24"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3h11A2.5 2.5 0 0 1 20 5.5v8a2.5 2.5 0 0 1-2.5 2.5H10l-4.2 3.5c-.5.4-1.3.1-1.3-.6V16A2.5 2.5 0 0 1 4 13.5z"/></symbol>
+  <symbol id="i-code" viewBox="0 0 24 24"><path d="m8.5 7.5-5 4.5 5 4.5M15.5 7.5l5 4.5-5 4.5M13.5 4.5l-3 15"/></symbol>
+  <symbol id="i-computer" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8.5 20h7M12 16v4"/></symbol>
+  <symbol id="i-gallery" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><circle cx="9" cy="9.5" r="1.8"/><path d="m4 17 5-4.5 3.5 3 3-2.5 4.5 4"/></symbol>
+  <symbol id="i-film" viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="14" rx="2.5"/><path d="M10 9.2v5.6l4.6-2.8z"/></symbol>
+  <symbol id="i-inbox" viewBox="0 0 24 24"><path d="M4 13.5 6.3 5.6A1.5 1.5 0 0 1 7.7 4.5h8.6a1.5 1.5 0 0 1 1.4 1.1L20 13.5v4A2.5 2.5 0 0 1 17.5 20h-11A2.5 2.5 0 0 1 4 17.5z"/><path d="M4 13.5h4.5l1.2 2h4.6l1.2-2H20"/></symbol>
+  <symbol id="i-key" viewBox="0 0 24 24"><circle cx="8" cy="15" r="4"/><path d="m11 12 8.5-8.5M16.5 6.5l2.5 2.5M14.5 8.5l2 2"/></symbol>
+  <symbol id="i-pulse" viewBox="0 0 24 24"><path d="M3 12h4l2-5 4 10 2-5h6"/></symbol>
+  <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 3v2.5M12 18.5V21M3 12h2.5M18.5 12H21M5.6 5.6l1.8 1.8M16.6 16.6l1.8 1.8M5.6 18.4l1.8-1.8M16.6 7.4l1.8-1.8"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6"/><path d="m15 15 5 5"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="i-bell" viewBox="0 0 24 24"><path d="M6 16.5V11a6 6 0 0 1 12 0v5.5l1.5 2h-15z"/><path d="M10 20.5a2.2 2.2 0 0 0 4 0"/></symbol>
+  <symbol id="i-mic" viewBox="0 0 24 24"><rect x="9" y="3.5" width="6" height="11" rx="3"/><path d="M6 11.5a6 6 0 0 0 12 0M12 17.5v3"/></symbol>
+  <symbol id="i-send" viewBox="0 0 24 24"><path d="M5 12h13M12 5l7 7-7 7"/></symbol>
+  <symbol id="i-mute" viewBox="0 0 24 24"><path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z"/><path d="m15.5 9.5 5 5M20.5 9.5l-5 5"/></symbol>
+  <symbol id="i-sparkle" viewBox="0 0 24 24"><path d="M12 3.5c.6 4.2 2.3 5.9 6.5 6.5-4.2.6-5.9 2.3-6.5 6.5-.6-4.2-2.3-5.9-6.5-6.5 4.2-.6 5.9-2.3 6.5-6.5z"/><path d="M18.5 15.5c.3 1.6.9 2.2 2.5 2.5-1.6.3-2.2.9-2.5 2.5-.3-1.6-.9-2.2-2.5-2.5 1.6-.3 2.2-.9 2.5-2.5z"/></symbol>
+  <symbol id="i-hanger" viewBox="0 0 24 24"><path d="M10 6.5a2 2 0 1 1 2.8 1.84c-.5.22-.8.7-.8 1.24V10.5"/><path d="M12 10.5 3.6 16.2c-.9.6-.5 1.8.5 1.8h15.8c1 0 1.4-1.2.5-1.8z"/></symbol>
+  <symbol id="i-collapse" viewBox="0 0 24 24"><path d="m9.5 6 6 6-6 6"/></symbol>
+  <symbol id="i-chev" viewBox="0 0 24 24"><path d="m9.5 6 6 6-6 6"/></symbol>
+  <symbol id="i-down" viewBox="0 0 24 24"><path d="m6 9.5 6 6 6-6"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7.5"/></symbol>
+  <symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17M12 3.5c2.5 2.6 3.5 5.4 3.5 8.5s-1 5.9-3.5 8.5c-2.5-2.6-3.5-5.4-3.5-8.5s1-5.9 3.5-8.5z"/></symbol>
+  <symbol id="i-drive" viewBox="0 0 24 24"><path d="M9 4h6l6 10.5-3 5.5H6l-3-5.5z"/><path d="M9 4l6 10.5H3M15 4 9 14.5l-3 5.5"/></symbol>
+  <symbol id="i-calendar" viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="15" rx="2.5"/><path d="M3.5 10h17M8 3v4M16 3v4"/></symbol>
+  <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></symbol>
+  <symbol id="i-paperclip" viewBox="0 0 24 24"><path d="m20 11.5-7.8 7.8a5 5 0 0 1-7-7l8.1-8.1a3.3 3.3 0 0 1 4.7 4.7l-8 8a1.7 1.7 0 0 1-2.4-2.4l7.4-7.4"/></symbol>
+  <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3.5 7.5A2 2 0 0 1 5.5 5.5h4l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/></symbol>
+  <symbol id="i-file" viewBox="0 0 24 24"><path d="M6.5 3.5h7l4 4v13h-11z"/><path d="M13.5 3.5v4h4"/></symbol>
+  <symbol id="i-terminal" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><path d="m7.5 9.5 3 2.5-3 2.5M12.5 15h4"/></symbol>
+  <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="3"/></symbol>
+  <symbol id="i-hand" viewBox="0 0 24 24"><path d="M8 13V5.5a1.5 1.5 0 0 1 3 0V11M11 10.5V4a1.5 1.5 0 0 1 3 0v6.5M14 10.5V5.5a1.5 1.5 0 0 1 3 0V13M17 10a1.5 1.5 0 0 1 3 0v4a7 7 0 0 1-7 7h-1a6 6 0 0 1-4.6-2.2L4 15.5a1.6 1.6 0 0 1 2.4-2.1L8 15"/></symbol>
+  <symbol id="i-stop" viewBox="0 0 24 24"><rect x="6.5" y="6.5" width="11" height="11" rx="2"/></symbol>
+  <symbol id="i-moon" viewBox="0 0 24 24"><path d="M19.5 14.5A7.5 7.5 0 0 1 9.5 4.5a7.5 7.5 0 1 0 10 10z"/></symbol>
+  <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M5.3 18.7l1.4-1.4M17.3 6.7l1.4-1.4"/></symbol>
+  <symbol id="i-sidebar" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><path d="M15 4.5v15"/></symbol>
+</svg>
+
+<div class="window">
+  <header class="titlebar">
+    <div class="lights" aria-hidden="true"><i></i><i></i><i></i></div>
+    <div class="where">
+      <span class="where-title" id="where-title">Lucina</span>
+      <span class="where-sub" id="where-sub">Ready · on nezopt</span>
+    </div>
+    <div class="search" role="search">
+      <svg class="icon icon--sm"><use href="#i-search"/></svg>
+      <span>Search chats, files, sessions and plugins</span>
+      <span class="kbd">⌘K</span>
+    </div>
+    <div class="tb-actions">
+      <div class="mini-lucina" role="button" aria-label="Open Lucina">
+        <img src="assets/lucina-portrait.png" alt=""><span class="dot"></span><span class="t">Lucina</span>
+        <button class="mic" type="button" aria-label="Talk to Lucina"><svg class="icon"><use href="#i-mic"/></svg></button>
+      </div>
+      <button class="tb-btn" id="theme-btn" type="button" aria-label="Switch light or dark"><svg class="icon"><use href="#i-moon"/></svg></button>
+      <button class="tb-btn bell" type="button" aria-label="Notifications"><svg class="icon"><use href="#i-bell"/></svg><b>3</b></button>
+      <button class="tb-btn new-chat" type="button"><svg class="icon"><use href="#i-plus"/></svg>New chat</button>
+    </div>
+  </header>
+
+  <nav class="rail" aria-label="Plugins">
+    <div class="rail-group">
+      <button class="rail-item" data-go="chat" aria-current="page" type="button">
+        <span class="rail-ico"><img src="assets/lucina-portrait.png" alt=""></span>Lucina
+      </button>
+      <div class="rail-sep"></div>
+      <button class="rail-item" data-go="code" type="button">
+        <span class="rail-ico"><svg class="icon"><use href="#i-code"/></svg></span>Code<span class="pip pip--run" title="1 session running"></span>
+      </button>
+      <button class="rail-item" data-go="computer" type="button">
+        <span class="rail-ico"><svg class="icon"><use href="#i-computer"/></svg></span>Computer
+      </button>
+      <button class="rail-item" data-go="gallery" type="button">
+        <span class="rail-ico"><svg class="icon"><use href="#i-gallery"/></svg></span>Gallery
+      </button>
+      <button class="rail-item" data-go="films" type="button">
+        <span class="rail-ico"><svg class="icon"><use href="#i-film"/></svg></span>Films
+      </button>
+      <button class="rail-item" data-go="chats" type="button">
+        <span class="rail-ico"><svg class="icon"><use href="#i-inbox"/></svg></span>All chats
+      </button>
+      <button class="rail-item" data-go="secrets" type="button">
+        <span class="rail-ico"><svg class="icon"><use href="#i-key"/></svg></span>Secrets
+      </button>
+      <button class="rail-item" data-go="health" type="button">
+        <span class="rail-ico"><svg class="icon"><use href="#i-pulse"/></svg></span>Server
+      </button>
+    </div>
+    <div class="rail-spacer"></div>
+    <div class="rail-group">
+      <button class="rail-item" data-go="settings" type="button">
+        <span class="rail-ico"><svg class="icon"><use href="#i-gear"/></svg></span>Settings
+      </button>
+      <div class="owner" title="Giuseppe">G</div>
+    </div>
+  </nav>
+
+  <main class="main">
+    <!-- ================= Lucina chat ================= -->
+    <section class="view view--chat" aria-label="Lucina">
+      <div class="chat">
+        <div class="chat-inner">
+          <div class="chat-bar" role="toolbar" aria-label="Channels">
+            <button class="chip" aria-pressed="true" type="button">All</button>
+            <button class="chip" aria-pressed="false" type="button">App</button>
+            <button class="chip" aria-pressed="false" type="button">Agents</button>
+            <button class="chip" aria-pressed="false" type="button">Telegram</button>
+            <button class="chip" aria-pressed="false" type="button">Discord</button>
+            <button class="chip" aria-pressed="false" type="button">Alexa</button>
+          </div>
+          <div class="messages">
+            <div class="day-sep">Today</div>
+
+            <div class="msg msg--lucina">
+              <div class="bubble">
+                <p>Good morning! Three things for today:</p>
+                <ul>
+                  <li>Gym at <b>18:00</b>, push day</li>
+                  <li>Codex finished the widget fix, tests are green</li>
+                  <li>Rain after 16:00, so take a jacket</li>
+                </ul>
+              </div>
+              <div class="msg-info"><span class="src-badge"><svg class="icon"><use href="#i-globe"/></svg>APP</span>08:02</div>
+            </div>
+
+            <div class="msg msg--user">
+              <div class="bubble">Find my 2025 tax return in Drive and share it with the accountant.</div>
+              <div class="msg-info"><span class="src-badge"><svg class="icon"><use href="#i-globe"/></svg>DESKTOP</span>10:14</div>
+            </div>
+
+            <div class="msg msg--lucina">
+              <div class="tools" data-open="false">
+                <button class="tools-head" type="button" aria-expanded="false">
+                  <span class="tools-ico"><svg class="icon"><use href="#i-drive"/></svg></span>
+                  <span>Worked on <b>Drive</b> · 4 steps</span>
+                  <svg class="icon chev"><use href="#i-chev"/></svg>
+                  <span class="tools-time">2.1 s</span>
+                </button>
+                <ol class="tools-steps">
+                  <li><svg class="icon icon--xs ok"><use href="#i-check"/></svg><span class="tool">drive</span>Listed My Drive<span class="meta">50 files · 0.4 s</span></li>
+                  <li><svg class="icon icon--xs ok"><use href="#i-check"/></svg><span class="tool">drive</span>Searched “tax return 2025”<span class="meta">3 matches · 0.6 s</span></li>
+                  <li><svg class="icon icon--xs ok"><use href="#i-check"/></svg><span class="tool">drive</span>Opened Tax return 2025.pdf<span class="meta">2.4 MB · 0.5 s</span></li>
+                  <li><svg class="icon icon--xs ok"><use href="#i-check"/></svg><span class="tool">drive</span>Shared with the accountant, view only<span class="meta">0.6 s</span></li>
+                  <li class="raw"><u>Show the raw calls</u></li>
+                </ol>
+              </div>
+              <div class="bubble">
+                <p>Found it: <b>Tax return 2025.pdf</b> (2.4 MB, updated 12 Oct). I shared it with your accountant as view only and sent them the link.</p>
+              </div>
+              <div class="msg-info"><span class="src-badge"><svg class="icon"><use href="#i-globe"/></svg>DESKTOP</span>10:14</div>
+            </div>
+
+            <div class="msg msg--user">
+              <div class="bubble">Thanks. Remind me on Friday to call the dentist.</div>
+              <div class="msg-info"><span class="src-badge"><svg class="icon"><use href="#i-globe"/></svg>DESKTOP</span>10:15</div>
+            </div>
+
+            <div class="msg msg--lucina">
+              <div class="tools" data-open="false">
+                <button class="tools-head" type="button" aria-expanded="false">
+                  <span class="tools-ico"><svg class="icon"><use href="#i-calendar"/></svg></span>
+                  <span>Worked on <b>Reminders</b> · 2 steps</span>
+                  <svg class="icon chev"><use href="#i-chev"/></svg>
+                  <span class="tools-time">0.8 s</span>
+                </button>
+                <ol class="tools-steps">
+                  <li><svg class="icon icon--xs ok"><use href="#i-check"/></svg><span class="tool">calendar</span>Checked Friday for a free slot<span class="meta">0.5 s</span></li>
+                  <li><svg class="icon icon--xs ok"><use href="#i-check"/></svg><span class="tool">reminders</span>Created “Call the dentist”<span class="meta">0.3 s</span></li>
+                </ol>
+              </div>
+              <div class="card">
+                <span class="card-ico"><svg class="icon"><use href="#i-clock"/></svg></span>
+                <span><span class="card-title">Call the dentist</span><br><span class="card-sub">Friday 31 Oct · 09:00 · iPhone and Mac</span></span>
+                <span class="card-actions"><button class="pill-btn" type="button">Edit</button><button class="pill-btn" type="button">Cancel</button></span>
+              </div>
+              <div class="msg-info"><span class="src-badge"><svg class="icon"><use href="#i-globe"/></svg>DESKTOP</span>10:15</div>
+            </div>
+          </div>
+          <div class="composer">
+            <div class="composer-input">
+              <button class="cbtn" type="button" aria-label="Attach"><svg class="icon"><use href="#i-paperclip"/></svg></button>
+              <span>Message Lucina</span>
+            </div>
+            <button class="mic-btn" type="button" aria-label="Talk"><svg class="icon"><use href="#i-mic"/></svg></button>
+            <button class="send-btn" type="button" aria-label="Send"><svg class="icon"><use href="#i-send"/></svg></button>
+          </div>
+        </div>
+      </div>
+
+      <aside class="stage" aria-label="Lucina">
+        <div class="stage-hud"><span class="dot"></span><b>Lucina</b><span class="sep"></span>Ready</div>
+        <div class="stage-controls">
+          <button class="stage-btn stage-btn--mic" type="button" aria-label="Talk"><svg class="icon"><use href="#i-mic"/></svg></button>
+          <button class="stage-btn" type="button" aria-label="Mute"><svg class="icon"><use href="#i-mute"/></svg></button>
+          <button class="stage-btn" type="button" aria-label="Gestures"><svg class="icon"><use href="#i-sparkle"/></svg></button>
+          <button class="stage-btn" type="button" aria-label="Wardrobe"><svg class="icon"><use href="#i-hanger"/></svg></button>
+          <button class="stage-btn" type="button" aria-label="Hide stage"><svg class="icon"><use href="#i-sidebar"/></svg></button>
+        </div>
+        <div class="stage-caption">Shared <b>Tax return 2025.pdf</b> with the accountant</div>
+      </aside>
+    </section>
+
+    <!-- ================= Code plugin ================= -->
+    <section class="view view--code" aria-label="Code">
+      <aside class="panel code-side">
+        <button class="project" type="button">
+          <span class="project-mark">S</span>
+          <span><span class="n">SecretaryIOS</span><br><span class="b">nezopt · main</span></span>
+          <svg class="icon icon--sm chev"><use href="#i-down"/></svg>
+        </button>
+        <button class="btn btn--primary" type="button" style="justify-content:center"><svg class="icon"><use href="#i-plus"/></svg>New session</button>
+        <div class="side-head"><span class="caption">Sessions</span><span class="caption" style="letter-spacing:0">5</span></div>
+        <div class="sessions">
+          <div class="session" aria-current="true"><i class="st st--run"></i><span class="t">Fix widget refresh after midnight</span><span class="s">Codex · running · 3 min</span></div>
+          <div class="session"><i class="st st--wait"></i><span class="t">Rust engine: port reminders</span><span class="s">Claude · needs your answer</span></div>
+          <div class="session"><i class="st st--ok"></i><span class="t">Gallery: HEIC thumbnails</span><span class="s">Claude · done · 2 h ago</span></div>
+          <div class="session"><i class="st st--ok"></i><span class="t">Films: resume position sync</span><span class="s">Qwen · done · yesterday</span></div>
+          <div class="session"><i class="st st--bad"></i><span class="t">Android relay retry</span><span class="s">ZCode · failed · Mon</span></div>
+        </div>
+      </aside>
+      <div class="code-main">
+        <div class="code-head">
+          <div class="grow">
+            <h1>Fix widget refresh after midnight</h1>
+            <div class="sub">SecretaryIOS · branch fix/widget-midnight · 2 files changed</div>
+          </div>
+          <span class="run-chip"><i></i>running on Codex · 3 min</span>
+          <button class="btn" type="button"><svg class="icon"><use href="#i-folder"/></svg>Open</button>
+          <button class="btn" type="button"><svg class="icon"><use href="#i-stop"/></svg>Stop</button>
+        </div>
+        <div class="transcript">
+          <div class="msg msg--user">
+            <div class="bubble">The Today widget still shows yesterday’s tasks after midnight. Find out why, fix it and run the widget tests.</div>
+          </div>
+          <div class="agent">
+            <span class="agent-mark">Cx</span>
+            <div class="agent-body">
+              <div class="tools" data-open="true">
+                <button class="tools-head" type="button" aria-expanded="true">
+                  <span class="tools-ico"><svg class="icon"><use href="#i-file"/></svg></span>
+                  <span>Explored <b>6 files</b> · 3 steps</span>
+                  <svg class="icon chev"><use href="#i-chev"/></svg>
+                  <span class="tools-time">14 s</span>
+                </button>
+                <ol class="tools-steps">
+                  <li><svg class="icon icon--xs ok"><use href="#i-check"/></svg><span class="tool">grep</span>TimelineProvider in ios-app/Widgets<span class="meta">4 hits</span></li>
+                  <li><svg class="icon icon--xs ok"><use href="#i-check"/></svg><span class="tool">read</span>TodayProvider.swift<span class="meta">212 lines</span></li>
+                  <li><svg class="icon icon--xs ok"><use href="#i-check"/></svg><span class="tool">read</span>WidgetStore.swift, AppDelegate.swift and 3 more<span class="meta">5 files</span></li>
+                </ol>
+              </div>
+              <div class="agent-text">The timeline only has entries for “now”, with the policy <code>.atEnd</code>, so nothing asks WidgetKit to reload at midnight. I’ll add a midnight entry, reload on <code>significantTimeChange</code>, and cover it with a test.</div>
+              <div class="tools" data-open="false">
+                <button class="tools-head" type="button" aria-expanded="false">
+                  <span class="tools-ico"><svg class="icon"><use href="#i-code"/></svg></span>
+                  <span>Edited <b>2 files</b> · <span style="color:var(--diff-add-text)">+48</span> <span style="color:var(--diff-del-text)">−12</span></span>
+                  <svg class="icon chev"><use href="#i-chev"/></svg>
+                </button>
+              </div>
+              <div class="diff">
+                <div class="diff-head"><svg class="icon icon--xs"><use href="#i-file"/></svg>ios-app/Widgets/TodayProvider.swift<span style="margin-left:auto" class="plus">+31</span><span class="minus">−8</span></div>
+<pre><span class="c">  func getTimeline(in context: Context, completion: @escaping (Timeline&lt;Entry&gt;) -&gt; Void) {</span><span class="c">      let now = Date()</span><span class="d">-     completion(Timeline(entries: [entry(at: now)], policy: .atEnd))</span><span class="a">+     let midnight = Calendar.current.startOfDay(for: now).addingTimeInterval(86_400)</span><span class="a">+     let entries = [entry(at: now), entry(at: midnight)]</span><span class="a">+     completion(Timeline(entries: entries, policy: .after(midnight)))</span><span class="c">  }</span></pre>
+              </div>
+            </div>
+          </div>
+          <div class="live-line"><span class="spinner"></span>Running <code style="font-family:var(--lu-font-mono);font-size:12px">xcodebuild test -only-testing:WidgetTests</code> · 1 m 12 s</div>
+        </div>
+        <div class="code-composer">
+          <div class="composer-input">
+            <span>Reply to Codex, or ask Lucina to take over…</span>
+            <div class="row">
+              <span class="model-pick"><i></i>Codex · gpt-6.1-sol <svg class="icon icon--xs"><use href="#i-down"/></svg></span>
+              <span class="model-pick"><svg class="icon icon--xs"><use href="#i-paperclip"/></svg>Add files</span>
+              <span class="model-pick"><svg class="icon icon--xs"><use href="#i-terminal"/></svg>Terminal</span>
+              <span class="grow"></span>
+              <button class="send-btn" type="button" aria-label="Send"><svg class="icon icon--sm"><use href="#i-send"/></svg></button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================= Computer plugin ================= -->
+    <section class="view view--computer" aria-label="Lucina's computer">
+      <div class="computer">
+        <div class="computer-head">
+          <h1>Lucina’s computer</h1>
+          <div class="seg"><button aria-pressed="true" type="button">Desktop</button><button aria-pressed="false" type="button">Android</button></div>
+          <div class="seg"><button aria-pressed="true" type="button">Live</button><button aria-pressed="false" type="button">Simple</button></div>
+          <span class="grow"></span>
+          <div class="seg">
+            <button aria-pressed="true" type="button"><svg class="icon"><use href="#i-eye"/></svg>Watch</button>
+            <button aria-pressed="false" type="button"><svg class="icon"><use href="#i-hand"/></svg>Take control</button>
+          </div>
+        </div>
+        <div class="panel status-card">
+          <span class="live"></span>
+          <span class="grow"><span class="t">Live · Lucina is booking the dentist</span><br><span class="s">You are watching. Take control to use the mouse and keyboard; she pauses until you hand it back.</span></span>
+          <button class="btn btn--primary" type="button"><svg class="icon"><use href="#i-hand"/></svg>Take control</button>
+        </div>
+        <div class="computer-body">
+          <div class="screen-wrap">
+            <div class="screen">
+              <div class="rd">
+                <div class="rd-menubar"><b>Firefox</b><span>File</span><span>Edit</span><span>View</span><span class="grow"></span><span>Mon 27 Oct 10:21</span></div>
+                <div class="rd-win">
+                  <div class="rd-tabs"><span class="l"><i></i><i></i><i></i></span><span class="rd-tab">Studio Dentistico · Book a visit</span></div>
+                  <div class="rd-url">studio-dentistico.example/book</div>
+                  <div class="rd-page">
+                    <div class="rd-form">
+                      <h2>Book a check-up</h2>
+                      <p>Choose a day and a time. We confirm by SMS.</p>
+                      <div class="rd-field"><label>Name</label><div>Giuseppe V.</div></div>
+                      <div class="rd-field"><label>Day</label><div>Friday 31 October</div></div>
+                      <label style="font-size:9.5px;color:#6b6f80;display:block;margin-bottom:4px">Time</label>
+                      <div class="rd-slots"><span class="off">08:30</span><span>09:00</span><span class="on">09:30</span><span>10:00</span><span class="off">10:30</span><span>11:00</span><span>15:00</span><span class="off">15:30</span></div>
+                      <div class="rd-confirm">Confirm booking</div>
+                    </div>
+                    <div class="rd-aside"><b>Studio Dentistico</b>Check-up and cleaning · 45 min<div class="rd-map"></div>Via Roma 12 · 1.2 km from home</div>
+                  </div>
+                </div>
+                <div class="rd-dock"><i></i><i></i><i></i><i></i></div>
+                <div class="cursor"><svg viewBox="0 0 24 24"><path d="M4 2.5 19 12l-6.5 1.5L9 20z" fill="#5ee3e7" stroke="#0b1d22" stroke-width="1.4" stroke-linejoin="round"/></svg><span>Lucina</span></div>
+              </div>
+            </div>
+            <div class="screen-foot"><span>Watching · 1280 × 800</span><span>30 fps</span><span>38 ms</span><span class="grow"></span><span>nezopt · desktop :0</span></div>
+          </div>
+          <aside class="panel steps">
+            <h2>What she’s doing</h2>
+            <div class="step step--done"><span class="m"><svg class="icon"><use href="#i-check"/></svg></span><span>Opened the dentist’s booking page</span></div>
+            <div class="step step--done"><span class="m"><svg class="icon"><use href="#i-check"/></svg></span><span>Filled in your name and phone</span></div>
+            <div class="step step--now"><span class="m"></span><span>Picking Friday 09:30<span class="note">Your calendar is free until 11:00</span></span></div>
+            <div class="step"><span class="m"></span><span>Confirm the booking<span class="note">She asks you first</span></span></div>
+            <div class="step"><span class="m"></span><span>Add it to your calendar</span></div>
+            <div class="ask"><b>Lucina:</b> 09:30 on Friday works with your calendar. Shall I confirm it?<div style="display:flex;gap:6px;margin-top:10px"><button class="btn btn--primary" type="button">Confirm</button><button class="btn" type="button">Pick another time</button></div></div>
+          </aside>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================= other plugins: placeholders ================= -->
+    <section class="view view--placeholder" aria-label="Plugin">
+      <div class="panel ph">
+        <div class="card-ico"><svg class="icon" id="ph-icon"><use href="#i-gallery"/></svg></div>
+        <h1 id="ph-title">Gallery</h1>
+        <p id="ph-text">Opens the web app’s view inside the shell.</p>
+      </div>
+    </section>
+  </main>
+</div>
+
+<script>
+(function () {
+  var root = document.documentElement;
+  var params = new URLSearchParams(location.search);
+  var PH = {
+    gallery: ["i-gallery", "Gallery", "The web app’s Gallery (photos, PhotoKit backup and the image viewer), full window."],
+    films: ["i-film", "Films", "The web app’s Films plugin: library, player and resume, full window."],
+    chats: ["i-inbox", "All chats", "Every channel in one list: app, desktop, Telegram, Discord, Alexa and agent sessions."],
+    secrets: ["i-key", "Secrets", "The web app’s Secrets sheet: Infisical-backed keys, revealed only on request."],
+    health: ["i-pulse", "Server health", "nezopt, p1 and p2 at a glance: services, deploys and the last probes."],
+    settings: ["i-gear", "Settings", "Account, voice, language, plugins on the rail and the theme."]
+  };
+  var TITLES = {
+    chat: ["Lucina", "Ready · on nezopt"],
+    code: ["Code", "1 running · 1 waiting for you"],
+    computer: ["Computer", "Live · Lucina is working"]
+  };
+  function setTheme(theme) {
+    root.setAttribute("data-theme", theme);
+    document.querySelector("#theme-btn use").setAttribute("href", theme === "dark" ? "#i-sun" : "#i-moon");
+  }
+  function setState(state) {
+    var view = PH[state] ? "placeholder" : state;
+    root.setAttribute("data-state", PH[state] ? state : view);
+    if (state === "settings") root.setAttribute("data-state", "gallery");
+    document.querySelectorAll(".rail-item").forEach(function (b) {
+      if (b.dataset.go === state) b.setAttribute("aria-current", "page"); else b.removeAttribute("aria-current");
+    });
+    var t = TITLES[state] || [PH[state][1], "Plugin"];
+    document.getElementById("where-title").textContent = t[0];
+    document.getElementById("where-sub").textContent = t[1];
+    if (PH[state]) {
+      document.querySelector("#ph-icon use").setAttribute("href", "#" + PH[state][0]);
+      document.getElementById("ph-title").textContent = PH[state][1];
+      document.getElementById("ph-text").textContent = PH[state][2];
+    }
+  }
+  function setTools(open) {
+    document.querySelectorAll(".view--chat .tools").forEach(function (g) {
+      g.dataset.open = String(open);
+      g.querySelector(".tools-head").setAttribute("aria-expanded", String(open));
+    });
+  }
+  document.querySelectorAll(".rail-item").forEach(function (b) {
+    b.addEventListener("click", function () { setState(b.dataset.go); });
+  });
+  document.querySelectorAll(".tools-head").forEach(function (h) {
+    h.addEventListener("click", function () {
+      var g = h.closest(".tools"); var open = g.dataset.open !== "true";
+      g.dataset.open = String(open); h.setAttribute("aria-expanded", String(open));
+    });
+  });
+  document.querySelector(".mini-lucina").addEventListener("click", function () { setState("chat"); });
+  document.getElementById("theme-btn").addEventListener("click", function () {
+    setTheme(root.getAttribute("data-theme") === "dark" ? "light" : "dark");
+  });
+  var prefersLight = window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches;
+  setTheme(params.get("theme") || (prefersLight ? "light" : "dark"));
+  setState(params.get("state") || "chat");
+  if (params.get("tools") === "open") setTools(true);
+})();
+</script>
+</body>
+</html>
