@@ -1,6 +1,41 @@
-# OpenCode Desktop
+# Secretary Code for Mac
 
-The OpenCode Desktop app, built with Electron.
+Secretary Code is the private Mac application built from the OpenCode v2.1.4 fork. It retains the coding engine and workspace, uses the Lucina app logo, and adds Lucina, coding-agent launchers, and meeting recording.
+
+The desktop has projects and sessions on the left, the active coding workspace in the center, and a resizable Lucina/Agents panel on the right. Both side panels can be collapsed. The companion is part of the main workspace.
+
+The checkout lives at `/Users/giuseppe/Projects/Secretary/SecretaryCode` and is also accessible through the `LucinaCode` folder alias. The installed app is `/Applications/Secretary Code.app`.
+
+## Build the private Mac app
+
+Use Bun 1.4.4 or a compatible version, then run from this package:
+
+```bash
+bun scripts/package-secretary-mac.ts
+```
+
+This builds the engine on its `latest` release channel, builds the native recording helper, and packages the desktop with its `prod` identity. The distinction matters: branch-channel engine builds register a different service filename and cannot be discovered by the desktop client. Each build receives a unique engine version so an older staged executable cannot be reused.
+
+The script selects an existing Apple Development identity. Set `SECRETARY_SIGN_IDENTITY` to choose one explicitly. Stable signing preserves the app's macOS privacy grants between builds. The package is a private local build and is not notarized for public distribution.
+
+After quitting the installed app, install the built bundle with:
+
+```bash
+ditto "dist/mac-arm64/Secretary Code.app" "/Applications/Secretary Code.app"
+open "/Applications/Secretary Code.app"
+```
+
+App state and encrypted device credentials live under `~/Library/Application Support/app.secretary.code`. The engine has separate config, data, cache, and service registration below `engine/`; the owner's existing OpenCode installation keeps its own state.
+
+Lucina uses the Secretary device sign-in and private avatar transport. The engine also supplies a Lucina agent and MCP integration, configured through `LUCINA_MCP_TOKEN` or a stored integration credential. External coding lanes use their installed CLIs and accounts; login failures and exhausted quotas are displayed in their output. Qwen respects its single shared slot.
+
+The Agents panel defaults to **Secretary Code · built-in**, which runs the bundled engine locally and saves sessions in the same workspace. It uses the workspace model unless a `provider/model` is entered. Tasks receive their project directory as both the process directory and `PWD`; prompts are sent through stdin. Stop interrupts the engine session rather than only disconnecting its client. Claude, ZCode, Qwen, and Orchestra remain optional lanes.
+
+The recorder's upload contract is documented in [`MEETINGS_API.md`](src/main/secretary/recorder/MEETINGS_API.md). Microphone and screen recording are started through the recorder's controls and macOS permission flow.
+
+## Upstream developer reference
+
+The following sections describe the inherited Electron build and development workflow. Secretary's packaging, identity, URL scheme, and disabled upstream updater take precedence over upstream release references below.
 
 ## Development
 

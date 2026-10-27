@@ -1,12 +1,24 @@
 import { expect, test } from "bun:test"
 import { spawn } from "node:child_process"
-import { REMOTE_SUPERVISOR, redactLaneOutput, supervisedSSH } from "./lane-process"
+import { REMOTE_SUPERVISOR, engineOutput, redactLaneOutput, supervisedSSH } from "./lane-process"
+
+test("engine output displays replies, tool results and errors while a partial JSON record waits", () => {
+  const lines = [
+    { type: 'step_start', sessionID: 'private-protocol-id' },
+    { type: 'tool_use', part: { tool: 'read', state: { status: 'completed', title: 'read', output: 'contract contents' } } },
+    { type: 'text', part: { text: 'The verification code is correct.' } },
+    { type: 'error', error: { message: 'Provider unavailable' } },
+  ].map(value => JSON.stringify(value)).join('\n')
+  const expected = 'read\ncontract contents\nThe verification code is correct.\nProvider unavailable'
+  expect(engineOutput(lines + '\n{"type":"text",')).toBe(expected)
+  expect(engineOutput(lines + '\n{"type":"text","part":{"text":"More"}}')).toBe(expected + '\nMore')
+})
 
 test("redacts credentials from combined streaming output and keeps useful errors", () => {
-  const value = 'Free usage limit reached\nAuthorization: Bearer abcdefghijklmnopqrstuvwxyz\napi_key="a-very-private-key"\nsec_abcdefghijklmnop\nsk-proj-abcdefghijklmnop\neyJhbGciOiJIUzI1NiJ9.eyJpZCI6ImFiYyJ9.abcdefghijklmnop'
+  const value = 'Free usage limit reached\nAuthorization: Bearer abcdefghijklmnopqrstuvwxyz\napi_key="a-very-private-key"\nsec_abcdefghijklmnop\nmcp_abcdefghijklmnop\nsk-proj-abcdefghijklmnop\neyJhbGciOiJIUzI1NiJ9.eyJpZCI6ImFiYyJ9.abcdefghijklmnop'
   const safe = redactLaneOutput(value)
   expect(safe).toContain("Free usage limit reached")
-  for (const secret of ["abcdefghijklmnopqrstuvwxyz", "a-very-private-key", "sec_abcdefghijklmnop", "sk-proj-abcdefghijklmnop", "eyJhbGciOiJIUzI1NiJ9"]) expect(safe).not.toContain(secret)
+  for (const secret of ["abcdefghijklmnopqrstuvwxyz", "a-very-private-key", "sec_abcdefghijklmnop", "mcp_abcdefghijklmnop", "sk-proj-abcdefghijklmnop", "eyJhbGciOiJIUzI1NiJ9"]) expect(safe).not.toContain(secret)
 })
 
 test("SSH supervisor uses batch connection and one safely quoted Python command", () => {

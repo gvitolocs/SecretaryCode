@@ -109,7 +109,7 @@ describe("Lucina defaults", () => {
     ),
   )
 
-  it.effect("enables the server once a token is saved in the credential store", () =>
+  it.effect("reconnects Lucina when its stored token is saved, rotated, or removed", () =>
     withEnv({ LUCINA_MCP_TOKEN: undefined }, () =>
       Effect.gen(function* () {
         const mcp = recorder()
@@ -134,6 +134,24 @@ describe("Lucina defaults", () => {
         })
         yield* drain
         expect(mcp.state.reloads).toBe(1)
+
+        const credentials = yield* Credential.Service
+        const integration = yield* Integration.Service
+        yield* integration.connection.key({ integrationID: LucinaPlugin.integrationID, key: "rotated" })
+        yield* drain
+        expect(mcp.state.reloads).toBe(2)
+        expect(mcp.servers().lucina).toMatchObject({ headers: { Authorization: "Bearer rotated" } })
+
+        const tokens = yield* credentials.list(LucinaPlugin.integrationID)
+        for (const token of tokens) yield* credentials.remove(token.id)
+        yield* drain
+        expect(mcp.state.reloads).toBe(3)
+        expect(mcp.servers().lucina).toEqual({
+          type: "remote",
+          url: "https://getsecretary.tech/mcp",
+          oauth: false,
+          disabled: true,
+        })
       }),
     ),
   )

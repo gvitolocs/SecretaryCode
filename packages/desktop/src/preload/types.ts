@@ -24,7 +24,7 @@ export type ElectronNative = {
 export type LaneResult<T> = { ok: true; data: T } | { ok: false; error: string; code: string }
 
 export type CodingLane = {
-  id: "claude" | "zcode" | "qwen" | "orchestra"
+  id: "secretary" | "claude" | "zcode" | "qwen" | "orchestra"
   name: string
   /** "mac" runs locally; "nezopt" runs over SSH on the first reachable configured host. */
   location: "mac" | "nezopt"
@@ -54,6 +54,8 @@ export type CodingLanes = {
     lane: CodingLane["id"]
     project: string
     prompt: string
+    /** Built-in engine only; omitted to use the workspace model. */
+    model?: string
     /** Remote lanes only: a path under /home/nez/Projects when `project` is not under the nezopt mount. */
     remoteProject?: string
     /** Orchestra only: a key of `workers`; defaults to zen-glm-flash. */

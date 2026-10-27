@@ -6,6 +6,7 @@ import icon from "./icon-data"
 import page from "../../renderer/secretary-lanes/index.html?raw"
 import style from "../../renderer/secretary-lanes/style.css?raw"
 import client from "../../renderer/secretary-lanes/client.mjs?raw"
+import copy from "../../renderer/secretary-lanes/en.json"
 
 const scheme = "secretary-coding"
 const origin = `${scheme}://app/index.html`
@@ -17,16 +18,19 @@ let ready: Promise<void>
 export function setupCodingLanes() {
   if (registered) return
   registered = true
+  process.env.SECRETARY_ENGINE_PATH ??= app.isPackaged
+    ? join(process.resourcesPath, 'opencode-cli')
+    : join(import.meta.dirname, '../../resources/opencode-cli')
   // Scheme privileges are registered once with the other renderer schemes in windows/scheme.ts.
   ready = app.whenReady().then(() => {
     protocol.handle(scheme, request => {
       const url = new URL(request.url)
       if (url.hostname !== "app") return new Response(null, { status: 404 })
       if (url.pathname === "/icon.png") return new Response(Buffer.from(icon, "base64"), { headers: { "Content-Type": "image/png", "Cache-Control": "public, max-age=86400" } })
-      const assets: Record<string, [string, string]> = { "/index.html": [page, "text/html"], "/style.css": [style, "text/css"], "/client.mjs": [client, "text/javascript"] }
+      const assets: Record<string, [string, string]> = { "/index.html": [page, "text/html"], "/style.css": [style, "text/css"], "/client.mjs": [client, "text/javascript"], "/en.json": [JSON.stringify(copy), "application/json"] }
       const asset = assets[url.pathname]
       if (!asset) return new Response(null, { status: 404 })
-      return new Response(asset[0], { headers: { "Content-Type": asset[1], "Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'", "X-Content-Type-Options": "nosniff" } })
+      return new Response(asset[0], { headers: { "Content-Type": asset[1], "Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'", "X-Content-Type-Options": "nosniff" } })
     })
     // The docked coding-agents view and the top frame of an app window may drive lanes; embedded frames,
     // extensions and the Lucina companion may not.

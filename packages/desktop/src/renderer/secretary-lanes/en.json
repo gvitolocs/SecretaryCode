@@ -1,0 +1,8 @@
+{
+  "secretaryName": "Secretary Code · built-in",
+  "secretaryHint": "Runs Secretary Code’s own engine in this project. Sessions are saved in your workspace. External coding CLIs are optional.",
+  "modelLabel": "Model",
+  "modelPlaceholder": "Workspace default, or provider/model",
+  "engineUnavailable": "Secretary Code’s bundled engine is unavailable. Rebuild the app or set SECRETARY_ENGINE_PATH to its executable.",
+  "invalidModel": "Use a model in provider/model format."
+}

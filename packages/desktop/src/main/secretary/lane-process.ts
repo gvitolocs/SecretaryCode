@@ -4,10 +4,33 @@ import { quotePosix } from "./lanes"
 /** Keep raw output in memory only; redact the whole snapshot so split chunks cannot expose tokens. */
 export function redactLaneOutput(value: string) {
   return value.replace(/\x1b\[[0-9;]*[A-Za-z]/g, "")
-    .replace(/\b(?:sk-(?:proj-)?|sec_|svc_|gh[pousr]_|github_pat_|lov_)[A-Za-z0-9_\-]{12,}/g, "[redacted]")
+    .replace(/\b(?:sk-(?:proj-)?|sec_|svc_|mcp_|gh[pousr]_|github_pat_|lov_)[A-Za-z0-9_\-]{12,}/g, "[redacted]")
     .replace(/((?:authorization|api[_-]?key|access[_-]?token|refresh[_-]?token|password|secret)\s*["']?\s*[:=]\s*["']?)(?:Bearer\s+)?[^\s,"'}]+/gi, "$1[redacted]")
     .replace(/Bearer\s+[A-Za-z0-9._~+\/-]{12,}/gi, "Bearer [redacted]")
     .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, "[redacted]")
+}
+
+/** The bundled engine emits JSONL. Show its replies, tool results and errors, without protocol bookkeeping. */
+export function engineOutput(value: string) {
+  return value.split('\n').flatMap(line => {
+    if (!line.trim()) return []
+    let parsed: unknown
+    try { parsed = JSON.parse(line) } catch { return line.startsWith('{') ? [] : [line] }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return []
+    const event = parsed as Record<string, unknown>
+    const part = event.part && typeof event.part === 'object' ? event.part as Record<string, unknown> : undefined
+    if (event.type === 'text' && typeof part?.text === 'string') return [part.text]
+    if (event.type === 'error' && event.error && typeof event.error === 'object') {
+      const error = event.error as Record<string, unknown>
+      return typeof error.message === 'string' ? [error.message] : []
+    }
+    if (event.type !== 'tool_use' || !part?.state || typeof part.state !== 'object') return []
+    const state = part.state as Record<string, unknown>
+    if (state.status !== 'completed' && state.status !== 'error') return []
+    const title = typeof state.title === 'string' ? state.title : typeof part.tool === 'string' ? part.tool : ''
+    const result = typeof state.output === 'string' ? state.output : typeof state.error === 'string' ? state.error : ''
+    return [title, result].filter(Boolean)
+  }).join('\n')
 }
 
 // stdin remains open for the lifetime of SSH. EOF means the desktop disconnected: stop the

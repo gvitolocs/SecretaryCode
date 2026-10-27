@@ -4,7 +4,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { LANES, LaneError, ORCHESTRA_WORKERS, launchPlan, orchestraRequest, projectPath, quotePosix, remoteProject, sshHosts } from './lanes'
 
-const configured = ['SECRETARY_SSH_HOST', 'SECRETARY_SSH_FALLBACK_HOST', 'SECRETARY_CLAUDE_PATH'] as const
+const configured = ['SECRETARY_SSH_HOST', 'SECRETARY_SSH_FALLBACK_HOST', 'SECRETARY_CLAUDE_PATH', 'SECRETARY_ENGINE_PATH'] as const
 const saved = Object.fromEntries(configured.map(key => [key, process.env[key]]))
 afterEach(() => {
   for (const key of configured) {
@@ -43,6 +43,17 @@ describe('process construction', () => {
     const result = spawnSync('/bin/sh', ['-c', "printf '%s\\0' " + suspicious.map(quotePosix).join(' ')])
     expect(result.status).toBe(0)
     expect(result.stdout.toString().split('\0').slice(0, -1)).toEqual(suspicious)
+  })
+  test('the bundled engine runs locally without SSH and receives prompts through stdin', () => {
+    expect(code(() => launchPlan('secretary', { project: '/tmp/project', prompt: 'Review' }))).toBe('engine_unavailable')
+    process.env.SECRETARY_ENGINE_PATH = '/Applications/Secretary Code.app/Contents/Resources/opencode-cli'
+    const plan = launchPlan('secretary', { project: '/tmp/project', prompt: '--auto', model: 'deepseek/deepseek-flash' })
+    expect(plan.args).toEqual(['run', '--format', 'json', '--model', 'deepseek/deepseek-flash'])
+    expect(plan.stdin).toBe('--auto')
+    expect(plan.remote).toBeUndefined()
+    expect(plan.interruptSignal).toBe('SIGINT')
+    expect(plan.args).not.toContain('--standalone')
+    expect(code(() => launchPlan('secretary', { project: '/tmp/project', prompt: 'Review', model: '--auto' }))).toBe('invalid_model')
   })
   test('Claude uses argv plus local cwd with no shell and reads the prompt from stdin', () => {
     const plan = launchPlan('claude', { project: '/Users/giuseppe/Projects/My Project', prompt: 'Review; $(id)' })

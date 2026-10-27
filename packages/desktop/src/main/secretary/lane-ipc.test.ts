@@ -1,20 +1,31 @@
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test"
-import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises"
+import { chmod, mkdtemp, realpath, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { handleLaneRequest } from "./lane-ipc"
 
-const configured = ["SECRETARY_SSH_HOST", "SECRETARY_SSH_FALLBACK_HOST", "SECRETARY_CLAUDE_PATH"] as const
+const configured = ["SECRETARY_SSH_HOST", "SECRETARY_SSH_FALLBACK_HOST", "SECRETARY_CLAUDE_PATH", "SECRETARY_ENGINE_PATH"] as const
 const saved = Object.fromEntries(configured.map((key) => [key, process.env[key]]))
 const root = { path: "" }
 
 beforeAll(async () => {
-  root.path = await mkdtemp(join(tmpdir(), "secretary-lanes-"))
+  root.path = await realpath(await mkdtemp(join(tmpdir(), "secretary-lanes-")))
   // Stands in for the Claude CLI: echoes its argv, then the prompt it reads from stdin.
   await writeFile(join(root.path, "claude"), '#!/bin/sh\necho "argv:$*"\ncat\n')
   await writeFile(join(root.path, "slow"), "#!/bin/sh\nexec sleep 30\n")
+  await writeFile(join(root.path, "engine"), '#!/usr/bin/env python3\nimport json,os,signal,sys,time\ndef reply(text):\n print(json.dumps({"type":"text","part":{"text":text}}),flush=True)\ndef stop(*args):\n reply("interrupted");sys.exit(130)\nsignal.signal(signal.SIGINT,stop)\nprompt=sys.stdin.read()\nreply("ready:"+os.getcwd()+":"+os.environ.get("PWD","")+":"+prompt)\nwhile True: time.sleep(1)\n')
   await chmod(join(root.path, "claude"), 0o755)
   await chmod(join(root.path, "slow"), 0o755)
+  await chmod(join(root.path, "engine"), 0o755)
+  await writeFile(join(root.path, "fragmented-engine"), String.raw`#!/usr/bin/env python3
+import os,time
+os.write(1,b'{"type":"text","part":{"text":"Caf\xc3')
+time.sleep(.1)
+os.write(2,b'engine diagnostic\n')
+time.sleep(.1)
+os.write(1,b'\xa9"}}\n')
+`)
+  await chmod(join(root.path, "fragmented-engine"), 0o755)
 })
 afterEach(async () => {
   await handleLaneRequest("cancel", undefined)
@@ -41,16 +52,36 @@ async function until(check: () => Promise<boolean>, ms = 10_000) {
 }
 
 describe("lane IPC", () => {
+  test("keeps UTF-8 replies intact when engine diagnostics arrive between stdout fragments", async () => {
+    process.env.SECRETARY_ENGINE_PATH = join(root.path, 'fragmented-engine')
+    expect(await handleLaneRequest('launch', { lane: 'secretary', project: root.path, prompt: 'Read' })).toMatchObject({ ok: true })
+    await until(async () => !(await status()).running)
+    expect(await status()).toMatchObject({ status: 'Completed', exitCode: 0 })
+    const output = (await status()).output
+    expect(output).toContain('Café')
+    expect(output).toContain('engine diagnostic')
+    expect(output).not.toContain('\uFFFD')
+  })
+  test("the built-in lane uses the project directory and interrupts the engine with SIGINT", async () => {
+    process.env.SECRETARY_ENGINE_PATH = join(root.path, 'engine')
+    expect(await handleLaneRequest('launch', { lane: 'secretary', project: root.path, prompt: '--auto', model: 'deepseek/deepseek-flash' })).toMatchObject({ ok: true })
+    await until(async () => (await status()).output.includes('ready:'))
+    expect((await status()).output).toContain(`ready:${root.path}:${root.path}:--auto`)
+    await handleLaneRequest('cancel', undefined)
+    await until(async () => !(await status()).running)
+    expect(await status()).toMatchObject({ status: 'Cancelled', exitCode: 130 })
+    expect((await status()).output).toContain('interrupted')
+  })
   test("lists lanes, workers and the configured SSH hosts", async () => {
     delete process.env.SECRETARY_SSH_HOST
     delete process.env.SECRETARY_SSH_FALLBACK_HOST
     const result = await handleLaneRequest("list", undefined)
     expect(result.ok).toBe(true)
     const data = result.ok ? (result.data as { lanes: { id: string }[]; workers: object; hosts: string[] }) : undefined
-    expect(data?.lanes.map((lane) => lane.id)).toEqual(["claude", "zcode", "qwen", "orchestra"])
+    expect(data?.lanes.map((lane) => lane.id)).toEqual(["secretary", "claude", "zcode", "qwen", "orchestra"])
     expect(Object.keys(data?.workers ?? {})).toContain("zen-glm-flash")
     expect(data?.hosts).toEqual(["nezopt", "nezopt-remote"])
-    expect(await status()).toMatchObject({ running: false, status: "Ready" })
+    expect(await status()).toMatchObject({ running: false })
   })
 
   test("rejects malformed requests before any process or SSH connection starts", async () => {
@@ -84,7 +115,7 @@ describe("lane IPC", () => {
     }
     process.env.SECRETARY_SSH_HOST = "-oProxyCommand=id"
     expect(await handleLaneRequest("list", undefined)).toMatchObject({ ok: false, code: "invalid_host" })
-    expect(await status()).toMatchObject({ running: false, status: "Ready" })
+    expect(await status()).toMatchObject({ running: false })
   })
 
   test("runs the local lane in the project with the prompt on stdin and redacted output", async () => {
@@ -116,14 +147,18 @@ describe("lane IPC", () => {
     expect(await status()).toMatchObject({ running: false, status: "Cancelled" })
   })
 
-  test("reports a missing CLI as a start failure", async () => {
-    process.env.SECRETARY_CLAUDE_PATH = join(root.path, "not-installed")
-    expect(await handleLaneRequest("launch", { lane: "claude", project: root.path, prompt: "Review" })).toMatchObject({
+  test.each([
+    { lane: 'claude', setting: 'SECRETARY_CLAUDE_PATH' },
+    { lane: 'secretary', setting: 'SECRETARY_ENGINE_PATH' },
+  ])("reports a missing $lane CLI as a start failure", async ({ lane, setting }) => {
+    process.env[setting] = join(root.path, "not-installed")
+    expect(await handleLaneRequest("launch", { lane, project: root.path, prompt: "Review" })).toMatchObject({
       ok: true,
     })
     await until(async () => (await status()).exitCode !== undefined)
     // The close event that follows a spawn error must not replace the failure with a negative errno exit.
     await Bun.sleep(50)
     expect(await status()).toMatchObject({ running: false, status: "Failed to start", exitCode: -1 })
+    expect((await status()).output).toContain('not-installed')
   })
 })

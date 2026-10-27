@@ -1,7 +1,9 @@
 import { homedir } from 'node:os'
 import { posix } from 'node:path'
+import copy from '../../renderer/secretary-lanes/en.json'
 
 export const LANES = [
+  { id: 'secretary', name: 'Secretary Code', location: 'mac', model: 'Workspace selection' },
   { id: 'claude', name: 'Claude Code', location: 'mac', model: 'Account default' },
   { id: 'zcode', name: 'ZCode', location: 'nezopt', model: 'Z.AI account default' },
   { id: 'qwen', name: 'Qwen Code', location: 'nezopt', model: 'qwen3.8:27b-q4-72k' },
@@ -83,6 +85,8 @@ export interface LaunchPlan {
   args: string[]
   cwd: string
   stdin?: string
+  interruptSignal?: 'SIGINT'
+  outputFormat?: 'opencode-json'
   remote?: { host: string; executable: string; args: string[]; project: string }
 }
 
@@ -90,6 +94,7 @@ export interface LaunchOptions {
   project: string
   remoteProject?: string
   prompt?: string
+  model?: string
   interactive?: boolean
   qwenSlot?: QwenSlot
   /** SSH destination for remote lanes; defaults to the first of sshHosts(). */
@@ -109,6 +114,14 @@ function sshPlan(host: string, cwd: string, project: string, executable: string,
 export function launchPlan(lane: LaneID | string, options: LaunchOptions): LaunchPlan {
   if (!LANES.some(item => item.id === lane)) throw new LaneError('unknown_lane', 'Unknown coding lane')
   const cwd = projectPath(options.project)
+  if (lane === 'secretary') {
+    const executable = process.env.SECRETARY_ENGINE_PATH
+    if (!executable || !executable.startsWith('/')) throw new LaneError('engine_unavailable', copy.engineUnavailable)
+    const model = options.model?.trim()
+    if (model && !/^[A-Za-z0-9_][A-Za-z0-9_.-]*\/[^\s\u0000-\u001f]+$/u.test(model))
+      throw new LaneError('invalid_model', copy.invalidModel)
+    return { executable, args: ['run', '--format', 'json', ...(model ? ['--model', model] : [])], cwd, stdin: text(options.prompt, 'Prompt', true), interruptSignal: 'SIGINT', outputFormat: 'opencode-json' }
+  }
   if (lane === 'orchestra') throw new LaneError('mcp_required', 'Use orchestraRequest to dispatch through the existing authenticated bridge')
   if (lane === 'claude') {
     // `-p` is a boolean flag and the prompt a positional argument, so a prompt in argv that looks like a

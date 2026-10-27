@@ -1,8 +1,12 @@
 const $ = id => document.getElementById(id)
+const copy = await (await fetch('./en.json')).json()
+for (const element of document.querySelectorAll('[data-copy]')) element.textContent = copy[element.dataset.copy]
+for (const element of document.querySelectorAll('[data-placeholder]')) element.placeholder = copy[element.dataset.placeholder]
 const bridge = window.electron?.codingLanes
 let polling = false
 let output = ''
 const hints = {
+  secretary: copy.secretaryHint,
   claude: 'Runs your installed Claude CLI with its current account and permission settings.',
   zcode: 'Runs the ZCode CLI on nezopt. An expired Z.AI login must be renewed in ZCode before tasks can run.',
   qwen: 'Checks the shared Qwen slot before dispatch. Busy or unknown availability blocks launch; the existing worker lock remains the final arbiter.',
@@ -16,7 +20,8 @@ async function request(action, input) {
   return result.data
 }
 function laneChanged() {
-  $('remote-field').hidden = $('lane').value === 'claude'
+  $('remote-field').hidden = ['secretary', 'claude'].includes($('lane').value)
+  $('model-field').hidden = $('lane').value !== 'secretary'
   $('worker-field').hidden = $('lane').value !== 'orchestra'
   $('lane-hint').textContent = hints[$('lane').value]
 }
@@ -24,7 +29,7 @@ function render(data) {
   $('status').textContent = data.status
   $('run').disabled = data.running
   $('cancel').disabled = !data.running
-  for (const id of ['project', 'pick', 'lane', 'worker', 'remote', 'prompt']) $(id).disabled = data.running
+  for (const id of ['project', 'pick', 'lane', 'worker', 'remote', 'model', 'prompt']) $(id).disabled = data.running
   if (data.output !== output) {
     const nearBottom = $('output').scrollTop + $('output').clientHeight >= $('output').scrollHeight - 30
     output = data.output
@@ -42,7 +47,7 @@ $('pick').addEventListener('click', async () => { try { const result = await req
 $('run').addEventListener('click', async () => {
   showError('')
   $('run').disabled = true
-  try { await request('launch', { project: $('project').value, remoteProject: $('remote').value, lane: $('lane').value, worker: $('worker').value, prompt: $('prompt').value }); await poll() }
+  try { await request('launch', { project: $('project').value, remoteProject: $('remote').value, lane: $('lane').value, model: $('model').value, worker: $('worker').value, prompt: $('prompt').value }); await poll() }
   catch (error) { showError(error.message); $('run').disabled = false }
 })
 $('cancel').addEventListener('click', async () => { try { await request('cancel'); await poll() } catch (error) { showError(error.message) } })

@@ -1,9 +1,10 @@
 import { spawn } from "node:child_process"
 import type { ChildProcess } from "node:child_process"
 import { stat } from "node:fs/promises"
+import { StringDecoder } from "node:string_decoder"
 import { LANES, LaneError, ORCHESTRA_WORKERS, launchPlan, orchestraRequest, projectPath, sshHosts } from "./lanes"
 import type { QwenSlot } from "./lanes"
-import { reach, redactLaneOutput, supervisedSSH } from "./lane-process"
+import { engineOutput, reach, redactLaneOutput, supervisedSSH } from "./lane-process"
 
 /** One channel for the coding-lanes window and the main app windows; lane-window validates the sender. */
 export const LaneChannel = "secretary:lanes"
@@ -12,7 +13,7 @@ export type LaneResult = { ok: true; data: unknown } | { ok: false; error: strin
 
 // One task at a time across every window, so a second window cannot start a parallel run.
 let processState:
-  | { child: ChildProcess; raw: string; status: string; exitCode?: number | null; cancel: boolean }
+  | { child: ChildProcess; raw: string; stdout: string; stderr: string; status: string; exitCode?: number | null; cancel: boolean; interruptSignal: 'SIGINT' | 'SIGTERM'; outputFormat?: 'opencode-json' }
   | undefined
 let starting = false
 let startCancelled = false
@@ -40,9 +41,9 @@ export function cancelLane() {
   if (processState.child.spawnfile === "/usr/bin/ssh") return
   if (processState.child.pid) {
     try {
-      process.kill(-processState.child.pid, "SIGTERM")
+      process.kill(-processState.child.pid, processState.interruptSignal)
     } catch {
-      processState.child.kill("SIGTERM")
+      processState.child.kill(processState.interruptSignal)
     }
   }
 }
@@ -55,7 +56,9 @@ async function perform(action: string, input: unknown) {
       workers: ORCHESTRA_WORKERS,
       running: starting || (!!processState && processState.exitCode === undefined),
       status: starting ? "Checking project and worker availability" : (processState?.status ?? "Ready"),
-      output: redactLaneOutput(processState?.raw ?? ""),
+      output: redactLaneOutput(processState?.outputFormat === 'opencode-json'
+        ? [engineOutput(processState.stdout), processState.stderr].filter(Boolean).join('\n')
+        : processState?.raw ?? ""),
       exitCode: processState?.exitCode,
     }
   if (action === "probe") {
@@ -82,6 +85,7 @@ async function perform(action: string, input: unknown) {
     if (!prompt.trim() || prompt.length > 100_000)
       throw new LaneError("invalid_input", "Enter a task of up to 100,000 characters")
     const remote = typeof data.remoteProject === "string" && data.remoteProject ? data.remoteProject : undefined
+    const model = typeof data.model === "string" ? data.model : undefined
     if (startCancelled) throw new LaneError("cancelled", "Task launch cancelled")
     if (lane === "orchestra") {
       const request = orchestraRequest({
@@ -108,13 +112,14 @@ async function perform(action: string, input: unknown) {
       return { started: true }
     }
     // Validate the lane and paths before any SSH round trip; the host is filled in once one answers.
-    launchPlan(lane, { project, remoteProject: remote, prompt, interactive: false, qwenSlot: "free" })
+    const validated = launchPlan(lane, { project, remoteProject: remote, prompt, model, interactive: false, qwenSlot: "free" })
     const slot = lane === "qwen" ? await qwenSlot() : undefined
-    const host = slot?.host ?? (lane === "claude" ? undefined : await reachableHost())
+    const host = slot?.host ?? (validated.remote ? await reachableHost() : undefined)
     const plan = launchPlan(lane, {
       project,
       remoteProject: remote,
       prompt,
+      model,
       interactive: false,
       qwenSlot: slot?.slot,
       host,
@@ -137,10 +142,13 @@ async function perform(action: string, input: unknown) {
     const run = collect(
       spawn(plan.executable, plan.args, {
         cwd: plan.cwd,
+        env: { ...process.env, PWD: plan.cwd },
         shell: false,
         detached: true,
         stdio: ["pipe", "pipe", "pipe"],
       }),
+      plan.interruptSignal,
+      plan.outputFormat,
     )
     run.child.stdin?.end(plan.stdin)
     return { started: true }
@@ -149,19 +157,28 @@ async function perform(action: string, input: unknown) {
   }
 }
 
-function collect(child: ChildProcess) {
-  const run = { child, raw: "", status: "Running", cancel: false, exitCode: undefined as number | null | undefined }
+function collect(child: ChildProcess, interruptSignal: 'SIGINT' | 'SIGTERM' = 'SIGTERM', outputFormat?: 'opencode-json') {
+  const run = { child, raw: "", stdout: "", stderr: "", status: "Running", cancel: false, exitCode: undefined as number | null | undefined, interruptSignal, outputFormat }
   processState = run
-  const append = (data: Buffer) => {
-    run.raw = (run.raw + data.toString()).slice(-256_000)
+  const append = (text: string, stream: 'stdout' | 'stderr') => {
+    if (outputFormat === 'opencode-json') {
+      // Diagnostics must not become bytes inside a partially received JSON record.
+      run[stream] = (run[stream] + text).slice(stream === 'stdout' ? -256_000 : -32_000)
+      return
+    }
+    run.raw = (run.raw + text).slice(-256_000)
   }
-  child.stdout?.on("data", append)
-  child.stderr?.on("data", append)
+  const stdout = new StringDecoder('utf8')
+  const stderr = new StringDecoder('utf8')
+  child.stdout?.on("data", chunk => append(stdout.write(chunk), 'stdout'))
+  child.stdout?.on("end", () => append(stdout.end(), 'stdout'))
+  child.stderr?.on("data", chunk => append(stderr.write(chunk), 'stderr'))
+  child.stderr?.on("end", () => append(stderr.end(), 'stderr'))
   child.stdin?.on("error", (error) => {
-    if (!run.cancel) run.raw += `\nInput stream closed: ${error.message}`
+    if (!run.cancel) append(`\nInput stream closed: ${error.message}`, 'stderr')
   })
   child.on("error", (error) => {
-    run.raw += `\n${error.message}`
+    append(`\n${error.message}`, 'stderr')
     run.status = "Failed to start"
     run.exitCode = -1
   })
