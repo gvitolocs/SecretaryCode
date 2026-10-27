@@ -1,37 +1,26 @@
 import { app, Notification, shell } from "electron"
-import { randomUUID } from "node:crypto"
 import { existsSync } from "node:fs"
-import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises"
+import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises"
 import path from "node:path"
 import copy from "../../../renderer/secretary-recorder/en.json"
+import { reportRecorderFailure } from "../diagnostics"
 import { secretaryToken } from "../index"
 import { currentEvent, parseEvents, type CalendarEvent } from "./calendar"
 import { HelperError, RecorderHelper } from "./helper"
 import { RecorderInputError } from "./input"
-import {
-  RECORDINGS_FOLDER,
-  createManifest,
-  createRecordingDirectory,
-  fileDigest,
-  folderName,
-  mimeType,
-  readManifest,
-  retentionExpired,
-  writeManifest,
-  type Manifest,
-  type ManifestTrack,
-} from "./manifest"
+import { RECORDINGS_FOLDER, readManifest, retentionExpired, writeManifest, type Manifest } from "./manifest"
 import { isMeetingApp, isMeetingWindow, meetingRank, rankApps, rankWindows } from "./meetings"
 import {
   TRACKS,
-  helperStartSettings,
   parsePermissions,
   parseSourceList,
   type CaptureSource,
   type HelperEvent,
   type PermissionState,
+  type SourceList,
   type StopSummary,
 } from "./protocol"
+import { beginRecording, captureRecording, finishRecording } from "./session"
 import { DEFAULT_SETTINGS, parseSettings, type RecorderSettings } from "./settings"
 import { IDLE, reduce, type ActiveRecording, type RecorderEvent, type RecorderRequest } from "./state"
 import { SECRETARY_ORIGIN, UploadError, fetchMeeting, uploadRecording } from "./uploader"
@@ -79,6 +68,9 @@ const SWEEP_MS = 6 * 3_600_000
 
 const CALENDAR_TTL_MS = 5 * 60_000
 
+/** A source list this fresh is shown as-is; the sheet's own refresh replaces it soon after. */
+const SOURCES_TTL_MS = 5_000
+
 /**
  * The recorder's main-process state: one active recording, the recordings on disk, their uploads,
  * and meeting suggestions. Everything the sheet and the tray show comes from `snapshot()`.
@@ -101,6 +93,7 @@ export class RecorderService {
   private helperRestarts = 0
   private quitting = false
   private emitTimer: ReturnType<typeof setTimeout> | undefined
+  private sourceList: { list: Promise<SourceList>; fetchedAt: number } | undefined
 
   constructor(private readonly openSheet: () => void) {}
 
@@ -158,6 +151,8 @@ export class RecorderService {
   async perform(request: RecorderRequest): Promise<unknown> {
     switch (request.action) {
       case "snapshot":
+        // The sheet just opened: wake ScreenCaptureKit now, so Record does not pay for it later.
+        this.warm()
         void this.refreshCalendar()
         void this.helperRequest("permissions").then((value) => {
           if (value) this.permissions = parsePermissions(value)
@@ -261,8 +256,32 @@ export class RecorderService {
     else if (this.active.phase === "paused") await this.perform({ action: "resume" })
   }
 
+  /**
+   * Keeps the helper running and ScreenCaptureKit attached while the sheet is open. The first
+   * shareable-content query of a process takes seconds; paying it here keeps it out of Record.
+   */
+  private warm() {
+    if (!this.available || !this.helper || this.active.phase !== "idle") return
+    if (!this.helper.running) this.helper.start()
+    void this.sourceListing().catch(() => undefined)
+  }
+
+  /** One `list-sources` at a time, reused for a few seconds: the sheet asks right after `snapshot`. */
+  private sourceListing() {
+    if (this.sourceList && Date.now() - this.sourceList.fetchedAt < SOURCES_TTL_MS) return this.sourceList.list
+    const list = this.requireHelper()
+      .request("list-sources", {}, 30_000)
+      .then(parseSourceList)
+    this.sourceList = { list, fetchedAt: Date.now() }
+    list.catch(() => {
+      if (this.sourceList?.list === list) this.sourceList = undefined
+    })
+
+    return list
+  }
+
   private async sources() {
-    const list = parseSourceList(await this.requireHelper().request("list-sources", {}, 30_000))
+    const list = await this.sourceListing()
     this.permissions = list.permissions
     this.emit()
 
@@ -275,23 +294,23 @@ export class RecorderService {
 
   private async record(source: CaptureSource, requestedTitle: string, calendarEventId: string | null) {
     const helper = this.requireHelper()
-    const startedAt = new Date()
     const title = requestedTitle || this.calendarTitle(calendarEventId) || source.name || copy.untitled
-    const directory = await createRecordingDirectory(recordingsRoot(), folderName(startedAt, title))
-    const id = randomUUID()
-    const manifest = createManifest({ id, title, startedAt, source, calendarEventId, settings: this.settings })
-    await writeManifest(directory, manifest)
-    this.recordings.set(id, { directory, manifest })
+    const draft = await beginRecording({ root: recordingsRoot(), title, source, calendarEventId, settings: this.settings })
+    this.recordings.set(draft.id, { directory: draft.directory, manifest: draft.manifest })
     this.preferredSource = null
-    this.transition({ type: "start", id, directory, title, source })
+    this.transition({ type: "start", id: draft.id, directory: draft.directory, title, source })
 
     try {
-      await helper.request("start", { settings: helperStartSettings(this.settings, source, directory) }, 60_000)
+      // `started_at` becomes the moment the helper began capturing, not the click.
+      const manifest = await captureRecording({ ...draft, helper, source, settings: this.settings })
+      this.recordings.set(draft.id, { directory: draft.directory, manifest })
+      this.emit()
     } catch (error) {
       const code = error instanceof HelperError ? error.code : "capture-failed"
-      this.recordings.delete(id)
-      await rm(directory, { recursive: true, force: true })
-      this.transition({ type: "start-failed", code, message: error instanceof Error ? error.message : code })
+      const message = error instanceof Error ? error.message : code
+      this.recordings.delete(draft.id)
+      reportRecorderFailure(code, message, { phase: "starting", source: source.kind })
+      this.transition({ type: "start-failed", code, message })
     }
 
     return this.snapshot()
@@ -338,8 +357,15 @@ export class RecorderService {
   private helperExited() {
     const directory = this.active.directory
     const recording = this.active.phase !== "idle"
+    const phase = this.active.phase
     this.transition({ type: "helper-exited" })
 
+    if (recording) {
+      reportRecorderFailure("helper-exited", "The recorder stopped unexpectedly", {
+        phase,
+        restarts: this.helperRestarts,
+      })
+    }
     if (recording && directory) void this.finalize(directory)
 
     if (this.quitting || this.helperRestarts >= 3) return
@@ -365,51 +391,10 @@ export class RecorderService {
 
     if (!manifest) return
 
-    const tracks = (
-      await Promise.all(
-        TRACKS.map(async (name): Promise<ManifestTrack | undefined> => {
-          const file = path.join(directory, name)
-          const size = await stat(file).then(
-            (info) => info.size,
-            () => 0,
-          )
+    const finished = await finishRecording({ directory, manifest, summary })
+    await this.save(manifest.id, finished, directory)
 
-          if (!size) return undefined
-          const offset = summary?.tracks.find((track) => track.name === name)?.startOffset
-
-          return {
-            name,
-            bytes: size,
-            sha256: await fileDigest(file),
-            mime: mimeType(name),
-            start_offset_ms: offset === null || offset === undefined ? null : Math.round(offset * 1000),
-            confirmed_at: null,
-          }
-        }),
-      )
-    ).filter((track) => track !== undefined)
-
-    const endedAt = summary?.endedAt || new Date().toISOString()
-    await this.save(
-      manifest.id,
-      {
-        ...manifest,
-        ended_at: endedAt,
-        duration_seconds: summary
-          ? Math.round(summary.duration * 10) / 10
-          : (Date.parse(endedAt) - Date.parse(manifest.started_at)) / 1000,
-        tracks,
-        upload: {
-          ...manifest.upload,
-          status: tracks.length ? "pending" : "failed",
-          error: tracks.length ? null : "emptyRecording",
-          updated_at: endedAt,
-        },
-      },
-      directory,
-    )
-
-    if (tracks.length) this.enqueue(manifest.id)
+    if (finished.tracks.length) this.enqueue(manifest.id)
   }
 
   private enqueue(id: string) {

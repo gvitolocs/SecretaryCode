@@ -22,7 +22,12 @@ export function mountRecordButton() {
     const status = value && typeof value === "object" && "phase" in value && "elapsed" in value ? value : undefined
     const recording = !!status && status.phase !== "idle"
     button.classList.toggle("recording", recording)
-    label.textContent = recording && typeof status.elapsed === "number" ? clock(status.elapsed) : copy.titlebarRecord
+    label.textContent =
+      status?.phase === "starting"
+        ? copy.starting
+        : recording && typeof status.elapsed === "number"
+          ? clock(status.elapsed)
+          : copy.titlebarRecord
     button.setAttribute("aria-label", recording ? copy.titlebarRecording : copy.menuRecord)
   })
 

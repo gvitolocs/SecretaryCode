@@ -1,15 +1,13 @@
 import { TextField } from "@opencode/ui/text-field"
-import type { captureException } from "@sentry/solid"
 import { Logo } from "@opencode/ui/logo"
 import { Button } from "@opencode/ui/button"
-import { Component, createSignal, onCleanup, onMount, Show } from "solid-js"
+import { Component, onCleanup, onMount, Show } from "solid-js"
 import { createStore } from "solid-js/store"
 import { Predicate } from "effect"
 import { Updater } from "@opencode/gui-extensions/updater"
-import { usePlatform } from "@/runtime/platform/platform"
+import { usePlatform, type FatalRendererReport } from "@/runtime/platform/platform"
 import { useLanguage } from "@/runtime/i18n/language"
 import { createIpcClients } from "@/runtime/extension/ipc"
-import { Icon } from "@opencode/ui/icon"
 import { errorDescriptionKey, errorStatus } from "./description"
 
 export type InitError = {
@@ -257,37 +255,60 @@ export const ErrorPage: Component<ErrorPageProps> = (props) => {
   const language = useLanguage()
   const formattedError = () => formatError(props.error, language.t)
   const status = () => errorStatus(props.error)
-  let recordedFatalError: Promise<void> | undefined
+  let recordedFatalError: Promise<FatalRendererReport | null> | undefined
 
   const [store, setStore] = createStore<{
     actionError: string | undefined
-    captureException: typeof captureException | undefined
+    report: FatalRendererReport | null
+    sending: boolean
+    sentByOwner: boolean
+    note: string
   }>({
     actionError: undefined,
-    captureException: undefined,
+    report: null,
+    sending: false,
+    sentByOwner: false,
+    note: "",
+  })
+
+  const fatalError = () => ({
+    error: formattedError(),
+    url: location.href,
+    version: platform.version,
+    platform: platform.platform,
+    os: platform.os,
   })
 
   function ensureFatalErrorRecorded() {
-    recordedFatalError ??=
-      platform.recordFatalRendererError?.({
-        error: formattedError(),
-        url: location.href,
-        version: platform.version,
-        platform: platform.platform,
-        os: platform.os,
-      }) ?? Promise.resolve()
+    recordedFatalError ??= platform.recordFatalRendererError?.(fatalError()) ?? Promise.resolve(null)
 
     return recordedFatalError
   }
 
   onMount(() => {
-    void ensureFatalErrorRecorded().catch(() => undefined)
-    void import("@sentry/solid")
-      .then(({ captureException, isEnabled }) => {
-        if (isEnabled()) setStore("captureException", () => captureException)
+    void ensureFatalErrorRecorded()
+      .then((report) => {
+        if (report) setStore("report", report)
       })
       .catch(() => undefined)
   })
+
+  /** The explicit report: same error, plus whatever the owner typed about it. */
+  async function sendToLucina() {
+    const record = platform.recordFatalRendererError
+
+    if (!record || store.sending) return
+    setStore("sending", true)
+    setStore("actionError", undefined)
+    const report = await record({ ...fatalError(), note: store.note.trim() || undefined, userInitiated: true }).catch(
+      () => null,
+    )
+
+    setStore("sending", false)
+    if (!report) return setStore("actionError", language.t("error.page.report.failed"))
+    setStore("report", report)
+    setStore("sentByOwner", true)
+  }
 
   // A crash can take the extension root down with the app, so the page reaches the updater's
   // main-process Ipc over the bridge itself.
@@ -353,6 +374,16 @@ export const ErrorPage: Component<ErrorPageProps> = (props) => {
           label={language.t("error.page.details.label")}
           hideLabel
         />
+        <Show when={platform.recordFatalRendererError}>
+          <TextField
+            value={store.note}
+            onInput={(event) => setStore("note", event.currentTarget.value)}
+            multiline
+            label={language.t("error.page.note.label")}
+            placeholder={language.t("error.page.note.placeholder")}
+            class="min-h-20 max-h-40 w-full text-sm"
+          />
+        </Show>
         <div class="flex flex-row items-center justify-center gap-3 flex-wrap max-w-64">
           <Button size="large" onClick={platform.restart}>
             {language.t(platform.platform === "web" ? "error.page.action.reload" : "error.page.action.restart")}
@@ -362,23 +393,10 @@ export const ErrorPage: Component<ErrorPageProps> = (props) => {
               {language.t("error.page.action.exportLogs")}
             </Button>
           </Show>
-          <Show when={store.captureException}>
-            {(capture) => {
-              const [reported, setReported] = createSignal(false)
-
-              return (
-                <Button
-                  size="large"
-                  disabled={reported()}
-                  onClick={() => {
-                    capture()(props.error)
-                    setReported(true)
-                  }}
-                >
-                  {language.t(reported() ? "error.page.action.reported" : "error.page.action.report")}
-                </Button>
-              )
-            }}
+          <Show when={platform.recordFatalRendererError && !store.sentByOwner}>
+            <Button size="large" onClick={sendToLucina} disabled={store.sending}>
+              {language.t(store.sending ? "error.page.action.sending" : "error.page.action.sendToLucina")}
+            </Button>
           </Show>
           <Show when={updater()}>
             <Show
@@ -408,17 +426,16 @@ export const ErrorPage: Component<ErrorPageProps> = (props) => {
           {(message) => <p class="text-xs text-text-danger-base text-center max-w-2xl">{message()}</p>}
         </Show>
         <div class="flex flex-col items-center gap-2 text-xs text-center">
-          <div class="flex flex-wrap items-center justify-center gap-1">
-            {language.t("error.page.report.prefix")}
-            <button
-              type="button"
-              class="flex items-center text-text-interactive-base gap-1"
-              onClick={() => platform.openExternal("https://github.com/gvitolocs/opencode/issues")}
-            >
-              <div>{language.t("error.page.report.discord")}</div>
-              <Icon name="discord" class="text-text-interactive-base" />
-            </button>
-          </div>
+          <Show when={store.report}>
+            {(report) => (
+              <div class="flex flex-col items-center gap-1">
+                <p class="text-text-weak">
+                  {language.t(report().sent ? "error.page.report.lucina" : "error.page.report.queued")}
+                </p>
+                <p class="text-text-weak">{language.t("error.page.report.id", { id: report().id })}</p>
+              </div>
+            )}
+          </Show>
           <Show when={platform.version}>
             {(version) => (
               <p class="text-xs text-text-weak">{language.t("error.page.version", { version: version() })}</p>

@@ -27,6 +27,8 @@ export function createDesktopPlatform(api: ElectronAPI, windowState: DesktopWind
     exportDebugLogs: () => api.exportDebugLogs(),
     setForceFocus: (enabled) => api.setForceFocus(enabled),
     recordFatalRendererError: (error) => api.recordFatalRendererError(error),
+    diagnosticsSettings: () => api.getDiagnosticsSettings(),
+    setDiagnosticsAutomatic: (automatic) => api.setDiagnosticsSettings(automatic),
     restart: async () => api.relaunch(),
     notify: createDesktopNotify(api),
     fetch: (input, init) => {

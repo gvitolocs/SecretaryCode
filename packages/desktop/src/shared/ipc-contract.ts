@@ -14,7 +14,19 @@ export type FatalRendererError = {
   version?: string
   platform: string
   os?: string
+  /** The owner's note from the fatal screen, sent with an explicit "Send to Lucina". */
+  note?: string
+  /** True when the owner pressed "Send to Lucina" rather than automatic reporting. */
+  userInitiated?: boolean
 }
+
+/** What the fatal screen shows after a report was recorded: its id and whether Lucina has it. */
+export type DiagnosticReportReceipt = {
+  id: string
+  sent: boolean
+}
+
+export type DiagnosticsSettings = { automatic: boolean }
 
 export type DirectoryPickerOptions = {
   multiple?: boolean

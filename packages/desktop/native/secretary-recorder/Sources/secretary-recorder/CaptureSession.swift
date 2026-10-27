@@ -74,20 +74,9 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
             system = stream
         }
 
-        let origin = hostSeconds()
-        let originTime = CMTime(seconds: origin, preferredTimescale: 1_000_000_000)
-        let writers = Dictionary(uniqueKeysWithValues: settings.trackNames.map { name in
-            (name, TrackWriter(name: name, url: directory.appendingPathComponent(name), video: name == TrackName.video ? settings.video : nil, origin: originTime))
-        })
         mainStream = main
         systemStream = system
         source = target.description
-        startedAt = Date()
-        queue.sync {
-            self.writers = writers
-            self.timeline.start(at: origin)
-            self.accepting = true
-        }
 
         try await main.startCapture()
         if let system { try await system.startCapture() }
@@ -97,6 +86,21 @@ final class CaptureSession: NSObject, SCStreamOutput, SCStreamDelegate {
             }
             try engine.start()
             microphone = engine
+        }
+
+        // The origin is taken once every stream is running: `startCapture` can take seconds on a cold
+        // ScreenCaptureKit, and counting that time made `startedAt` and `elapsed` run ahead of the tracks.
+        // Samples delivered before this point are dropped (`accepting` is still false).
+        let origin = hostSeconds()
+        let originTime = CMTime(seconds: origin, preferredTimescale: 1_000_000_000)
+        let writers = Dictionary(uniqueKeysWithValues: settings.trackNames.map { name in
+            (name, TrackWriter(name: name, url: directory.appendingPathComponent(name), video: name == TrackName.video ? settings.video : nil, origin: originTime))
+        })
+        startedAt = Date()
+        queue.sync {
+            self.writers = writers
+            self.timeline.start(at: origin)
+            self.accepting = true
         }
 
         return [

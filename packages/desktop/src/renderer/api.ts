@@ -90,5 +90,7 @@ export const api: ElectronAPI = {
   exportDebugLogs: () => invoke("AppExportDebugLogs"),
   setForceFocus: (enabled) => invoke("AppSetForceFocus", { enabled }),
   recordFatalRendererError: (error) => invoke("AppRecordFatalRendererError", { error }),
+  getDiagnosticsSettings: () => invoke("AppGetDiagnosticsSettings"),
+  setDiagnosticsSettings: (automatic) => invoke("AppSetDiagnosticsSettings", { automatic }),
   setNativeTranslations: (bundle) => invoke("AppSetNativeTranslations", { value: bundle }),
 }

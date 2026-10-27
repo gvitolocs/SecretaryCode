@@ -467,8 +467,14 @@ export const dict = {
   "error.page.action.checkUpdates": "Check for updates",
   "error.page.action.updateTo": "Update to {{version}}",
   "error.page.circular": "[Circular]",
-  "error.page.report.prefix": "Please report this error in the Secretary Code fork",
-  "error.page.report.discord": "on Discord",
+  "error.page.report.lucina": "Lucina has the logs",
+  "error.page.report.queued": "The logs are saved for Lucina. She will pick them up the next time Secretary Code is online.",
+  "error.page.report.id": "Report {{id}}",
+  "error.page.report.failed": "The report could not be saved. Export the logs instead.",
+  "error.page.action.sendToLucina": "Send to Lucina",
+  "error.page.action.sending": "Sending…",
+  "error.page.note.label": "Add a note",
+  "error.page.note.placeholder": "What were you doing when this happened?",
   "error.page.version": "Version: {{version}}",
 
   "error.dev.rootNotFound":
@@ -857,6 +863,8 @@ export const dict = {
   "settings.general.row.followUpBehavior.steer": "Steer",
   "settings.general.row.pinchZoom.title": "Pinch to zoom",
   "settings.general.row.pinchZoom.description": "Allow trackpad pinch and Ctrl-scroll gestures to zoom",
+  "settings.general.row.crashReports.title": "Send crash reports to Lucina",
+  "settings.general.row.crashReports.description": "When Secretary Code crashes or cannot start, Lucina gets the logs so she can explain what broke. Turn this off to keep them on this Mac.",
 
   "sound.option.none": "None",
   "sound.option.alert01": "Alert 01",
