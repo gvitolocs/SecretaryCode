@@ -25,6 +25,15 @@ export type CompanionPanel = "lucina" | "agents" | "computer"
 
 export type CompanionRect = { x: number; y: number; width: number; height: number }
 
+/** A plugin on the Lucina-first shell rail. Every view but "code" is one of Lucina's native web views. */
+export type ShellView = "lucina" | "code" | "computer" | "gallery" | "films" | "chats" | "secrets" | "health"
+
+/** What Lucina's web app asks of the desktop shell through `window.secretaryShell`. */
+export type ShellCommand =
+  | { action: "showCode"; projectPath?: string }
+  | { action: "hideCode" }
+  | { action: "show"; view: ShellView }
+
 type DesktopOS = "macos" | "windows" | "linux"
 
 export type FatalRendererErrorLog = {
@@ -142,7 +151,13 @@ type PlatformBase = {
    * Secretary's companion panels (desktop only). Each is a native view the host lays over the rectangle the workspace
    * reserves for it, in CSS pixels relative to the viewport; no panel hides them all.
    */
-  companion?: { place(panel: CompanionPanel | undefined, rect?: CompanionRect): void }
+  companion?: {
+    place(panel: CompanionPanel | undefined, rect?: CompanionRect): void
+    /** Routes Lucina's warm web view to a path of her web app ("/", "/media", "/films") without reloading it. */
+    navigate?(path: string): void
+    /** Commands from Lucina's web app (`window.secretaryShell`). Returns the unsubscribe function. */
+    onCommand?(listener: (command: ShellCommand) => void): () => void
+  }
 }
 
 export type RustEngineRouteCoverage = {
