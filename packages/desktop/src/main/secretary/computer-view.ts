@@ -47,9 +47,10 @@ export function computerView() {
     void created.webContents.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`).catch(() => {})
   })
   // did-fail-load owns the inline error page, including failures after the initial navigation.
-  // The device signs the partition in and the app's language is set first, so the owner sees neither a second login
-  // form nor the Mac's locale. Both always settle.
-  void Promise.all([ensureWebSession(), applyWebLanguage(created.webContents)])
+  // The app's language and the device's web session come first, so the owner sees neither the Mac's locale nor a
+  // second login form. ensureWebSession always settles.
+  applyWebLanguage(created.webContents)
+  void ensureWebSession()
     .then(() => created.webContents.loadURL(page))
     .catch(() => {})
   return created

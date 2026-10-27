@@ -35,8 +35,10 @@ class Contents extends EventEmitter {
     attach: () => {
       this.debugger.attached = true
     },
-    sendCommand: async (method: string, params: unknown) => {
+    // Like Electron before the view's first page: the command does not settle, so the load must not wait for it.
+    sendCommand: (method: string, params: unknown) => {
       this.commands.push([method, params])
+      return new Promise<never>(() => {})
     },
   }
   getUserAgent = () => "Secretary-Test"

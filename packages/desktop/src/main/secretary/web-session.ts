@@ -48,15 +48,19 @@ export const ensureWebSession = shared(() => ensure({ partition: lucinaWebPartit
 
 /**
  * The web app reads `navigator.languages`, which Electron takes from the Mac locale for every page. A per-view
- * DevTools-protocol override sets them (and the header) from the app's language; call it before the first load.
+ * DevTools-protocol override sets them (and the header) from the app's language. Call it right before the first
+ * `loadURL` and don't wait for it: the command only settles once the view has a page (checked on Electron 44, where it
+ * still applies to that first page).
  */
-export async function applyWebLanguage(contents: WebContents) {
+export function applyWebLanguage(contents: WebContents) {
   try {
     if (!contents.debugger.isAttached()) contents.debugger.attach("1.3")
-    await contents.debugger.sendCommand("Emulation.setUserAgentOverride", {
-      userAgent: contents.getUserAgent(),
-      acceptLanguage: webLanguages().join(","),
-    })
+    void contents.debugger
+      .sendCommand("Emulation.setUserAgentOverride", {
+        userAgent: contents.getUserAgent(),
+        acceptLanguage: webLanguages().join(","),
+      })
+      .catch(() => {})
   } catch {
     // Another debugger client owns the view: the page falls back to the web app's own language setting.
   }
