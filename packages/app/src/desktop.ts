@@ -11,6 +11,9 @@ export {
   type FatalRendererErrorLog,
   type FatalRendererReport,
   type Platform,
+  type RustEngineLatency,
+  type RustEnginePreview,
+  type RustEngineStatus,
   PlatformProvider,
 } from "./runtime/platform/platform"
 

@@ -28,6 +28,7 @@ import { LocationProvider } from "@/workspaces/location"
 import { SettingsGeneral } from "./general/general"
 import { SettingsAppearance } from "./appearance/appearance"
 import { experimentalSettingsAvailable, SettingsExperimental } from "./experimental/experimental"
+import { SettingsRustEngine } from "./rust-engine/rust-engine"
 import { SettingsKeybinds } from "./keybinds/keybinds"
 import { SettingsNotifications } from "./notifications/notifications"
 import { SettingsProviders } from "./providers/providers"
@@ -73,6 +74,10 @@ const serverTabs = [
 
 const experimentalTab = [
   { value: "experimental", icon: pageIcons.experimental, label: "settings.tab.experimental" },
+] as const
+
+const rustEngineTab = [
+  { value: "rust-engine", icon: pageIcons["rust-engine"], label: "settings.tab.rustEngine" },
 ] as const
 
 const guiExtensionsTab = [
@@ -242,6 +247,8 @@ function RootSettings() {
   const list = servers.collection.items
   const singleEntry = createMemo(() => (inventory().length === 1 ? inventory()[0] : undefined))
   const single = createMemo(() => singleEntry()?.connection)
+  // The Rust engine panel pings the TypeScript engine this window is showing, if there is one.
+  const activeServerUrl = createMemo(() => single()?.http.url ?? connectionFor(list(), layout.home.selection().server)?.http.url)
   const prefetchWorkspaces = useWorkspacesPrefetch(single)
   const multiple = createMemo(() => inventory().length > 1)
 
@@ -319,6 +326,9 @@ function RootSettings() {
             ],
           },
         ]),
+    ...(platform.platform === "desktop"
+      ? [{ items: rustEngineTab.map((item) => ({ ...item, label: language.t(item.label) })) }]
+      : []),
     ...(experimentalSettingsAvailable
       ? [{ items: experimentalTab.map((item) => ({ ...item, label: language.t(item.label) })) }]
       : []),
@@ -370,6 +380,9 @@ function RootSettings() {
       <ExtensionSettingsPages />
       <Tabs.Content value="experimental" class="settings-panel">
         <SettingsExperimental />
+      </Tabs.Content>
+      <Tabs.Content value="rust-engine" class="settings-panel">
+        <SettingsRustEngine serverUrl={activeServerUrl()} />
       </Tabs.Content>
       {GuiExtensionsSettings && guiExtensions && (
         <Tabs.Content value="gui-extensions" class="settings-panel">

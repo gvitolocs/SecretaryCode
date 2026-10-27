@@ -7,6 +7,7 @@ let polling = false
 let output = ''
 const hints = {
   secretary: copy.secretaryHint,
+  rust: copy.rustHint,
   claude: 'Runs your installed Claude CLI with its current account and permission settings.',
   zcode: 'Runs the ZCode CLI on nezopt. An expired Z.AI login must be renewed in ZCode before tasks can run.',
   qwen: 'Checks the shared Qwen slot before dispatch. Busy or unknown availability blocks launch; the existing worker lock remains the final arbiter.',
@@ -20,7 +21,7 @@ async function request(action, input) {
   return result.data
 }
 function laneChanged() {
-  $('remote-field').hidden = ['secretary', 'claude'].includes($('lane').value)
+  $('remote-field').hidden = ['secretary', 'rust', 'claude'].includes($('lane').value)
   $('model-field').hidden = $('lane').value !== 'secretary'
   $('worker-field').hidden = $('lane').value !== 'orchestra'
   $('lane-hint').textContent = hints[$('lane').value]
@@ -47,7 +48,9 @@ $('pick').addEventListener('click', async () => { try { const result = await req
 $('run').addEventListener('click', async () => {
   showError('')
   $('run').disabled = true
-  try { await request('launch', { project: $('project').value, remoteProject: $('remote').value, lane: $('lane').value, model: $('model').value, worker: $('worker').value, prompt: $('prompt').value }); await poll() }
+  // The model field belongs to the built-in lane; the Rust preview reuses the engine's selected model.
+  const model = $('lane').value === 'secretary' ? $('model').value : ''
+  try { await request('launch', { project: $('project').value, remoteProject: $('remote').value, lane: $('lane').value, model, worker: $('worker').value, prompt: $('prompt').value }); await poll() }
   catch (error) { showError(error.message); $('run').disabled = false }
 })
 $('cancel').addEventListener('click', async () => { try { await request('cancel'); await poll() } catch (error) { showError(error.message) } })

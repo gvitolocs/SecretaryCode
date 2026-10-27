@@ -100,9 +100,20 @@ test("shared packaging defaults", async () => {
     {
       from: "resources/",
       to: "",
-      filter: ["opencode-cli", "opencode-cli.exe", "opencode-cli.version", "secretary-code.png", "secretary-recorder"],
+      filter: [
+        "opencode-cli",
+        "opencode-cli.exe",
+        "opencode-cli.version",
+        "secretary-code.png",
+        "secretary-recorder",
+        "engine-rs/oc-server",
+        "engine-rs/oc-cli",
+      ],
     },
   ])
+  // The Rust preview binaries are signed outside the asar and must not also be packed into it.
+  expect(config.files).toContain("!resources/engine-rs{,/**/*}")
+  expect(config.mac?.binaries).toEqual(["Resources/engine-rs/oc-server", "Resources/engine-rs/oc-cli"])
 })
 
 test("trims external dependencies without excluding runtime files", () => {

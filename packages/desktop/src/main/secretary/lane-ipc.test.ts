@@ -1,10 +1,20 @@
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test"
-import { chmod, mkdtemp, realpath, rm, writeFile } from "node:fs/promises"
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { handleLaneRequest } from "./lane-ipc"
 
-const configured = ["SECRETARY_SSH_HOST", "SECRETARY_SSH_FALLBACK_HOST", "SECRETARY_CLAUDE_PATH", "SECRETARY_ENGINE_PATH"] as const
+const configured = [
+  "SECRETARY_SSH_HOST",
+  "SECRETARY_SSH_FALLBACK_HOST",
+  "SECRETARY_CLAUDE_PATH",
+  "SECRETARY_ENGINE_PATH",
+  "SECRETARY_ENGINE_RS_DIR",
+  "SECRETARY_ENGINE_RS_DATA",
+  "XDG_CONFIG_HOME",
+  "XDG_DATA_HOME",
+] as const
+const RUST_SECRET = "sk-proj-rustlanefixture1234"
 const saved = Object.fromEntries(configured.map((key) => [key, process.env[key]]))
 const root = { path: "" }
 
@@ -26,6 +36,43 @@ time.sleep(.1)
 os.write(1,b'\xa9"}}\n')
 `)
   await chmod(join(root.path, "fragmented-engine"), 0o755)
+
+  // The Rust preview lane: a stand-in oc-server that records its environment, and an oc-cli that echoes what
+  // it was actually given. The real server is a separate process from the CLI, exactly as here.
+  const binaries = join(root.path, "engine-rs")
+  await mkdir(binaries, { recursive: true })
+  await writeFile(
+    join(binaries, "oc-server"),
+    String.raw`#!/usr/bin/env python3
+import json, os, signal, sys
+from http.server import BaseHTTPRequestHandler, HTTPServer
+host, port = os.environ["OC_BIND"].split(":")
+os.makedirs(os.environ["OC_DATA"], exist_ok=True)
+record = {k: os.environ.get(k) for k in ("OC_BIND", "OC_WORKTREE", "OC_DATA", "OC_PROVIDER", "OC_MODEL", "OC_API_KEY")}
+record["pid"] = os.getpid()
+with open(os.path.join(os.environ["OC_DATA"], "server-env.json"), "w") as f:
+    json.dump(record, f)
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == "/health":
+            body = json.dumps({"status": "ok", "version": "9.9.9"}).encode()
+            self.send_response(200); self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
+            return
+        self.send_response(404); self.end_headers()
+    def log_message(self, *args): pass
+signal.signal(signal.SIGTERM, lambda *args: sys.exit(0))
+HTTPServer((host, int(port)), Handler).serve_forever()
+`,
+  )
+  await writeFile(
+    join(binaries, "oc-cli"),
+    '#!/bin/sh\necho "argv:$*"\necho "base:$OC_BASE"\necho "worktree:$OC_WORKTREE"\necho "key:${OC_API_KEY-unset}"\n',
+  )
+  await chmod(join(binaries, "oc-server"), 0o755)
+  await chmod(join(binaries, "oc-cli"), 0o755)
+  await mkdir(join(root.path, "config", "opencode"), { recursive: true })
+  await mkdir(join(root.path, "data", "opencode"), { recursive: true })
+  await writeFile(join(root.path, "data", "opencode", "auth.json"), JSON.stringify({ openai: { type: "api", key: RUST_SECRET } }))
 })
 afterEach(async () => {
   await handleLaneRequest("cancel", undefined)
@@ -49,6 +96,20 @@ async function until(check: () => Promise<boolean>, ms = 10_000) {
     if (Date.now() > deadline) throw new Error("timed out waiting for the lane")
     await Bun.sleep(20)
   }
+}
+
+
+async function setRustEnvironment(config: unknown) {
+  await writeFile(join(root.path, "config", "opencode", "opencode.json"), JSON.stringify(config))
+  process.env.XDG_CONFIG_HOME = join(root.path, "config")
+  process.env.XDG_DATA_HOME = join(root.path, "data")
+  process.env.SECRETARY_ENGINE_RS_DIR = join(root.path, "engine-rs")
+  process.env.SECRETARY_ENGINE_RS_DATA = join(root.path, "engine-rs-data")
+}
+
+const openaiRustConfig = {
+  model: "openai/gpt-4o-mini",
+  provider: { openai: { settings: { baseURL: "https://api.example.test/v1" } } },
 }
 
 describe("lane IPC", () => {
@@ -78,7 +139,7 @@ describe("lane IPC", () => {
     const result = await handleLaneRequest("list", undefined)
     expect(result.ok).toBe(true)
     const data = result.ok ? (result.data as { lanes: { id: string }[]; workers: object; hosts: string[] }) : undefined
-    expect(data?.lanes.map((lane) => lane.id)).toEqual(["secretary", "claude", "zcode", "qwen", "orchestra"])
+    expect(data?.lanes.map((lane) => lane.id)).toEqual(["secretary", "rust", "claude", "zcode", "qwen", "orchestra"])
     expect(Object.keys(data?.workers ?? {})).toContain("zen-glm-flash")
     expect(data?.hosts).toEqual(["nezopt", "nezopt-remote"])
     expect(await status()).toMatchObject({ running: false })
@@ -99,6 +160,7 @@ describe("lane IPC", () => {
         "invalid_path",
       ],
       ["blank prompt", "launch", { lane: "claude", project, prompt: "  " }, "invalid_input"],
+      ["control characters in a Rust prompt", "launch", { lane: "rust", project, prompt: "Review\u0000" }, "invalid_input"],
       ["unknown lane", "launch", { lane: "codex", project, prompt: "Review" }, "unknown_lane"],
       ["unmounted remote project", "launch", { lane: "qwen", project, prompt: "Review" }, "remote_path_required"],
       [
@@ -145,6 +207,63 @@ describe("lane IPC", () => {
     expect(await handleLaneRequest("cancel", undefined)).toEqual({ ok: true, data: { requested: true } })
     await until(async () => (await status()).exitCode !== undefined)
     expect(await status()).toMatchObject({ running: false, status: "Cancelled" })
+  })
+
+
+  test("the Rust preview lane reports unsupported_provider before anything starts", async () => {
+    await setRustEnvironment({ model: "google/gemini-3-pro" })
+    expect(await handleLaneRequest("launch", { lane: "rust", project: root.path, prompt: "Review" })).toMatchObject({
+      ok: false,
+      code: "unsupported_provider",
+    })
+    expect((await status()).running).toBe(false)
+  })
+
+  test("the Rust preview lane reports a missing bundled binary before spawning anything", async () => {
+    await setRustEnvironment(openaiRustConfig)
+    process.env.SECRETARY_ENGINE_RS_DIR = join(root.path, "missing-binaries")
+    expect(await handleLaneRequest("launch", { lane: "rust", project: root.path, prompt: "Review" })).toMatchObject({
+      ok: false,
+      code: "engine_unavailable",
+    })
+    expect((await status()).running).toBe(false)
+  })
+
+  test("the Rust preview lane runs oc-cli against its own server with the key kept out of argv", async () => {
+    await setRustEnvironment(openaiRustConfig)
+    expect(await handleLaneRequest("launch", { lane: "rust", project: root.path, prompt: "Review the diff" })).toMatchObject({
+      ok: true,
+    })
+    await until(async () => (await status()).exitCode !== undefined)
+
+    const done = await status()
+    expect(done).toMatchObject({ running: false, status: "Completed", exitCode: 0 })
+    expect(done.output).toContain(`argv:ask Review the diff ${root.path}`)
+    expect(done.output).toContain("base:http://127.0.0.1:")
+    expect(done.output).toContain(`worktree:${root.path}`)
+    // The CLI is a client of the server; it never receives the provider key.
+    expect(done.output).toContain("key:unset")
+    expect(done.output).not.toContain(RUST_SECRET)
+
+    const server = JSON.parse(
+      await readFile(join(root.path, "engine-rs-data", "server-env.json"), "utf8"),
+    ) as Record<string, string | number>
+    expect(server).toMatchObject({
+      OC_WORKTREE: root.path,
+      OC_PROVIDER: "openai",
+      OC_MODEL: "openai/gpt-4o-mini",
+      OC_API_KEY: RUST_SECRET,
+      OC_DATA: join(root.path, "engine-rs-data"),
+    })
+    // The lane's private server stops with it instead of lingering beside the TypeScript engine.
+    await until(async () => {
+      try {
+        process.kill(Number(server.pid), 0)
+        return false
+      } catch {
+        return true
+      }
+    })
   })
 
   test.each([

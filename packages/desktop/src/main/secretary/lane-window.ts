@@ -1,6 +1,7 @@
 import { app, BrowserWindow, WebContentsView, dialog, ipcMain, protocol } from "electron"
 import { join } from "node:path"
 import { isRendererUrl } from "../windows/scheme"
+import { rustEngineDataPath } from "./engine-rs"
 import { LaneChannel, cancelLane, handleLaneRequest } from "./lane-ipc"
 import icon from "./icon-data"
 import page from "../../renderer/secretary-lanes/index.html?raw"
@@ -21,6 +22,11 @@ export function setupCodingLanes() {
   process.env.SECRETARY_ENGINE_PATH ??= app.isPackaged
     ? join(process.resourcesPath, 'opencode-cli')
     : join(import.meta.dirname, '../../resources/opencode-cli')
+  // The Rust preview lane ships beside the recorder; its data stays in the app's userData.
+  process.env.SECRETARY_ENGINE_RS_DIR ??= app.isPackaged
+    ? join(process.resourcesPath, 'engine-rs')
+    : join(import.meta.dirname, '../../resources/engine-rs')
+  process.env.SECRETARY_ENGINE_RS_DATA ??= rustEngineDataPath(app.getPath('userData'))
   // Scheme privileges are registered once with the other renderer schemes in windows/scheme.ts.
   ready = app.whenReady().then(() => {
     protocol.handle(scheme, request => {

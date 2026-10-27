@@ -7,6 +7,7 @@ import { promisify } from "node:util"
 import type { CustomMacSignOptions } from "app-builder-lib"
 import { Arch, type Configuration } from "electron-builder"
 import { NativeArch } from "../../script/native-arch"
+import { ENGINE_RS_BINARIES } from "./scripts/build-engine-rs"
 import { CLI_BINARIES, getCurrentCli, nodePtyPackage } from "./scripts/utils"
 
 const execFileAsync = promisify(execFile)
@@ -55,6 +56,10 @@ function macSignOptions(options: CustomMacSignOptions): CustomMacSignOptions {
       // The meeting recorder needs only the microphone entitlement; Screen Recording is a TCC grant.
       if (file === path.join(options.app, "Contents/Resources/secretary-recorder"))
         return { ...defaults, entitlements: path.join(packageDir, "native/secretary-recorder/entitlements.plist") }
+
+      // The Rust preview binaries are child-process executables like the CLI: no microphone or screen access.
+      if (ENGINE_RS_BINARIES.some((binary) => file === path.join(options.app, `Contents/Resources/engine-rs/${binary}`)))
+        return { ...defaults, entitlements: path.join(packageDir, "resources/entitlements.cli.plist") }
 
       if (file !== path.join(options.app, "Contents/Resources/opencode-cli")) return defaults ?? {}
 
@@ -107,6 +112,8 @@ const getBase = (appId: string): Configuration => {
       "resources/**/*",
       "!resources/opencode-cli*",
       "!resources/secretary-recorder",
+      // The Rust preview binaries are extraResources, not asar contents.
+      "!resources/engine-rs{,/**/*}",
       // Keep only the target platform's node-pty prebuild when cross-packaging with --cpu=*.
       ...CLI_BINARIES.filter((item) => item.os !== target.os || item.cpu !== target.cpu).map(
         (item) => `!**/node_modules/@lydell/node-pty-${item.os}-${item.cpu}{,/**/*}`,
@@ -136,6 +143,7 @@ const getBase = (appId: string): Configuration => {
           "opencode-cli.version",
           "secretary-code.png",
           "secretary-recorder",
+          ...ENGINE_RS_BINARIES.map((binary) => `engine-rs/${binary}`),
         ],
       },
     ],
@@ -163,6 +171,14 @@ const getBase = (appId: string): Configuration => {
 
         if ((await stat(recorder)).size === 0) throw new Error(`Bundled recorder must be a non-empty file: ${recorder}`)
         await NativeArch.verify(recorder, arch)
+
+        // The Rust preview lane and settings toggle spawn these; an empty or wrong-arch copy fails only at runtime.
+        for (const binary of ENGINE_RS_BINARIES) {
+          const engine = path.join(resources, "engine-rs", binary)
+
+          if ((await stat(engine)).size === 0) throw new Error(`Bundled Rust engine must be a non-empty file: ${engine}`)
+          await NativeArch.verify(engine, arch)
+        }
       }
 
       if (context.electronPlatformName !== "win32") return
@@ -209,6 +225,8 @@ const getBase = (appId: string): Configuration => {
       gatekeeperAssess: false,
       entitlements: "resources/entitlements.plist",
       entitlementsInherit: "resources/entitlements.plist",
+      // The Rust preview binaries live outside the asar; like the recorder they are signed explicitly.
+      binaries: ENGINE_RS_BINARIES.map((binary) => `Resources/engine-rs/${binary}`),
       sign: async (options) => {
         const { sign } = await import("app-builder-lib/out/codeSign/macCodeSign")
         await sign(macSignOptions(options))
