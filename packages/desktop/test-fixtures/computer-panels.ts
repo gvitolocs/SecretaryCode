@@ -72,6 +72,7 @@ const external = mock(async (_url: string) => {})
 const fromPartition = mock((_name: string) => partition)
 mock.module("electron", () => ({
   WebContentsView: View,
+  app: { getPreferredSystemLanguages: () => ["da-DK", "en-DK"] },
   BrowserWindow: { fromWebContents: () => window },
   ipcMain: ipc,
   net: { fetch: netFetch },
