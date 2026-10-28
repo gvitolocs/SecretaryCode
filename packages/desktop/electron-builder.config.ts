@@ -51,6 +51,9 @@ async function signWindows(configuration: { path: string }) {
 function macSignOptions(options: CustomMacSignOptions): CustomMacSignOptions {
   return {
     ...options,
+    // Local builds are never notarized, so they can skip Apple's timestamp server ("none"): when it is unreachable,
+    // codesign fails and the build would otherwise lose its stable signature.
+    ...(process.env.SECRETARY_SIGN_TIMESTAMP ? { timestamp: process.env.SECRETARY_SIGN_TIMESTAMP } : {}),
     optionsForFile: (file) => {
       const defaults = options.optionsForFile?.(file)
 

@@ -30,6 +30,8 @@ const env = {
   OPENCODE_VERSION: version,
   OPENCODE_CLI_DIST: path.join(cli, "dist"),
   SECRETARY_SIGN_IDENTITY: identity,
+  // Installed only on this Mac and never notarized, so no secure timestamp is needed (Apple's server is sometimes down).
+  SECRETARY_SIGN_TIMESTAMP: process.env.SECRETARY_SIGN_TIMESTAMP ?? "none",
 }
 
 await $`bun run build --single --skip-install`.cwd(cli).env(env)
