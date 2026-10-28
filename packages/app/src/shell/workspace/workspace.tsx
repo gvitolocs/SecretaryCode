@@ -13,7 +13,7 @@ import { useGlobal } from "@/runtime/server/runtime"
 import { ServerConnection, useServers } from "@/runtime/server/registry"
 import { useLayout } from "@/shell/state/layout"
 import { addProjects } from "@/home/projects/add"
-import { commandProject, DEFAULT_VIEW, nextFocus, reduceView, revealsCode, routeKey, SHELL_VIEWS, type FocusEvent } from "./views"
+import { commandProject, DEFAULT_VIEW, nextFocus, reduceView, revealsCode, routeKey, SHELL_VIEWS, viewAllowed, type FocusEvent } from "./views"
 
 export const SIDEBAR_WIDTH = { min: 220, default: 264, max: 420 }
 
@@ -27,6 +27,8 @@ const WorkspaceState = Persistence.struct({
   sidebar: Persistence.struct({ opened: Schema.Boolean, width: Schema.Finite }),
   view: Schema.Literals(SHELL_VIEWS),
 })
+
+const AdultState = Persistence.struct({ on: Schema.Boolean })
 
 /**
  * The desktop shell around the routed screen. On desktop a rail on the left picks the view: Lucina and her pages in a
@@ -53,9 +55,14 @@ export const { use: useWorkspace, provider: WorkspaceProvider } = createSimpleCo
       view: DEFAULT_VIEW,
     })
 
+    // Her "Show adult plugins" switch as her web view last reported it (default on, like hers), kept for the next start.
+    const [adultStore, setAdultStore] = persisted(Persist.global("secretary.adultPlugins"), AdultState, { on: true })
+    const adult = () => adultStore.on
+    const allowed = (next: ShellView) => viewAllowed(next, adult())
+
     const railAvailable = () => !!platform.companion && !mobile()
-    // Without the rail the shell is OpenCode alone, whatever view was remembered.
-    const view = (): ShellView => (railAvailable() ? store.view : "code")
+    // Without the rail the shell is OpenCode alone, whatever view was remembered. A view the switch hides falls back.
+    const view = (): ShellView => (railAvailable() ? (allowed(store.view) ? store.view : DEFAULT_VIEW) : "code")
     const codeVisible = () => view() === "code"
     // OpenCode's vertical tabs hide the titlebar, which now carries the view title and New chat.
     const verticalTabs = () => preferences.appearance.tabLayout() === "vertical" && !mobile() && !railAvailable()
@@ -72,10 +79,12 @@ export const { use: useWorkspace, provider: WorkspaceProvider } = createSimpleCo
     // A page of Lucina's web app asked for beyond the view's own (her account, the notifications); every click counts.
     const [page, setPage] = createSignal<string | undefined>(undefined, { equals: false })
     const show = (next: ShellView) => {
+      if (!allowed(next)) return
       setPage(undefined)
       setStore("view", next)
     }
     const open = (next: ShellView, path: string) => {
+      if (!allowed(next)) return
       setStore("view", next)
       setPage(path)
     }
@@ -108,6 +117,7 @@ export const { use: useWorkspace, provider: WorkspaceProvider } = createSimpleCo
 
     const run = (next: ShellCommand) => {
       if (next.action === "focus") return void move(next.on ? "page-on" : "page-off")
+      if (next.action === "adult") return void setAdultStore("on", next.on)
       show(reduceView(untrack(view), next))
       const project = commandProject(next)
 
@@ -194,6 +204,7 @@ export const { use: useWorkspace, provider: WorkspaceProvider } = createSimpleCo
         show,
         open,
         page,
+        allowed,
         verticalTabs,
       },
     }
