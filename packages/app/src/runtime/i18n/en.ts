@@ -7,6 +7,7 @@ export const dict = {
   "workspace.sidebar.toggle": "Toggle sidebar",
   "shell.rail": "Secretary views",
   "shell.view.lucina": "Lucina",
+  "shell.view.keep": "Keep",
   "shell.view.code": "Code",
   "shell.view.computer": "Computer",
   "shell.view.shopping": "Shopping",

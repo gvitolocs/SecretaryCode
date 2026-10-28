@@ -8,6 +8,7 @@ import { ACCOUNT_ROUTE } from "@/shell/workspace/views"
 import "./rail.css"
 
 type RailIcon =
+  | "bulb"
   | "code"
   | "computer"
   | "list"
@@ -42,6 +43,12 @@ const ICONS: Record<RailIcon, () => JSX.Element> = {
       <rect x="3.5" y="4.5" width="17" height="15" rx="2.5" />
       <circle cx="9" cy="9.5" r="1.8" />
       <path d="m4 17 5-4.5 3.5 3 3-2.5 4.5 4" />
+    </>
+  ),
+  bulb: () => (
+    <>
+      <path d="M9 18h6M10 21h4" />
+      <path d="M12 3a6 6 0 0 0-3.6 10.8c.7.5 1.1 1.3 1.1 2.2h5c0-.9.4-1.7 1.1-2.2A6 6 0 0 0 12 3z" />
     </>
   ),
   film: () => (
@@ -79,6 +86,7 @@ const ICONS: Record<RailIcon, () => JSX.Element> = {
 
 /** The views below Lucina, in rail order. */
 const VIEW_ICONS: { view: ShellView; icon: RailIcon }[] = [
+  { view: "keep", icon: "bulb" },
   { view: "code", icon: "code" },
   { view: "computer", icon: "computer" },
   { view: "shopping", icon: "list" },
