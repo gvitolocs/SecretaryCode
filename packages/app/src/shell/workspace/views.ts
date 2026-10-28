@@ -6,6 +6,7 @@ export const SHELL_VIEWS = [
   "lucina",
   "keep",
   "code",
+  "agents",
   "computer",
   "shopping",
   "training",
@@ -28,6 +29,7 @@ export const DEFAULT_VIEW: ShellView = "lucina"
 export const VIEW_ROUTES = {
   lucina: "/",
   keep: "/keep",
+  agents: "/agents",
   shopping: "/shopping",
   training: "/training",
   gallery: "/gallery",

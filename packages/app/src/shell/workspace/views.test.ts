@@ -18,6 +18,7 @@ test("the route map is the agreed one", () => {
   expect(VIEW_ROUTES).toEqual({
     lucina: "/",
     keep: "/keep",
+    agents: "/agents",
     shopping: "/shopping",
     training: "/training",
     gallery: "/gallery",
@@ -41,13 +42,13 @@ test("Code and Computer have no Lucina route; every other view has one", () => {
 test("only Code leaves the content card empty, and Computer has its own native view", () => {
   expect(viewPanel("code")).toBeUndefined()
   expect(viewPanel("computer")).toBe("computer")
-  for (const view of ["lucina", "keep", "shopping", "training", "gallery", "films", "instagram", "pixiv", "nclient", "chats", "secrets", "health"] as const)
+  for (const view of ["lucina", "keep", "agents", "shopping", "training", "gallery", "films", "instagram", "pixiv", "nclient", "chats", "secrets", "health"] as const)
     expect(viewPanel(view)).toBe("lucina")
 })
 
 test("view names are checked", () => {
   expect(SHELL_VIEWS.every(isShellView)).toBe(true)
-  expect(isShellView("agents")).toBe(false)
+  expect(isShellView("settings")).toBe(false)
   expect(isShellView(undefined)).toBe(false)
 })
 

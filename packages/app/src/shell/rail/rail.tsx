@@ -10,6 +10,7 @@ import "./rail.css"
 type RailIcon =
   | "bulb"
   | "code"
+  | "agents"
   | "computer"
   | "list"
   | "dumbbell"
@@ -75,6 +76,15 @@ const ICONS: Record<RailIcon, () => JSX.Element> = {
       <path d="M20 5.5c-2.6-1-5.4-.8-8 .7v13c2.6-1.5 5.4-1.7 8-.7z" />
     </>
   ),
+  agents: () => (
+    <>
+      <rect x="5" y="8" width="14" height="11" rx="3" />
+      <path d="M12 8V4.5M10 4.5h4" />
+      <circle cx="9.5" cy="13.5" r="1.2" />
+      <circle cx="14.5" cy="13.5" r="1.2" />
+      <path d="M3 12.5v3M21 12.5v3" />
+    </>
+  ),
   film: () => (
     <>
       <rect x="3.5" y="5" width="17" height="14" rx="2.5" />
@@ -112,6 +122,7 @@ const ICONS: Record<RailIcon, () => JSX.Element> = {
 const VIEW_ICONS: { view: ShellView; icon: RailIcon }[] = [
   { view: "keep", icon: "bulb" },
   { view: "code", icon: "code" },
+  { view: "agents", icon: "agents" },
   { view: "computer", icon: "computer" },
   { view: "shopping", icon: "list" },
   { view: "training", icon: "dumbbell" },

@@ -30,6 +30,7 @@ export type ShellView =
   | "lucina"
   | "keep"
   | "code"
+  | "agents"
   | "computer"
   | "shopping"
   | "training"
