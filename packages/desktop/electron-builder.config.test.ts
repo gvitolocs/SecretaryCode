@@ -107,6 +107,7 @@ test("shared packaging defaults", async () => {
         "opencode-cli.version",
         "secretary-code.png",
         "secretary-recorder",
+        "secretary-approver",
         "engine-rs/oc-server",
         "engine-rs/oc-cli",
       ],
