@@ -3,7 +3,7 @@ import path from "node:path"
 import { SidecarCredentials } from "../../service/sidecar-credentials"
 import { getStore } from "../../storage/store"
 import { secretaryToken } from "../index"
-import type { AgentsTransport } from "./client"
+import { logOnce, type AgentsTransport } from "./client"
 
 /** secretary-server, authenticated with this Mac's Secretary device token. */
 const ORIGIN = "https://getsecretary.tech"
@@ -16,7 +16,8 @@ type Running = { sidecar: SidecarCredentials.Data; stop: () => Promise<void> }
 const state: { enabled: boolean; running?: Running; queue: Promise<void> } = { enabled: false, queue: Promise.resolve() }
 
 /**
- * "Mirror coding sessions to Lucina": off by default until secretary-server serves `/v1/agents`. In development,
+ * "Mirror coding sessions to Lucina": on unless the user turned it off. Failures back off and are logged once each;
+ * the coding session never waits on Lucina. In development,
  * `SECRETARY_AGENTS_FAKE=1` turns it on against the in-memory server and logs what would be sent;
  * `SECRETARY_AGENTS_URL` points it at another server. Starts once the engine is ready, follows reconnects,
  * and stops on quit.
@@ -24,7 +25,7 @@ const state: { enabled: boolean; running?: Running; queue: Promise<void> } = { e
 export function setupAgentsMirror() {
   const stored = getStore().get(ENABLED_KEY)
 
-  state.enabled = fake() || stored === true
+  state.enabled = fake() || stored !== false
   SidecarCredentials.subscribe((sidecar) => void restart(sidecar))
   void app.whenReady().then(() => {
     const sidecar = SidecarCredentials.get()
@@ -95,7 +96,7 @@ async function start(sidecar: SidecarCredentials.Data): Promise<Running> {
     store: await openStore(path.join(app.getPath("userData"), fake() ? "secretary-agents.fake.json" : "secretary-agents.json")),
     engine: createEngine(client),
     events: (signal) => client.event.subscribe({ signal }),
-    onError: (error) => console.warn("agents mirror", error instanceof Error ? error.message : error),
+    onError: logOnce((message) => console.warn("agents mirror", message)),
   })
 
   return { sidecar, stop: service.stop }

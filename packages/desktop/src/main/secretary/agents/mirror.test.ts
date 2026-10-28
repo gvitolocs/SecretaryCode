@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, jest, test } from "bun:test"
 import { AgentsError } from "./client"
 import { FakeAgentsTransport } from "./fake"
 import { createdEvent, createEngine, event, removeStores, store, storeFile, turn, until } from "./fixture"
-import { MAX_ITEM_BYTES, Mirror } from "./mirror"
+import { MAX_ITEM_BYTES, Mirror, batches } from "./mirror"
 import type { StreamEvent, TimelineItem } from "./wire"
 
 beforeEach(() => jest.useFakeTimers())
@@ -300,6 +300,69 @@ describe("batching", () => {
 
     expect(sent().map((item) => item.type)).toEqual(["thread_started", "turn_started", "turn_completed"])
   })
+
+  /** A session with `count` user messages queued behind its `thread_started`, nothing posted yet. */
+  function backlog(mirror: Mirror, count: number) {
+    mirror.handle(createdEvent("ses_1"))
+    Array.from({ length: count }, (_, index) =>
+      mirror.handle(
+        event("session.inbox.enqueued", {
+          sessionID: "ses_1",
+          inboxID: `msg_${index}`,
+          item: { type: "user", payload: { text: `message ${index}` }, delivery: "steer" },
+        }),
+      ),
+    )
+  }
+
+  test("splits a backlog into posts of at most 200 events, in order", async () => {
+    const { mirror, transport, sent } = await harness()
+
+    backlog(mirror, 449)
+    await mirror.flush()
+
+    expect(transport.posts.map((post) => post.events.length)).toEqual([200, 200, 50])
+    expect(sent()[0].type).toBe("thread_started")
+    expect(timeline(sent()).map((item) => item.type === "user_message" && item.messageId)).toEqual(
+      Array.from({ length: 449 }, (_, index) => `msg_${index}`),
+    )
+  })
+
+  test("a failed post keeps itself and the posts behind it for the retry", async () => {
+    const { mirror, transport, sent } = await harness()
+    const post = transport.postEvents.bind(transport)
+    const calls = { count: 0 }
+
+    // The first post lands; the second meets a 503.
+    transport.postEvents = async (agentId, events) => {
+      calls.count++
+      if (calls.count === 2) throw new AgentsError("offline", "Lucina answered 503")
+      return post(agentId, events)
+    }
+    backlog(mirror, 449)
+    await mirror.flush()
+    expect(transport.posts.map((item) => item.events.length)).toEqual([200])
+
+    jest.advanceTimersByTime(1_000)
+    await until(() => transport.posts.length === 3, "the retried posts")
+
+    expect(transport.posts.map((item) => item.events.length)).toEqual([200, 200, 50])
+    expect(timeline(sent()).map((item) => item.type === "user_message" && item.messageId)).toEqual(
+      Array.from({ length: 449 }, (_, index) => `msg_${index}`),
+    )
+  })
+
+  test("never posts attention_required, which the daemon derives itself", () => {
+    const events: StreamEvent[] = [
+      { type: "turn_started", provider, turnId: "t1" },
+      { type: "attention_required", provider, reason: "finished", timestamp: "2026-10-28T00:00:00.000Z", shouldNotify: true },
+      { type: "usage_updated", provider, usage: { inputTokens: 10 } },
+      { type: "turn_completed", provider, turnId: "t1" },
+    ]
+
+    expect(batches(events)).toEqual([[events[0], events[2], events[3]]])
+    expect(batches([])).toEqual([])
+  })
 })
 
 describe("redaction and size caps", () => {
@@ -443,15 +506,53 @@ describe("registration", () => {
     expect(transport.agentsById.size).toBe(1)
   })
 
-  test("renames the agent when the session is renamed", async () => {
+  test("registers as an external Mac agent with the session's folder and title, and no prompt", async () => {
+    const { mirror, transport } = await harness()
+
+    mirror.handle(createdEvent("ses_1", { title: "Fix the\nlogin   bug" }))
+    mirror.handle(
+      event("session.inbox.enqueued", {
+        sessionID: "ses_1",
+        inboxID: "msg_user",
+        item: { type: "user", payload: { text: "Fix the login bug" }, delivery: "steer" },
+      }),
+    )
+    await mirror.flush()
+
+    expect(transport.registrations).toEqual([
+      {
+        provider: "secretary-code",
+        external: true,
+        host: "mac",
+        title: "Fix the login bug",
+        cwd: "/Users/owner/Projects/app",
+        idempotencyKey: "secretary-code:ses_1",
+      },
+    ])
+    expect(transport.agentsById.get("agent_1")).toMatchObject({ external: true, ownerDeviceId: "dev_mac", host: "mac" })
+    // The first prompt arrives as an event, after registration.
+    expect(timeline(transport.events.get("agent_1") ?? [])).toEqual([{ type: "user_message", text: "Fix the login bug", messageId: "msg_user" }])
+  })
+
+  test("renames the agent when the session is renamed, as one line of at most 200 characters", async () => {
     const { mirror, transport } = await harness()
 
     mirror.handle(createdEvent("ses_1"))
     await mirror.flush()
     mirror.handle(event("session.renamed", { sessionID: "ses_1", title: "Login fix" }))
     await mirror.flush()
-
     expect(transport.agentsById.get("agent_1")?.title).toBe("Login fix")
+
+    mirror.handle(event("session.renamed", { sessionID: "ses_1", title: `Login\r\nfix ${"x".repeat(300)}` }))
+    await mirror.flush()
+    const title = transport.agentsById.get("agent_1")?.title ?? ""
+    expect(Array.from(title)).toHaveLength(200)
+    expect(title.startsWith("Login fix xxx")).toBe(true)
+
+    // The daemon refuses an empty title; the agent keeps its last one.
+    mirror.handle(event("session.renamed", { sessionID: "ses_1", title: " \n " }))
+    await mirror.flush()
+    expect(transport.agentsById.get("agent_1")?.title).toBe(title)
   })
 
   test("registers again when Lucina no longer knows the agent", async () => {
