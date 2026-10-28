@@ -1,6 +1,6 @@
 // Shared by the agents tests: an engine that records what it was asked, engine events by type, and event-loop helpers.
 import { mkdtemp, rm } from "node:fs/promises"
-import { tmpdir } from "node:os"
+import os, { tmpdir } from "node:os"
 import path from "node:path"
 import type { OpenCodeEvent } from "@opencode/client/promise"
 import { EngineRejected, type Engine } from "./engine"
@@ -113,14 +113,16 @@ export const store = async (file?: string) => openStore(file ?? (await storeFile
 export const turn = () => new Promise<void>((resolve) => setImmediate(resolve))
 
 /**
- * Turns of the real event loop until `condition` holds; a real-time deadline, since Date is faked. `tick` runs
- * before each turn, for the fake timers that are already due.
+ * Turns of the real event loop until `condition` holds. `tick` runs before each turn, for the fake timers that are
+ * already due. The deadline is wall-clock: Bun's fake timers also fake `hrtime`, `performance` and `Bun.nanoseconds`
+ * (and `advanceTimersByTime(0)` moves them 1 ms), so a deadline on those expired after a few milliseconds of real
+ * time, before a store write could land. `os.uptime()` is the system's, in whole seconds.
  */
 export async function until(condition: () => boolean, label = "condition", tick?: () => void) {
-  const deadline = process.hrtime.bigint() + 5_000_000_000n
+  const deadline = os.uptime() + 6
 
   while (!condition()) {
-    if (process.hrtime.bigint() > deadline) throw new Error(`Timed out waiting for ${label}`)
+    if (os.uptime() > deadline) throw new Error(`Timed out waiting for ${label}`)
     tick?.()
     await turn()
   }

@@ -15,7 +15,11 @@ type Data = {
   agents: Record<string, string>
   lastEventId?: string
   commands: PendingCommand[]
+  /** Commands acknowledged or dropped lately: a poll answered before the ack landed must not apply them again. */
+  finished: string[]
 }
+
+const MAX_FINISHED = 500
 
 export type AgentsStore = Awaited<ReturnType<typeof openStore>>
 
@@ -68,8 +72,9 @@ export async function openStore(file: string) {
       return persist()
     },
     commands: (): readonly PendingCommand[] => data.commands,
-    /** False when the command is already stored: a replayed frame is not applied twice. */
+    /** False when the command is already stored or finished: a replayed frame or a late poll is not applied twice. */
     addCommand(command: PendingCommand) {
+      if (data.finished.includes(command.commandId)) return false
       if (data.commands.some((item) => item.commandId === command.commandId)) return false
       data.commands.push(command)
       void persist()
@@ -81,6 +86,7 @@ export async function openStore(file: string) {
     },
     removeCommand(commandId: string) {
       data.commands = data.commands.filter((item) => item.commandId !== commandId)
+      data.finished = [...data.finished.filter((id) => id !== commandId), commandId].slice(-MAX_FINISHED)
       return persist()
     },
     /** Resolves once everything changed so far is on disk. */
@@ -102,7 +108,7 @@ async function load(file: string): Promise<Data> {
   })()
 
   if (!value || typeof value !== "object" || (value as { version?: unknown }).version !== 1)
-    return { version: 1, agents: {}, commands: [] }
+    return { version: 1, agents: {}, commands: [], finished: [] }
   const stored = value as Partial<Data>
 
   return {
@@ -110,5 +116,6 @@ async function load(file: string): Promise<Data> {
     agents: stored.agents && typeof stored.agents === "object" ? stored.agents : {},
     lastEventId: typeof stored.lastEventId === "string" ? stored.lastEventId : undefined,
     commands: Array.isArray(stored.commands) ? stored.commands : [],
+    finished: Array.isArray(stored.finished) ? stored.finished : [],
   }
 }

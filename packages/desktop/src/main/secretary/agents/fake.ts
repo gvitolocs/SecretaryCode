@@ -1,21 +1,31 @@
 import { AgentsError, type AgentsTransport } from "./client"
-import type {
-  AgentCommand,
-  AgentCommandBody,
-  AgentListItem,
-  AgentSnapshot,
-  RegisterAgent,
-  StreamEvent,
-  StreamFrame,
-  StreamMessage,
+import {
+  MAX_EVENTS_PER_POST,
+  MAX_TITLE_CHARS,
+  postable,
+  type AgentCommand,
+  type AgentCommandBody,
+  type AgentListItem,
+  type AgentSnapshot,
+  type RegisterAgent,
+  type StreamEvent,
+  type StreamFrame,
+  type StreamMessage,
 } from "./wire"
 
 type Connection = { push: (message: StreamMessage | undefined) => void }
 
+/** The device id secretary-server derives from this Mac's token; the daemon makes it the agent's owner. */
+export const FAKE_DEVICE_ID = "dev_mac"
+
+const COMMAND_TTL_MS = 24 * 60 * 60 * 1000
+
 /**
  * An in-memory secretary-server for `/v1/agents/*`: the tests drive it, and `SECRETARY_AGENTS_FAKE=1` runs the
- * mirror against it without a server. It keeps the protocol's rules: idempotent registration, a bounded
- * replay log with `stream.reset` past it, and commands kept until acknowledged.
+ * mirror against it without a server. It keeps lucina-agentd's rules (`manager/external_agents.rs`, `api.rs`):
+ * idempotent registration without a prompt, at most {@link MAX_EVENTS_PER_POST} postable events per post, one-line
+ * titles, a bounded replay log with `stream.reset` past it, waiting commands re-sent to a stream opened without
+ * `Last-Event-ID`, and commands kept until acknowledged or expired.
  */
 export class FakeAgentsTransport implements AgentsTransport {
   readonly agentsById = new Map<string, AgentSnapshot & { idempotencyKey: string }>()
@@ -32,6 +42,7 @@ export class FakeAgentsTransport implements AgentsTransport {
 
   private readonly log: { id: number; frame: StreamFrame }[] = []
   private readonly pending = new Map<string, AgentCommand>()
+  private readonly expired = new Map<string, AgentCommand>()
   private readonly open = new Set<Connection>()
   private nextEventId = 1
   private nextAgent = 1
@@ -52,6 +63,12 @@ export class FakeAgentsTransport implements AgentsTransport {
   async register(input: RegisterAgent) {
     this.fail()
     this.registrations.push(input)
+    // `check_external`: the provider, external, the host, a one-line cwd, and no prompt.
+    const body = input as RegisterAgent & { prompt?: string }
+    if (body.provider !== "secretary-code" || body.external !== true || body.host !== "mac")
+      throw new AgentsError("rejected", "Lucina answered 400 (INVALID_REQUEST)")
+    if (!body.cwd.trim() || /[\u0000-\u001f]/.test(body.cwd) || body.prompt?.trim())
+      throw new AgentsError("rejected", "Lucina answered 400 (INVALID_REQUEST)")
     const existing = [...this.agentsById.values()].find((agent) => agent.idempotencyKey === input.idempotencyKey)
 
     if (existing) return existing
@@ -59,16 +76,20 @@ export class FakeAgentsTransport implements AgentsTransport {
     const agent = {
       id: `agent_${this.nextAgent++}`,
       provider: input.provider,
-      cwd: input.cwd,
-      title: input.title ?? null,
+      cwd: input.cwd.trim(),
+      title: input.title?.trim() || null,
       status: "idle" as const,
       createdAt: at,
       updatedAt: at,
+      pendingPermissions: [],
+      external: true,
+      ownerDeviceId: FAKE_DEVICE_ID,
+      host: "mac",
       idempotencyKey: input.idempotencyKey,
     }
 
     this.agentsById.set(agent.id, agent)
-    this.publish({ type: "agent_state", agentId: agent.id, event: agent })
+    this.publish({ type: "agent_state", agent })
     return agent
   }
 
@@ -76,20 +97,34 @@ export class FakeAgentsTransport implements AgentsTransport {
     this.fail()
     const agent = this.agentsById.get(agentId)
 
-    if (!agent) throw new AgentsError("notFound", "Lucina answered 404")
-    agent.title = title
+    if (!agent) throw new AgentsError("notFound", "Lucina answered 404 (AGENT_NOT_FOUND)")
+    const trimmed = title.trim()
+    if (!trimmed || Array.from(trimmed).length > MAX_TITLE_CHARS || /[\r\n]/.test(trimmed))
+      throw new AgentsError("rejected", "Lucina answered 400 (INVALID_REQUEST)")
+    agent.title = trimmed
+    this.publish({ type: "agent_state", agent })
   }
 
   async postEvents(agentId: string, events: readonly StreamEvent[]) {
     this.fail()
-    if (!this.agentsById.has(agentId)) throw new AgentsError("notFound", "Lucina answered 404")
+    if (!this.agentsById.has(agentId)) throw new AgentsError("notFound", "Lucina answered 404 (AGENT_NOT_FOUND)")
+    if (events.length > MAX_EVENTS_PER_POST || !events.every(postable))
+      throw new AgentsError("rejected", "Lucina answered 400 (INVALID_REQUEST)")
     this.posts.push({ agentId, events: [...events], at: Date.now() })
     this.events.set(agentId, [...(this.events.get(agentId) ?? []), ...events])
-    events.forEach((event) => this.publish({ type: "agent_stream", agentId, event }))
+    events.forEach((event) =>
+      this.publish({ type: "agent_stream", agentId, event, epoch: "epoch_1", timestamp: new Date(Date.now()).toISOString() }),
+    )
   }
 
   async ack(agentId: string, commandId: string) {
     this.fail()
+    if (this.expired.has(commandId)) throw new AgentsError("notFound", "Lucina answered 410 (COMMAND_EXPIRED)")
+    const command = this.pending.get(commandId)
+    // Acknowledging twice is fine; an id the daemon never issued for this agent is not.
+    const known = command ? command.agentId === agentId : this.acked.some((item) => item.commandId === commandId)
+
+    if (!known) throw new AgentsError("notFound", "Lucina answered 404 (COMMAND_NOT_FOUND)")
     this.acked.push({ agentId, commandId })
     this.pending.delete(commandId)
   }
@@ -104,12 +139,15 @@ export class FakeAgentsTransport implements AgentsTransport {
       status: agent.status,
       cwd: agent.cwd,
       title: agent.title,
+      external: agent.external,
+      ownerDeviceId: agent.ownerDeviceId,
     }))
   }
 
-  async commands() {
+  async commands(): Promise<AgentCommand[]> {
     this.fail()
     this.calls.commands++
+    this.expire()
     return [...this.pending.values()]
   }
 
@@ -130,11 +168,15 @@ export class FakeAgentsTransport implements AgentsTransport {
     const oldest = this.log[0]?.id
 
     if (!failure) {
-      // Replay what this client missed, or tell it to refetch when the log no longer reaches back that far.
+      connection.push({ frame: { type: "stream.open" } })
+      // Replay what this client missed, or tell it to refetch when the log no longer reaches back that far. A client
+      // with no position gets the commands waiting for it, without ids.
+      this.expire()
       if (after !== undefined && oldest !== undefined && after < oldest - 1)
         connection.push({ id: String(this.nextEventId - 1), frame: { type: "stream.reset" } })
       else if (after !== undefined)
         this.log.filter((entry) => entry.id > after).forEach((entry) => connection.push({ id: String(entry.id), frame: entry.frame }))
+      else this.pending.forEach((command) => connection.push({ frame: { type: "agent_command", ...command } }))
       this.open.add(connection)
     }
     signal.addEventListener("abort", () => connection.push(undefined), { once: true })
@@ -157,19 +199,34 @@ export class FakeAgentsTransport implements AgentsTransport {
     }
   }
 
-  /** The owner's phone sends a command; it is stored until acknowledged and delivered on the stream. */
+  /** The owner's phone sends a command; it is stored until acknowledged or expired and delivered on the stream. */
   command(agentId: string, command: AgentCommandBody | { kind: string }, options: { createdAt?: number; id?: string } = {}) {
-    const frame: AgentCommand = {
-      type: "agent_command",
+    const createdAt = options.createdAt ?? Date.now()
+    const queued: AgentCommand = {
       commandId: options.id ?? `cmd_${this.nextEventId}`,
       agentId,
       command,
-      createdAt: new Date(options.createdAt ?? Date.now()).toISOString(),
+      createdAt: new Date(createdAt).toISOString(),
+      expiresAt: new Date(createdAt + COMMAND_TTL_MS).toISOString(),
     }
 
-    this.pending.set(frame.commandId, frame)
-    this.publish(frame)
-    return frame
+    this.pending.set(queued.commandId, queued)
+    this.publish({ type: "agent_command", ...queued })
+    return queued
+  }
+
+  /** A command the phone sent while nothing was listening: queued, but never published on the stream. */
+  queue(command: AgentCommand) {
+    this.pending.set(command.commandId, command)
+  }
+
+  /** `expire_commands`: overdue commands are no longer offered, and their ack answers 410. */
+  private expire() {
+    this.pending.forEach((command, id) => {
+      if (Date.parse(command.expiresAt) > Date.now()) return
+      this.pending.delete(id)
+      this.expired.set(id, command)
+    })
   }
 
   /** Every open stream connection drops, as when the network goes away. */

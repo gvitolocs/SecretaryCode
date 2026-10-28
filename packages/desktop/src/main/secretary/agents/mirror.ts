@@ -3,9 +3,22 @@ import { scrub } from "../diagnostics/scrub"
 import { AgentsError, type AgentsTransport } from "./client"
 import type { Engine } from "./engine"
 import type { AgentsStore } from "./store"
-import { PROVIDER, type PermissionResponse, type StreamEvent, type TimelineItem, type TodoEntry, type ToolCallDetail } from "./wire"
+import {
+  MAX_EVENTS_PER_POST,
+  MAX_TITLE_CHARS,
+  PROVIDER,
+  postable,
+  type PermissionResponse,
+  type StreamEvent,
+  type TimelineItem,
+  type TodoEntry,
+  type ToolCallDetail,
+} from "./wire"
 
-/** The server's cap on one item's JSON: summaries only, never file contents or whole tool outputs. */
+/**
+ * The mirror's own cap on one item's JSON: summaries only, never file contents or whole tool outputs. A full post
+ * ({@link MAX_EVENTS_PER_POST} items) stays well inside secretary-server's 1 MiB body limit.
+ */
 export const MAX_ITEM_BYTES = 2 * 1024
 
 /** Longest single field before the item-level cap; a shell command or URL is a summary, not a payload. */
@@ -74,9 +87,13 @@ export class Mirror {
       }
     }
     if (event.type === "session.renamed") {
+      const title = oneLine(event.data.title)
+
+      // The daemon refuses an empty title; the agent keeps its last one.
+      if (!title) return
       // Before registration the title travels with the registration itself.
-      if (state.info) state.info.title = event.data.title
-      state.title = event.data.title
+      if (state.info) state.info.title = title
+      state.title = title
       this.schedule(sessionID, state)
       return
     }
@@ -287,7 +304,7 @@ export class Mirror {
       const title = state.title
 
       state.title = undefined
-      const renamed = await this.options.transport.rename(agentId, clip(title)).then(
+      const renamed = await this.options.transport.rename(agentId, title).then(
         () => true,
         (error: unknown) => {
           if (error instanceof AgentsError && error.retryable) state.title ??= title
@@ -297,22 +314,27 @@ export class Mirror {
 
       if (!renamed) return
     }
-    const entries = state.queue.splice(0)
+    const pending = batches(state.queue.splice(0).flatMap(materialize))
 
-    if (!entries.length) return
+    if (!pending.length) return
     state.lastPost = Date.now()
-    await this.options.transport.postEvents(agentId, entries.flatMap(materialize)).then(
-      () => {
-        state.retryMs = 0
-        state.retryAt = 0
-      },
-      async (error: unknown) => {
-        // A rejected batch is dropped: sending it again would be rejected again and hold back the rest.
-        if (error instanceof AgentsError && (error.retryable || error.code === "notFound")) state.queue.unshift(...entries)
-        if (error instanceof AgentsError && error.code === "notFound") await this.options.store.removeAgent(sessionID)
-        this.failed(state, error)
-      },
-    )
+    // In order, one post at a time: the daemon applies each post as it arrives.
+    for (const [index, batch] of pending.entries()) {
+      const error = await this.options.transport.postEvents(agentId, batch).then(
+        () => undefined,
+        (error: unknown) => error,
+      )
+
+      if (error === undefined) continue
+      // A rejected batch is dropped: sending it again would be rejected again and hold back the rest.
+      const keep = error instanceof AgentsError && (error.retryable || error.code === "notFound")
+      state.queue.unshift(...(keep ? batch : []), ...pending.slice(index + 1).flat())
+      if (error instanceof AgentsError && error.code === "notFound") await this.options.store.removeAgent(sessionID)
+      this.failed(state, error)
+      return
+    }
+    state.retryMs = 0
+    state.retryAt = 0
   }
 
   /** The session's agent id, registering the session on first use. Undefined for a session that is not mirrored. */
@@ -327,11 +349,13 @@ export class Mirror {
       return undefined
     }
     state.info = info
+    const title = info.title ? oneLine(info.title) : ""
+    // No prompt: an external agent's first message arrives as an event once it is registered.
     const snapshot = await this.options.transport.register({
       provider: PROVIDER,
       external: true,
       host: "mac",
-      ...(info.title ? { title: clip(info.title) } : {}),
+      ...(title ? { title } : {}),
       cwd: info.directory,
       idempotencyKey: `${PROVIDER}:${sessionID}`,
     })
@@ -348,6 +372,18 @@ export class Mirror {
     this.options.onError?.(error)
     return undefined
   }
+}
+
+/**
+ * Wire events as the posts the daemon accepts: without `attention_required` (the daemon's own, a post carrying one is
+ * refused whole), at most {@link MAX_EVENTS_PER_POST} each, in order.
+ */
+export function batches(events: StreamEvent[]) {
+  const postableEvents = events.filter(postable)
+
+  return Array.from({ length: Math.ceil(postableEvents.length / MAX_EVENTS_PER_POST) }, (_, index) =>
+    postableEvents.slice(index * MAX_EVENTS_PER_POST, (index + 1) * MAX_EVENTS_PER_POST),
+  )
 }
 
 /** Queue entries to wire events; a long text part becomes consecutive chunks that Lucina concatenates. */
@@ -413,6 +449,11 @@ function strings(value: unknown): { value: string; set: (text: string) => void }
 
 function bytes(value: unknown) {
   return Buffer.byteLength(JSON.stringify(value))
+}
+
+/** A title the daemon accepts: one line of at most {@link MAX_TITLE_CHARS} characters; empty when nothing is left. */
+function oneLine(title: string) {
+  return clip(title.replace(/\s+/g, " ").trim(), MAX_TITLE_CHARS)
 }
 
 function clip(text: string, max = MAX_FIELD_CHARS) {

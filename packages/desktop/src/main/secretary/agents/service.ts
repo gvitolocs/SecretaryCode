@@ -46,6 +46,9 @@ export function startMirrorService(options: MirrorServiceOptions) {
     lastEventId: options.store.lastEventId,
     onEventId: (id) => void options.store.setLastEventId(id),
     onReset: reset,
+    // A resumed stream replays only what the daemon's journal still keeps, and waiting commands are re-sent only to a
+    // stream opened without Last-Event-ID; the list closes both gaps. Commands already stored or finished are skipped.
+    onOpen: () => void commands.refetch().catch((error: unknown) => options.onError?.(error)),
     onError: options.onError,
     onFrame: (frame) => {
       if (frame.type === "agent_command") return void commands.receive(frame)
