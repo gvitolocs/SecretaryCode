@@ -84,6 +84,7 @@
 }
 
 [data-slot="rail-well"] {
+  position: relative;
   display: grid;
   width: 44px;
   height: 44px;
@@ -95,6 +96,25 @@
   transition:
     border-color 220ms,
     background-color 220ms;
+}
+
+/* The count waiting on the item (Decisions), over the well's top-right edge. */
+[data-slot="rail-badge"] {
+  position: absolute;
+  top: -4px;
+  right: -6px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: #e5484d;
+  color: #fff;
+  font-size: 10.5px;
+  font-weight: 700;
+  line-height: 18px;
+  text-align: center;
+  box-sizing: border-box;
+  pointer-events: none;
 }
 
 [data-slot="rail-well"] svg {

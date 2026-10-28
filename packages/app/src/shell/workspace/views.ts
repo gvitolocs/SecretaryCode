@@ -1,4 +1,4 @@
-import type { CompanionPanel, ShellCommand, ShellView } from "@/runtime/platform/platform"
+import type { AttentionCounts, CompanionPanel, ShellCommand, ShellView } from "@/runtime/platform/platform"
 import type { LayoutRoute } from "@/shell/state/layout"
 
 /** The rail's views in display order, Lucina first. */
@@ -16,6 +16,7 @@ export const SHELL_VIEWS = [
   "pixiv",
   "nclient",
   "chats",
+  "decisions",
   "secrets",
   "health",
 ] as const satisfies readonly ShellView[]
@@ -38,6 +39,7 @@ export const VIEW_ROUTES = {
   pixiv: "/pixiv",
   nclient: "/nclient",
   chats: "/chats",
+  decisions: "/decisions",
   secrets: "/secrets",
   health: "/server-health",
 } as const satisfies Partial<Record<ShellView, string>>
@@ -79,6 +81,7 @@ export function reduceView(current: ShellView, command: ShellCommand): ShellView
     case "hideCode":
       return "lucina"
     case "show":
+    case "open":
       return isShellView(command.view) ? command.view : current
     default:
       return current
@@ -91,6 +94,23 @@ export function commandProject(command: ShellCommand): string | undefined {
   const path = command.projectPath?.trim()
 
   return path ? path : undefined
+}
+
+/** The page a clicked notification asks for inside its view ("/decisions/dec_1"), when the command names one. */
+export function commandPage(command: ShellCommand): string | undefined {
+  return command.action === "open" && command.path.startsWith("/") ? command.path : undefined
+}
+
+/** A count as the rail's badge shows it: nothing at zero, "99+" above 99. */
+export function badgeLabel(count: number): string | undefined {
+  if (!Number.isFinite(count) || count < 1) return undefined
+
+  return count > 99 ? "99+" : String(Math.floor(count))
+}
+
+/** The badge on a rail item: the Decisions item counts the decisions waiting for the owner. */
+export function railBadge(view: ShellView, counts: AttentionCounts): string | undefined {
+  return view === "decisions" ? badgeLabel(counts.decisions) : undefined
 }
 
 /** A stable identity for the screen a route shows. */

@@ -1,4 +1,4 @@
-import { For, type JSX } from "solid-js"
+import { For, Show, type JSX } from "solid-js"
 import lucina from "../../../../ui/src/assets/images/secretary-lucina.png"
 import { useLanguage } from "@/runtime/i18n/language"
 import type { ShellView } from "@/runtime/platform/platform"
@@ -20,6 +20,7 @@ type RailIcon =
   | "palette"
   | "book"
   | "inbox"
+  | "check"
   | "key"
   | "pulse"
   | "gear"
@@ -97,6 +98,12 @@ const ICONS: Record<RailIcon, () => JSX.Element> = {
       <path d="M4 13.5h4.5l1.2 2h4.6l1.2-2H20" />
     </>
   ),
+  check: () => (
+    <>
+      <circle cx="12" cy="12" r="8.5" />
+      <path d="m8.4 12.3 2.4 2.4 4.8-5" />
+    </>
+  ),
   key: () => (
     <>
       <circle cx="8" cy="15" r="4" />
@@ -132,6 +139,7 @@ const VIEW_ICONS: { view: ShellView; icon: RailIcon }[] = [
   { view: "pixiv", icon: "palette" },
   { view: "nclient", icon: "book" },
   { view: "chats", icon: "inbox" },
+  { view: "decisions", icon: "check" },
   { view: "secrets", icon: "key" },
   { view: "health", icon: "pulse" },
 ]
@@ -169,7 +177,10 @@ export function ShellRail() {
       aria-current={current(view) ? "page" : undefined}
       onClick={() => workspace.view.show(view)}
     >
-      <span data-slot="rail-well">{icon}</span>
+      <span data-slot="rail-well">
+        {icon}
+        <Show when={workspace.rail.badge(view)}>{(label) => <span data-slot="rail-badge">{label()}</span>}</Show>
+      </span>
       <span data-slot="rail-label">{language.t(`shell.view.${view}`)}</span>
     </button>
   )

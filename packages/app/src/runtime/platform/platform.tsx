@@ -40,6 +40,7 @@ export type ShellView =
   | "pixiv"
   | "nclient"
   | "chats"
+  | "decisions"
   | "secrets"
   | "health"
 
@@ -52,6 +53,11 @@ export type ShellCommand =
   | { action: "focus"; on: boolean }
   /** Her per-device "Show adult plugins" switch: while it is off the rail hides the adult plugins (NClient). */
   | { action: "adult"; on: boolean }
+  /** A clicked notification: show `view` with its page at `path` (an approval, a decision). */
+  | { action: "open"; view: ShellView; path: string }
+
+/** What waits for the owner: approvals and Lucina's escalated decisions. */
+export type AttentionCounts = { approvals: number; decisions: number }
 
 type DesktopOS = "macos" | "windows" | "linux"
 
@@ -186,6 +192,11 @@ type PlatformBase = {
     onCommand?(listener: (command: ShellCommand) => void): () => void
     /** Tells her web views whether the shell is in focus mode, so a page can hide its own header. */
     setFocusMode?(on: boolean): void
+    /** How many approvals and decisions wait for the owner (the main process polls the server). */
+    attention?: {
+      counts(): Promise<AttentionCounts>
+      onChange(listener: (counts: AttentionCounts) => void): () => void
+    }
   }
 }
 

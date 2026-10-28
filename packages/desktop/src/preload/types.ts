@@ -1,5 +1,6 @@
 import type { StorageSnapshot, WindowSnapshot } from "../shared/ipc-transport"
 import type { WindowBootstrap } from "../shared/window-bootstrap"
+import type { AttentionCounts } from "../main/secretary/attention-core"
 import type { ShellCommand } from "../main/secretary/shell-command"
 
 export type ElectronNative = {
@@ -11,6 +12,8 @@ export type ElectronNative = {
     navigate(path: string): void
     onCommand(listener: (command: ShellCommand) => void): () => void
     setFocusMode(on: boolean): void
+    attention(): Promise<AttentionCounts>
+    onAttention(listener: (counts: AttentionCounts) => void): () => void
     request(action: string, input?: unknown): Promise<{ ok: boolean; data?: unknown; error?: string }>
   }
   codingLanes: CodingLanes

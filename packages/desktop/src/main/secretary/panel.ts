@@ -142,6 +142,25 @@ function toHost(command: ShellCommand) {
   if (host && !host.isDestroyed()) host.webContents.send("secretary:shell-command", command)
 }
 
+/**
+ * Brings the window hosting the companion (else any app window) forward and hands it a command; false when there is none.
+ * A clicked notification uses it to land on the item's page.
+ */
+export function revealShell(command: ShellCommand) {
+  const host =
+    state.host && !state.host.isDestroyed()
+      ? state.host
+      : BrowserWindow.getAllWindows().find((window) => !window.isDestroyed() && isRendererUrl(window.webContents.getURL()))
+
+  if (!host) return false
+  if (host.isMinimized()) host.restore()
+  host.show()
+  host.focus()
+  host.webContents.send("secretary:shell-command", command)
+
+  return true
+}
+
 /** Whether an IPC message comes from one of her views (Lucina or Computer), in its top frame, on her origin. */
 export function fromLucina(event: { sender: unknown; senderFrame?: { url: string; parent: unknown } | null }) {
   const views = [lucinaWebContents(), computerWebContents()].filter((contents) => !!contents)

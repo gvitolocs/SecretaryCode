@@ -5,7 +5,7 @@ import { makeEventListener } from "@solid-primitives/event-listener"
 import { createMediaQuery } from "@solid-primitives/media"
 import { useCommand } from "@/shell/commands/command"
 import { useLanguage } from "@/runtime/i18n/language"
-import { usePlatform, type ShellCommand, type ShellView } from "@/runtime/platform/platform"
+import { usePlatform, type AttentionCounts, type ShellCommand, type ShellView } from "@/runtime/platform/platform"
 import { useSettings } from "@/settings/model"
 import { Persist, persisted } from "@/runtime/persistence/storage"
 import { Persistence } from "@/runtime/persistence/schema"
@@ -13,7 +13,7 @@ import { useGlobal } from "@/runtime/server/runtime"
 import { ServerConnection, useServers } from "@/runtime/server/registry"
 import { useLayout } from "@/shell/state/layout"
 import { addProjects } from "@/home/projects/add"
-import { commandProject, DEFAULT_VIEW, nextFocus, reduceView, revealsCode, routeKey, SHELL_VIEWS, viewAllowed, type FocusEvent } from "./views"
+import { commandPage, commandProject, DEFAULT_VIEW, nextFocus, railBadge, reduceView, revealsCode, routeKey, SHELL_VIEWS, viewAllowed, type FocusEvent } from "./views"
 
 export const SIDEBAR_WIDTH = { min: 220, default: 264, max: 420 }
 
@@ -118,6 +118,9 @@ export const { use: useWorkspace, provider: WorkspaceProvider } = createSimpleCo
     const run = (next: ShellCommand) => {
       if (next.action === "focus") return void move(next.on ? "page-on" : "page-off")
       if (next.action === "adult") return void setAdultStore("on", next.on)
+      const page = commandPage(next)
+
+      if (page) return void open(reduceView(untrack(view), next), page)
       show(reduceView(untrack(view), next))
       const project = commandProject(next)
 
@@ -130,6 +133,27 @@ export const { use: useWorkspace, provider: WorkspaceProvider } = createSimpleCo
       const off = platform.companion?.onCommand?.(run)
 
       if (off) onCleanup(off)
+    })
+
+    // What waits for the owner, as the main process counts it: the rail's Decisions badge.
+    const [attention, setAttention] = createSignal<AttentionCounts>({ approvals: 0, decisions: 0 })
+    createEffect(() => {
+      const bridge = railAvailable() ? platform.companion?.attention : undefined
+
+      if (!bridge) return
+      let changed = false
+      const off = bridge.onChange((counts) => {
+        changed = true
+        setAttention(counts)
+      })
+      // A change that arrives before the first answer is the newer one.
+      void bridge
+        .counts()
+        .then((counts) => {
+          if (!changed) setAttention(counts)
+        })
+        .catch(() => {})
+      onCleanup(off)
     })
 
     // Something outside the rail (a notification, a shortcut) moved OpenCode to another screen: bring Code forward.
@@ -192,6 +216,7 @@ export const { use: useWorkspace, provider: WorkspaceProvider } = createSimpleCo
       },
       rail: {
         available: railAvailable,
+        badge: (next: ShellView) => railBadge(next, attention()),
       },
       focus: {
         on: focused,

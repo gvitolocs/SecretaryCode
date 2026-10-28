@@ -15,6 +15,7 @@ import { setupCodingLanes } from "./secretary/lane-window"
 import { setupCompanionPanels } from "./secretary/panel"
 import { setupRecorder } from "./secretary/recorder"
 import { setupApprover } from "./secretary/approver"
+import { setupAttention } from "./secretary/attention"
 
 import { ImageOpenQueue, imageArguments } from "./secretary/image-viewer/queue"
 
@@ -39,6 +40,7 @@ setupCodingLanes()
 setupCompanionPanels()
 setupRecorder()
 setupApprover()
+setupAttention()
 setupAgentsMirror()
 
 if (acquireApplicationLock()) {

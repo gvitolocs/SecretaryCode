@@ -19,6 +19,7 @@ export const dict = {
   "shell.view.pixiv": "Pixiv",
   "shell.view.nclient": "NClient",
   "shell.view.chats": "All chats",
+  "shell.view.decisions": "Decisions",
   "shell.view.secrets": "Secrets",
   "shell.view.health": "Server",
   "shell.newChat": "New chat",

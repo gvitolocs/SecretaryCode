@@ -1,4 +1,5 @@
 import { ipcRenderer } from "electron"
+import type { AttentionCounts } from "../../main/secretary/attention-core"
 import type { ShellCommand } from "../../main/secretary/shell-command"
 
 /** Place this object at window.electron.secretary in the existing contextBridge. */
@@ -22,5 +23,16 @@ export const secretaryBridge = Object.freeze({
   },
   /** Tells her web views whether the shell is in focus mode. */
   setFocusMode: (on: boolean) => ipcRenderer.send("secretary:focus-mode", on === true),
+  /** How many approvals and decisions wait for the owner now. */
+  attention: (): Promise<AttentionCounts> => ipcRenderer.invoke("secretary:attention-counts"),
+  /** Changes of those counts. Returns the unsubscribe function. */
+  onAttention: (listener: (counts: AttentionCounts) => void) => {
+    const handler = (_event: unknown, counts: AttentionCounts) => listener(counts)
+    ipcRenderer.on("secretary:attention", handler)
+
+    return () => {
+      ipcRenderer.removeListener("secretary:attention", handler)
+    }
+  },
   request: (action: string, input?: unknown) => ipcRenderer.invoke("secretary:request", action, input),
 })

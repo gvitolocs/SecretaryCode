@@ -15,6 +15,7 @@ export const SHELL_VIEWS = [
   "pixiv",
   "nclient",
   "chats",
+  "decisions",
   "secrets",
   "health",
 ] as const
@@ -28,6 +29,8 @@ export type ShellCommand =
   | { action: "show"; view: ShellView }
   | { action: "focus"; on: boolean }
   | { action: "adult"; on: boolean }
+  // Sent by the main process only (a clicked notification): parseShellCommand never accepts it from a web page.
+  | { action: "open"; view: ShellView; path: string }
 
 /** An absolute project path: starts with "/", at most 4096 characters, no NUL. */
 export function isProjectPath(value: unknown): value is string {
