@@ -147,10 +147,7 @@ function toHost(command: ShellCommand) {
  * A clicked notification uses it to land on the item's page.
  */
 export function revealShell(command: ShellCommand) {
-  const host =
-    state.host && !state.host.isDestroyed()
-      ? state.host
-      : BrowserWindow.getAllWindows().find((window) => !window.isDestroyed() && isRendererUrl(window.webContents.getURL()))
+  const host = shellWindow()
 
   if (!host) return false
   if (host.isMinimized()) host.restore()
@@ -159,6 +156,13 @@ export function revealShell(command: ShellCommand) {
   host.webContents.send("secretary:shell-command", command)
 
   return true
+}
+
+/** The window hosting the companion views, else any app window; undefined when none is open. */
+export function shellWindow() {
+  return state.host && !state.host.isDestroyed()
+    ? state.host
+    : BrowserWindow.getAllWindows().find((window) => !window.isDestroyed() && isRendererUrl(window.webContents.getURL()))
 }
 
 /** Whether an IPC message comes from one of her views (Lucina or Computer), in its top frame, on her origin. */

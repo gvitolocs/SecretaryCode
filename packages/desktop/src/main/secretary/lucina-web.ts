@@ -6,6 +6,7 @@ import { join } from "node:path"
 import { nativeT } from "../native/translations"
 import { localImagePolicy } from "./image-viewer/policy"
 import { bundlePath, contentType, isLucinaUrl, LUCINA_ORIGIN, LUCINA_PAGE_CSP, LUCINA_PARTITION } from "./lucina-web-policy"
+import { audioOnly } from "./prompter-overlay-core"
 import { withShellFlag } from "./shell-command"
 import { applyWebLanguage } from "./web-session"
 
@@ -89,6 +90,18 @@ export function lucinaWebSession() {
     })
   }
   return web
+}
+
+// Her views that may use the microphone (Voice memos, Lucina Prompter): audio only, in their top frame, on her origin.
+const microphone = new WeakSet<WebContents>()
+
+export function allowMicrophone(contents: WebContents) {
+  microphone.add(contents)
+}
+
+/** Whether a media permission of the partition is one of those views asking for the microphone alone. */
+export function microphoneGranted(contents: unknown, mediaTypes: readonly unknown[] | undefined, url: string, mainFrame: boolean) {
+  return mainFrame && isLucinaUrl(url) && microphone.has(contents as WebContents) && audioOnly(mediaTypes)
 }
 
 // Where each view's first page goes, until that load has started. A route asked for before then replaces the path.

@@ -16,6 +16,7 @@ import { setupCompanionPanels } from "./secretary/panel"
 import { setupRecorder } from "./secretary/recorder"
 import { setupApprover } from "./secretary/approver"
 import { setupAttention } from "./secretary/attention"
+import { setupPrompterOverlay } from "./secretary/prompter-overlay"
 
 import { ImageOpenQueue, imageArguments } from "./secretary/image-viewer/queue"
 
@@ -41,6 +42,7 @@ setupCompanionPanels()
 setupRecorder()
 setupApprover()
 setupAttention()
+setupPrompterOverlay()
 setupAgentsMirror()
 
 if (acquireApplicationLock()) {

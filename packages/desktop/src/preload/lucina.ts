@@ -11,6 +11,11 @@ function send(command: ShellCommand) {
   ipcRenderer.send("secretary:shell", command)
 }
 
+/** A Lucina Prompter overlay request; the main process (main/secretary/prompter-overlay.ts) checks it and the sender. */
+function overlay(request: Record<string, unknown>) {
+  ipcRenderer.send("secretary:prompter-overlay", request)
+}
+
 /** One window.secretaryApprover call: the main process (main/secretary/approver.ts) does the work and the Touch ID. */
 function approver(action: string, input?: unknown): Promise<Record<string, unknown>> {
   return ipcRenderer.invoke("secretary:approver", action, input) as Promise<Record<string, unknown>>
@@ -99,6 +104,24 @@ if (location.origin === LUCINA_ORIGIN && window.top === window) {
       setAdultPlugins(on: boolean) {
         if (typeof on !== "boolean") throw new TypeError("on must be a boolean")
         tellAdult(on)
+      },
+      /**
+       * Lucina Prompter: `path` ("/prompter/<slug>?live=1&overlay=1") in a small frameless window above other apps, at
+       * `opacity` (0.3-1). One overlay at a time; a second call reuses it.
+       */
+      openPrompterOverlay(path: string, opts?: { opacity?: number }) {
+        if (typeof path !== "string") throw new TypeError("path must be a string")
+        const opacity = opts?.opacity
+        overlay(typeof opacity === "number" ? { action: "open", path, opacity } : { action: "open", path })
+      },
+      /** Inside the overlay: its window's opacity (0.3-1). */
+      setOverlayOpacity(opacity: number) {
+        if (typeof opacity !== "number") throw new TypeError("opacity must be a number")
+        overlay({ action: "opacity", opacity })
+      },
+      /** Inside the overlay: the take ended, close the window. */
+      closePrompterOverlay() {
+        overlay({ action: "close" })
       },
       /** The shell's focus mode as it changes, including when the shell itself leaves it. Returns the unsubscribe. */
       onFocusModeChange(listener: (on: boolean) => void) {

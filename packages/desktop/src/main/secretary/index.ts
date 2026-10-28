@@ -11,7 +11,7 @@ import stagePage from "../../renderer/secretary/stage.html?raw"
 import stageHost from "../../renderer/secretary/stage-host.mjs?raw"
 import stageBundle from "../../renderer/secretary/lucina-stage.standalone.js?raw"
 import copy from "../../renderer/secretary/en.json"
-import { lucinaWebView, navigateLucinaView } from "./lucina-web"
+import { allowMicrophone, lucinaWebView, navigateLucinaView } from "./lucina-web"
 
 const scheme = "secretary-companion"
 const origins = ["https://getsecretary.tech", "https://secretary-p1.tail75dcfc.ts.net"]
@@ -196,6 +196,8 @@ export function lucinaView() {
     },
     { preload: join(import.meta.dirname, "../preload/lucina.cjs") },
   )
+  // Voice memos and the prompter's live take record from her chat view too.
+  allowMicrophone(view.webContents)
   if (state.path) void navigateLucinaView(view.webContents, state.path)
   state.path = undefined
   state.view = view
