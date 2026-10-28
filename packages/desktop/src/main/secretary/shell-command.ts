@@ -3,6 +3,7 @@
 
 export const SHELL_VIEWS = [
   "lucina",
+  "keep",
   "code",
   "computer",
   "shopping",

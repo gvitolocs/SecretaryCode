@@ -4,6 +4,7 @@ import type { LayoutRoute } from "@/shell/state/layout"
 /** The rail's views in display order, Lucina first. */
 export const SHELL_VIEWS = [
   "lucina",
+  "keep",
   "code",
   "computer",
   "shopping",
@@ -23,6 +24,7 @@ export const DEFAULT_VIEW: ShellView = "lucina"
  */
 export const VIEW_ROUTES = {
   lucina: "/",
+  keep: "/keep",
   shopping: "/shopping",
   training: "/training",
   gallery: "/gallery",
