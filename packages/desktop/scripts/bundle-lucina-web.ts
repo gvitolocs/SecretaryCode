@@ -8,7 +8,7 @@
 // - LUCINA_WEB_REF picks another ref; LUCINA_WEB_DIST copies an already built dist instead.
 // - SECRETARY_SKIP_LUCINA_WEB=1 skips it: the app then loads the web app live.
 import { $ } from "bun"
-import { cp, mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises"
+import { cp, mkdir, mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises"
 import { homedir, tmpdir } from "node:os"
 import path from "node:path"
 
@@ -37,11 +37,15 @@ async function build(repo: string, ref: string) {
   const commit = (await $`git -C ${repo} rev-parse ${ref}`.text()).trim()
   const work = await mkdtemp(path.join(tmpdir(), "lucina-web-"))
   try {
-    await $`git -C ${repo} archive ${commit} packages/lucina-stage web | tar -x -C ${work}`
+    // web/src/lib/itemArt.ts globs ../../../assets/icons; without it every shopping item falls back to its emoji.
+    await $`git -C ${repo} archive ${commit} packages/lucina-stage web assets/icons | tar -x -C ${work}`
     // The web app links the stage package from ../packages; its dist must exist before the web build.
     await $`npm ci --no-audit --no-fund && npm run build`.cwd(path.join(work, "packages", "lucina-stage")).quiet()
     await $`npm ci --no-audit --no-fund && npm run build`.cwd(path.join(work, "web")).quiet()
-    await install(path.join(work, "web", "dist"), { ref, commit })
+    const dist = path.join(work, "web", "dist")
+    const art = (await readdir(path.join(dist, "assets"))).filter((name) => name.endsWith(".svg")).length
+    if (art === 0) throw new Error(`the Lucina web build at ${commit} has no item art (.svg) in dist/assets`)
+    await install(dist, { ref, commit })
   } finally {
     await rm(work, { recursive: true, force: true })
   }
