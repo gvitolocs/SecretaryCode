@@ -169,9 +169,12 @@ export async function navigateLucinaView(contents: WebContents, path: string) {
   const script = `(() => {
     if (location.origin !== ${JSON.stringify(LUCINA_ORIGIN)}) throw new Error("not Lucina")
     const path = ${JSON.stringify(path)}
-    if (location.pathname + location.search === path) return
-    history.pushState(null, "", path)
-    dispatchEvent(new PopStateEvent("popstate"))
+    if (location.pathname + location.search !== path) {
+      history.pushState(null, "", path)
+      dispatchEvent(new PopStateEvent("popstate"))
+    }
+    // The rail's Lucina item: her chat lands on the newest message, also when it was already open.
+    if (path === "/") dispatchEvent(new CustomEvent("secretary:chat-latest"))
   })()`
 
   await contents.executeJavaScript(script).catch(reload)
