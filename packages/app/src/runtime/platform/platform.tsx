@@ -173,7 +173,7 @@ type PlatformBase = {
    */
   companion?: {
     place(panel: CompanionPanel | undefined, rect?: CompanionRect): void
-    /** Routes Lucina's warm web view to a path of her web app ("/", "/media", "/films") without reloading it. */
+    /** Routes Lucina's warm web view to a path of her web app ("/", "/gallery", "/films") without reloading it. */
     navigate?(path: string): void
     /** Commands from Lucina's web app (`window.secretaryShell`). Returns the unsubscribe function. */
     onCommand?(listener: (command: ShellCommand) => void): () => void

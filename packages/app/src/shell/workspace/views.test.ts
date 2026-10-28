@@ -18,7 +18,7 @@ test("the route map is the agreed one", () => {
     lucina: "/",
     shopping: "/shopping",
     training: "/training",
-    gallery: "/media",
+    gallery: "/gallery",
     films: "/films",
     chats: "/chats",
     secrets: "/secrets",
