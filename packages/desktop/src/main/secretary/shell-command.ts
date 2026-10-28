@@ -5,11 +5,15 @@ export const SHELL_VIEWS = [
   "lucina",
   "keep",
   "code",
+  "agents",
   "computer",
   "shopping",
   "training",
   "gallery",
   "films",
+  "instagram",
+  "pixiv",
+  "nclient",
   "chats",
   "secrets",
   "health",
@@ -23,6 +27,7 @@ export type ShellCommand =
   | { action: "hideCode" }
   | { action: "show"; view: ShellView }
   | { action: "focus"; on: boolean }
+  | { action: "adult"; on: boolean }
 
 /** An absolute project path: starts with "/", at most 4096 characters, no NUL. */
 export function isProjectPath(value: unknown): value is string {
@@ -41,6 +46,8 @@ export function parseShellCommand(value: unknown): ShellCommand | undefined {
   if (message.action === "hideCode") return { action: "hideCode" }
 
   if (message.action === "focus") return typeof message.on === "boolean" ? { action: "focus", on: message.on } : undefined
+
+  if (message.action === "adult") return typeof message.on === "boolean" ? { action: "adult", on: message.on } : undefined
 
   if (message.action === "show") return isShellView(message.view) ? { action: "show", view: message.view } : undefined
 

@@ -16,6 +16,24 @@ function approver(action: string, input?: unknown): Promise<Record<string, unkno
   return ipcRenderer.invoke("secretary:approver", action, input) as Promise<Record<string, unknown>>
 }
 
+// Her per-device "Show adult plugins" switch (web/src/lib/adult.ts): "0" is off, anything else or nothing is on.
+const ADULT_KEY = "secretary.showAdultPlugins"
+let adult: boolean | undefined
+
+function readAdult() {
+  try {
+    return localStorage.getItem(ADULT_KEY) !== "0"
+  } catch {
+    return true
+  }
+}
+
+function tellAdult(on: boolean) {
+  if (on === adult) return
+  adult = on
+  send({ action: "adult", on })
+}
+
 if (location.origin === LUCINA_ORIGIN && window.top === window) {
   // Owner approvals with Touch ID on this Mac. Her page names a request; the main process reads it from the server,
   // asks for Touch ID with the server's own summary, signs it in the Secure Enclave and sends the decision.
@@ -45,6 +63,10 @@ if (location.origin === LUCINA_ORIGIN && window.top === window) {
       },
     }),
   )
+  // The rail follows her switch without help from her page: read on load and after each route change (the shell's own
+  // navigation is a popstate). setAdultPlugins below tells it at once.
+  tellAdult(readAdult())
+  addEventListener("popstate", () => tellAdult(readAdult()))
   contextBridge.exposeInMainWorld(
     "secretaryShell",
     Object.freeze({
@@ -72,6 +94,11 @@ if (location.origin === LUCINA_ORIGIN && window.top === window) {
       setFocusMode(on: boolean) {
         if (typeof on !== "boolean") throw new TypeError("on must be a boolean")
         send({ action: "focus", on })
+      },
+      /** Her "Show adult plugins" switch changed: the rail shows or hides the adult plugins (NClient). */
+      setAdultPlugins(on: boolean) {
+        if (typeof on !== "boolean") throw new TypeError("on must be a boolean")
+        tellAdult(on)
       },
       /** The shell's focus mode as it changes, including when the shell itself leaves it. Returns the unsubscribe. */
       onFocusModeChange(listener: (on: boolean) => void) {

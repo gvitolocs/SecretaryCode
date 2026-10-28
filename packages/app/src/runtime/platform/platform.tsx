@@ -30,11 +30,15 @@ export type ShellView =
   | "lucina"
   | "keep"
   | "code"
+  | "agents"
   | "computer"
   | "shopping"
   | "training"
   | "gallery"
   | "films"
+  | "instagram"
+  | "pixiv"
+  | "nclient"
   | "chats"
   | "secrets"
   | "health"
@@ -46,6 +50,8 @@ export type ShellCommand =
   | { action: "show"; view: ShellView }
   /** Focus mode: the plugin's page takes nearly the whole window; the rail and Lucina step aside. */
   | { action: "focus"; on: boolean }
+  /** Her per-device "Show adult plugins" switch: while it is off the rail hides the adult plugins (NClient). */
+  | { action: "adult"; on: boolean }
 
 type DesktopOS = "macos" | "windows" | "linux"
 

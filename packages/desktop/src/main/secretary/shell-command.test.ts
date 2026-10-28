@@ -12,6 +12,8 @@ describe("parseShellCommand", () => {
     })
     for (const view of SHELL_VIEWS) expect(parseShellCommand({ action: "show", view })).toEqual({ action: "show", view })
     expect(parseShellCommand({ action: "hideCode", view: "code" })).toEqual({ action: "hideCode" })
+    expect(parseShellCommand({ action: "adult", on: false, extra: 1 })).toEqual({ action: "adult", on: false })
+    expect(parseShellCommand({ action: "adult", on: true })).toEqual({ action: "adult", on: true })
   })
 
   test("refuses every other shape", () => {
@@ -28,6 +30,9 @@ describe("parseShellCommand", () => {
       { action: "SHOWCODE" },
       { action: ["hideCode"] },
       { action: "show" },
+      { action: "adult" },
+      { action: "adult", on: "0" },
+      { action: "adult", on: 0 },
       { action: "show", view: "settings" },
       { action: "show", view: "Gallery" },
       { action: "show", view: 1 },

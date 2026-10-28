@@ -81,10 +81,12 @@ ipc.emit("secretary:place", renderer, "lucina", { x: 0, y: 0, width: 100, height
 ipc.emit("secretary:shell", fromLucina, { action: "showCode", projectPath: "/Users/me/app" })
 ipc.emit("secretary:shell", fromLucina, { action: "hideCode" })
 ipc.emit("secretary:shell", fromLucina, { action: "focus", on: true })
+ipc.emit("secretary:shell", fromLucina, { action: "adult", on: false })
 assert.deepEqual(sent, [
   ["host:secretary:shell-command", { action: "showCode", projectPath: "/Users/me/app" }],
   ["host:secretary:shell-command", { action: "hideCode" }],
   ["host:secretary:shell-command", { action: "focus", on: true }],
+  ["host:secretary:shell-command", { action: "adult", on: false }],
 ])
 sent.length = 0
 

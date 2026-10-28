@@ -6,11 +6,15 @@ export const SHELL_VIEWS = [
   "lucina",
   "keep",
   "code",
+  "agents",
   "computer",
   "shopping",
   "training",
   "gallery",
   "films",
+  "instagram",
+  "pixiv",
+  "nclient",
   "chats",
   "secrets",
   "health",
@@ -25,10 +29,14 @@ export const DEFAULT_VIEW: ShellView = "lucina"
 export const VIEW_ROUTES = {
   lucina: "/",
   keep: "/keep",
+  agents: "/agents",
   shopping: "/shopping",
   training: "/training",
   gallery: "/gallery",
   films: "/films",
+  instagram: "/instagram",
+  pixiv: "/pixiv",
+  nclient: "/nclient",
   chats: "/chats",
   secrets: "/secrets",
   health: "/server-health",
@@ -37,6 +45,14 @@ export const VIEW_ROUTES = {
 /** Pages of Lucina's web app that her hidden top bar used to open: the account (with sign-out) and the notifications. */
 export const ACCOUNT_ROUTE = "/account"
 export const NOTIFICATIONS_ROUTE = "/notifications"
+
+/** Plugins the rail shows only while her "Show adult plugins" switch is on. */
+export const ADULT_VIEWS: readonly ShellView[] = ["nclient"]
+
+/** Whether the rail offers a view: every view, except the adult ones while the switch is off. */
+export function viewAllowed(view: ShellView, adult: boolean): boolean {
+  return adult || !ADULT_VIEWS.includes(view)
+}
 
 export function isShellView(value: unknown): value is ShellView {
   return typeof value === "string" && (SHELL_VIEWS as readonly string[]).includes(value)

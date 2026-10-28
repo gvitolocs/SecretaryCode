@@ -1,5 +1,5 @@
-/* The pill rail of the approved shell mock (docs/design/desktop-shell). The gradient and the cyan ring are the
-   mock's own colours; the wells and labels follow the v2 tokens. */
+/* The pill rail of the approved shell mock (docs/design/desktop-shell), in the frosted glass of ../glass.css. The
+   cyan ring is the mock's own colour; the wells and labels follow the v2 tokens. */
 
 [data-slot="shell-rail-region"] {
   display: flex;
@@ -15,8 +15,6 @@
   --rail-ring-glow: #5ee3e714;
   --rail-ring-bg: #243d4280;
   --rail-ring-ink: #8ceef0;
-  --rail-pill: linear-gradient(90deg, #292b2ff0, #16191ef0 70%, #23262bee);
-  --rail-pill-border: #4c4f54;
   --rail-well-border: #575c64;
 
   display: flex;
@@ -28,10 +26,7 @@
   padding: 14px 5px;
   overflow-y: auto;
   scrollbar-width: none;
-  border: 2px solid var(--rail-pill-border);
   border-radius: 46px;
-  background: var(--rail-pill);
-  box-shadow: inset 1px 0 #ffffff0a;
 }
 
 [data-slot="shell-rail"]::-webkit-scrollbar {
@@ -43,8 +38,6 @@
   --rail-ring-glow: #4a5bb514;
   --rail-ring-bg: #4a5bb51f;
   --rail-ring-ink: #4a5bb5;
-  --rail-pill: linear-gradient(90deg, #fffffff2, #f4f4f8f2 70%, #fbfbfdf2);
-  --rail-pill-border: #d6d6dc;
   --rail-well-border: #d1d1d6;
 }
 

@@ -172,6 +172,9 @@ assert.ok(script.includes('history.pushState(null, "", path)'))
 assert.ok(script.includes('const path = "/chats?tab=all"'))
 assert.ok(script.includes('dispatchEvent(new PopStateEvent("popstate"))'))
 assert.ok(script.includes('location.origin !== "https://getsecretary.tech"'))
+// Routing to the open page is not skipped outright: her chat still hears the rail's Lucina item.
+assert.ok(!script.includes("=== path) return"))
+assert.ok(script.includes('if (path === "/") dispatchEvent(new CustomEvent("secretary:chat-latest"))'))
 
 // No page yet, an error page or another origin: load the URL.
 for (const current of ["", "about:blank", "data:text/html;charset=utf-8,x", "https://example.com/gallery"]) {

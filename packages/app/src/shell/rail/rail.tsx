@@ -10,11 +10,15 @@ import "./rail.css"
 type RailIcon =
   | "bulb"
   | "code"
+  | "agents"
   | "computer"
   | "list"
   | "dumbbell"
   | "gallery"
   | "film"
+  | "camera"
+  | "palette"
+  | "book"
   | "inbox"
   | "key"
   | "pulse"
@@ -49,6 +53,36 @@ const ICONS: Record<RailIcon, () => JSX.Element> = {
     <>
       <path d="M9 18h6M10 21h4" />
       <path d="M12 3a6 6 0 0 0-3.6 10.8c.7.5 1.1 1.3 1.1 2.2h5c0-.9.4-1.7 1.1-2.2A6 6 0 0 0 12 3z" />
+    </>
+  ),
+  camera: () => (
+    <>
+      <rect x="3.5" y="6.5" width="17" height="13" rx="3" />
+      <circle cx="12" cy="13" r="3.5" />
+      <path d="m9 6.5 1.2-2h3.6l1.2 2" />
+    </>
+  ),
+  palette: () => (
+    <>
+      <path d="M12 3.5a8.5 8.5 0 1 0 0 17c1.1 0 1.8-.8 1.8-1.7 0-1.2-1-1.6-1-2.6 0-.9.7-1.5 1.7-1.5H17a3.5 3.5 0 0 0 3.5-3.5c0-4.3-3.8-7.7-8.5-7.7z" />
+      <circle cx="7.8" cy="11.5" r="1" />
+      <circle cx="10.3" cy="7.6" r="1" />
+      <circle cx="14.6" cy="7.8" r="1" />
+    </>
+  ),
+  book: () => (
+    <>
+      <path d="M4 5.5c2.6-1 5.4-.8 8 .7v13c-2.6-1.5-5.4-1.7-8-.7z" />
+      <path d="M20 5.5c-2.6-1-5.4-.8-8 .7v13c2.6-1.5 5.4-1.7 8-.7z" />
+    </>
+  ),
+  agents: () => (
+    <>
+      <rect x="5" y="8" width="14" height="11" rx="3" />
+      <path d="M12 8V4.5M10 4.5h4" />
+      <circle cx="9.5" cy="13.5" r="1.2" />
+      <circle cx="14.5" cy="13.5" r="1.2" />
+      <path d="M3 12.5v3M21 12.5v3" />
     </>
   ),
   film: () => (
@@ -88,11 +122,15 @@ const ICONS: Record<RailIcon, () => JSX.Element> = {
 const VIEW_ICONS: { view: ShellView; icon: RailIcon }[] = [
   { view: "keep", icon: "bulb" },
   { view: "code", icon: "code" },
+  { view: "agents", icon: "agents" },
   { view: "computer", icon: "computer" },
   { view: "shopping", icon: "list" },
   { view: "training", icon: "dumbbell" },
   { view: "gallery", icon: "gallery" },
   { view: "films", icon: "film" },
+  { view: "instagram", icon: "camera" },
+  { view: "pixiv", icon: "palette" },
+  { view: "nclient", icon: "book" },
   { view: "chats", icon: "inbox" },
   { view: "secrets", icon: "key" },
   { view: "health", icon: "pulse" },
@@ -142,7 +180,7 @@ export function ShellRail() {
         <div data-slot="rail-group">
           {item("lucina", <img src={lucina} alt="" draggable={false} />)}
           <div data-slot="rail-sep" />
-          <For each={VIEW_ICONS}>{(entry) => item(entry.view, <Glyph icon={entry.icon} />)}</For>
+          <For each={VIEW_ICONS.filter((entry) => workspace.view.allowed(entry.view))}>{(entry) => item(entry.view, <Glyph icon={entry.icon} />)}</For>
         </div>
         <div data-slot="rail-spacer" />
         <div data-slot="rail-group">
