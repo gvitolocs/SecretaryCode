@@ -150,6 +150,62 @@ describe("commands", () => {
   })
 })
 
+describe("pending commands", () => {
+  test("polls the commands waiting for this Mac on every connection, for what a resumed stream does not replay", async () => {
+    const world = await harness()
+    const agentId = await session(world)
+    await until(() => world.store.lastEventId() === world.transport.lastEventId, "the stream position")
+    expect(world.transport.calls.commands).toBe(1)
+
+    world.transport.drop()
+    await turn()
+    // Queued while the Mac was away and not in the journal a resumed stream replays from.
+    world.transport.queue({
+      commandId: "cmd_waiting",
+      agentId,
+      command: { kind: "send", prompt: "picked up by the poll" },
+      createdAt: new Date(Date.now()).toISOString(),
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    })
+    await advance(1_000)
+    await until(() => world.transport.acked.length === 1, "the polled command")
+
+    expect(world.transport.connections).toHaveLength(2)
+    expect(world.transport.connections[1]).toBeDefined()
+    expect(world.transport.calls.commands).toBe(2)
+    expect(world.engine.calls.map((call) => call.kind === "prompt" && call.text)).toEqual(["picked up by the poll"])
+  })
+
+  test("does not apply a command again when a poll answered before its acknowledgement lists it", async () => {
+    const world = await harness()
+    const agentId = await session(world)
+    const sent = world.transport.command(agentId, { kind: "stop" }, { id: "cmd_once" })
+    await until(() => world.transport.acked.length === 1, "the acknowledgement")
+
+    // A poll that left before the acknowledgement landed still lists it.
+    world.transport.queue(sent)
+    await world.service.commands.refetch()
+    await advance(10_000)
+
+    expect(world.engine.calls).toEqual([{ kind: "interrupt", sessionID: "ses_1" }])
+    expect(world.transport.acked.map((item) => item.commandId)).toEqual(["cmd_once"])
+  })
+
+  test("forgets a command whose acknowledgement Lucina answers as expired", async () => {
+    const world = await harness()
+    const agentId = await session(world)
+
+    world.transport.failures.push(new AgentsError("notFound", "Lucina answered 410 (COMMAND_EXPIRED)"))
+    world.transport.command(agentId, { kind: "stop" }, { id: "cmd_late" })
+    await until(() => world.transport.failures.length === 0, "the refused acknowledgement")
+    await until(() => world.store.commands().length === 0, "the forgotten command")
+    await advance(10_000)
+
+    expect(world.engine.calls).toEqual([{ kind: "interrupt", sessionID: "ses_1" }])
+    expect(world.transport.acked).toEqual([])
+  })
+})
+
 describe("stream", () => {
   test("reconnects with backoff and Last-Event-ID, and receives what it missed", async () => {
     const world = await harness()
@@ -201,7 +257,8 @@ describe("stream", () => {
     await advance(1_000)
     await until(() => transport.acked.some((item) => item.commandId === "cmd_gap"), "the refetched command")
 
-    expect(transport.calls).toEqual({ agents: 1, commands: 1 })
+    // The commands are listed on each of the two connections and once more for the reset.
+    expect(transport.calls).toEqual({ agents: 1, commands: 3 })
     expect(world.engine.calls).toEqual([{ kind: "prompt", sessionID: "ses_1", id: expect.stringMatching(/^msg_/), text: "after the gap", delivery: "queue" }])
     expect(world.store.agent("ses_2")).toBeUndefined()
     expect(world.store.agent("ses_1")).toBe(agentId)

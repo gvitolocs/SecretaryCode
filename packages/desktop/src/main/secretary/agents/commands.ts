@@ -2,9 +2,10 @@ import { Identifier } from "@opencode/schema/identifier"
 import { AgentsError, type AgentsTransport } from "./client"
 import { EngineRejected, type Engine } from "./engine"
 import type { AgentsStore, PendingCommand } from "./store"
-import { COMMAND_TTL_MS, type AgentCommand, type PermissionResponse } from "./wire"
+import type { AgentCommand, PermissionResponse } from "./wire"
 
-const RETRY_MS = 5_000
+/** While the engine or Lucina is unreachable, retries back off from 5 s to 5 min. */
+const RETRY_MS = { initial: 5_000, max: 5 * 60_000 }
 
 export type CommandsOptions = {
   transport: AgentsTransport
@@ -21,6 +22,7 @@ export type CommandsOptions = {
 export class Commands {
   private chain: Promise<void> = Promise.resolve()
   private timer?: ReturnType<typeof setTimeout>
+  private retryMs = 0
   private stopped = false
 
   constructor(private readonly options: CommandsOptions) {}
@@ -39,7 +41,10 @@ export class Commands {
     return this.chain
   }
 
-  /** After a `stream.reset`, the commands Lucina still holds for this Mac are fetched rather than replayed. */
+  /**
+   * The commands Lucina still holds for this Mac, fetched rather than replayed: on every stream connection (a resumed
+   * stream only replays what its journal still keeps) and after a `stream.reset`.
+   */
   async refetch() {
     const commands = await this.options.transport.commands()
 
@@ -61,15 +66,17 @@ export class Commands {
       if (this.stopped) return
       results.push(await this.handle(command))
     }
-    if (results.includes("retry")) this.retry()
+    if (results.includes("retry")) return this.retry()
+    this.retryMs = 0
   }
 
   private retry() {
     if (this.stopped || this.timer) return
+    this.retryMs = Math.min(RETRY_MS.max, Math.max(RETRY_MS.initial, this.retryMs * 2))
     this.timer = setTimeout(() => {
       this.timer = undefined
       void this.drain()
-    }, RETRY_MS)
+    }, this.retryMs)
   }
 
   private async handle(command: PendingCommand): Promise<"done" | "retry"> {
@@ -140,7 +147,7 @@ export class Commands {
 }
 
 function expired(command: AgentCommand, now: number) {
-  const expiresAt = command.expiresAt ? Date.parse(command.expiresAt) : Date.parse(command.createdAt) + COMMAND_TTL_MS
+  const expiresAt = Date.parse(command.expiresAt)
 
   return Number.isFinite(expiresAt) && now >= expiresAt
 }

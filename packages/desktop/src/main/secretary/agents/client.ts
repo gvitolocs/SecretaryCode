@@ -14,11 +14,14 @@ export interface AgentsTransport {
   rename(agentId: string, title: string): Promise<void>
   postEvents(agentId: string, events: readonly StreamEvent[]): Promise<void>
   ack(agentId: string, commandId: string): Promise<void>
-  /** The agents this device can see; after a `stream.reset` the mirror checks its own against it. */
+  /** `GET /v1/agents/items`: the agents this device can see; after a `stream.reset` the mirror checks its own against it. */
   agents(): Promise<AgentListItem[]>
-  /** Commands queued for this device and not yet acknowledged. */
+  /** `GET /v1/agents/commands`: commands queued for this device and not yet acknowledged. */
   commands(): Promise<AgentCommand[]>
-  /** One stream connection. It ends (or throws) when the connection drops; {@link runStream} reconnects. */
+  /**
+   * One stream connection. It yields `stream.open` once the server accepts it, then the server's frames, and ends
+   * (or throws) when the connection drops; {@link runStream} reconnects.
+   */
   connect(lastEventId: string | undefined, signal: AbortSignal): AsyncIterable<StreamMessage>
 }
 
@@ -80,8 +83,7 @@ export function createHttpTransport(options: HttpAgentsOptions): AgentsTransport
     })
 
     if (response.ok) return response
-    await response.body?.cancel().catch(() => undefined)
-    throw statusError(response.status)
+    throw await statusError(response)
   }
 
   const json = async (path: string, init?: Parameters<typeof request>[1]) => (await request(path, init)).json() as Promise<unknown>
@@ -99,8 +101,8 @@ export function createHttpTransport(options: HttpAgentsOptions): AgentsTransport
         method: "POST",
       })
     },
-    agents: async () => list(await json("/v1/agents")) as AgentListItem[],
-    commands: async () => list(await json("/v1/agents/commands")) as AgentCommand[],
+    agents: async () => ((await json("/v1/agents/items")) as { agents: AgentListItem[] }).agents,
+    commands: async () => ((await json("/v1/agents/commands")) as { commands: AgentCommand[] }).commands,
     connect: (lastEventId, signal) => ({
       async *[Symbol.asyncIterator]() {
         const token = await options.token()
@@ -119,10 +121,8 @@ export function createHttpTransport(options: HttpAgentsOptions): AgentsTransport
           throw new AgentsError("offline", error instanceof Error ? error.message : "Network error")
         })
 
-        if (!response.ok || !response.body) {
-          await response.body?.cancel().catch(() => undefined)
-          throw statusError(response.status)
-        }
+        if (!response.ok || !response.body) throw await statusError(response)
+        yield { frame: { type: "stream.open" } }
         yield* parseSse(response.body, signal)
       },
     }),
@@ -172,10 +172,11 @@ function sseMessage(block: string): StreamMessage[] {
   const data = fields.filter((field) => field.name === "data").map((field) => field.value).join("\n")
 
   if (event === "stream.reset") return [{ id, frame: { type: "stream.reset" } }]
-  if (!data) return []
-  const frame = parseFrame(data)
+  const frame = data ? parseFrame(data) : undefined
 
-  return frame ? [{ id, frame }] : []
+  if (frame) return [{ id, frame }]
+  // A frame the mirror does not read (`permission`, `workspace`, or a malformed one) still moves the stream position.
+  return id ? [{ id }] : []
 }
 
 /** One frame from the wire. A frame without a known `type` is skipped rather than failing the stream. */
@@ -197,10 +198,15 @@ function parseFrame(data: string): StreamFrame | undefined {
 
     if (typeof command.commandId !== "string" || typeof command.agentId !== "string") return undefined
     if (!command.command || typeof command.command !== "object" || typeof command.command.kind !== "string") return undefined
-    if (typeof command.createdAt !== "string") return undefined
-    return value as AgentCommand
+    if (typeof command.createdAt !== "string" || typeof command.expiresAt !== "string") return undefined
+    return value as StreamFrame
   }
-  if (type === "agent_stream" || type === "agent_state" || type === "agent_deleted") {
+  if (type === "agent_state") {
+    const agent = (value as { agent?: { id?: unknown } }).agent
+
+    return agent && typeof agent.id === "string" ? (value as StreamFrame) : undefined
+  }
+  if (type === "agent_stream" || type === "agent_deleted") {
     if (typeof (value as { agentId?: unknown }).agentId !== "string") return undefined
     return value as StreamFrame
   }
@@ -208,20 +214,40 @@ function parseFrame(data: string): StreamFrame | undefined {
   return undefined
 }
 
-function list(value: unknown): unknown[] {
-  if (Array.isArray(value)) return value
-  // Paseo-style list endpoints wrap their rows; either shape is accepted.
-  const wrapped = value && typeof value === "object" ? Object.values(value).find(Array.isArray) : undefined
+/**
+ * An error answer as an {@link AgentsError}. 401 is a missing or revoked device token; 403 is the daemon refusing this
+ * device (`NOT_OWNER`, `forbidden`), which signing in again does not change. The body's
+ * `{"error": {"code", "message"}}` (daemon and secretary-server alike) goes into the message for the log.
+ */
+async function statusError(response: Response) {
+  const status = response.status
+  const body = (await response.json().catch(() => undefined)) as { error?: { code?: unknown } } | undefined
+  const code = typeof body?.error?.code === "string" ? ` (${body.error.code})` : ""
+  const message = `Lucina answered ${status}${code}`
 
-  return wrapped ?? []
+  if (status === 401) return new AgentsError("signInRequired", message)
+  if (status === 404 || status === 410) return new AgentsError("notFound", message)
+  if (status === 408 || status === 429 || status >= 500) return new AgentsError("offline", message)
+
+  return new AgentsError("rejected", message)
 }
 
-function statusError(status: number) {
-  if (status === 401 || status === 403) return new AgentsError("signInRequired", `Lucina answered ${status}`)
-  if (status === 404 || status === 410) return new AgentsError("notFound", `Lucina answered ${status}`)
-  if (status === 408 || status === 429 || status >= 500) return new AgentsError("offline", `Lucina answered ${status}`)
+/**
+ * The mirror's failures for a log: each distinct message once, so a server that keeps answering 503 while the mirror
+ * backs off writes one line rather than one per attempt.
+ */
+export function logOnce(log: (message: string) => void) {
+  const seen = new Set<string>()
 
-  return new AgentsError("rejected", `Lucina answered ${status}`)
+  return (error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error)
+
+    if (seen.has(message)) return
+    // Bounded: messages carry status codes and server error codes, not ids, so this rarely fills.
+    if (seen.size >= 100) seen.clear()
+    seen.add(message)
+    log(message)
+  }
 }
 
 const BACKOFF_MS = { initial: 1_000, max: 60_000 }
@@ -232,7 +258,9 @@ export type StreamOptions = {
   /** The last `id:` seen, kept by the caller so it survives a restart. */
   lastEventId: () => string | undefined
   onEventId: (id: string) => void
-  onFrame: (frame: Exclude<StreamFrame, { type: "stream.reset" }>) => Promise<void> | void
+  onFrame: (frame: Exclude<StreamFrame, { type: "stream.reset" } | { type: "stream.open" }>) => Promise<void> | void
+  /** A connection was accepted. Not awaited: what it starts must not hold back the frames behind it. */
+  onOpen?: () => void
   /** The server could not replay what was missed; the caller refetches the state it keeps. */
   onReset: () => Promise<void>
   onError?: (error: unknown) => void
@@ -249,9 +277,14 @@ export async function runStream(options: StreamOptions) {
     try {
       for await (const message of options.transport.connect(options.lastEventId(), options.signal)) {
         if (options.signal.aborted) return
+        // Accepted is not yet healthy: a server that closes every stream at once keeps backing off.
+        if (message.frame?.type === "stream.open") {
+          options.onOpen?.()
+          continue
+        }
         state.attempt = 0
-        if (message.frame.type === "stream.reset") await options.onReset()
-        else await options.onFrame(message.frame)
+        if (message.frame?.type === "stream.reset") await options.onReset()
+        else if (message.frame) await options.onFrame(message.frame)
         // The id is committed only after the frame is handled, so a crash replays it rather than losing it.
         if (message.id) options.onEventId(message.id)
       }
