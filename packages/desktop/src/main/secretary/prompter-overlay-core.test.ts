@@ -35,7 +35,7 @@ describe("parseOverlayRequest", () => {
       path: "/prompter/x?live=1&overlay=1",
       opacity: 0.6,
     })
-    expect(parseOverlayRequest({ action: "open", path: "/prompter/x" })).toEqual({ action: "open", path: "/prompter/x", opacity: 1 })
+    expect(parseOverlayRequest({ action: "open", path: "/prompter/x" })).toEqual({ action: "open", path: "/prompter/x", opacity: 0.85 })
     expect(parseOverlayRequest({ action: "opacity", opacity: 0.1 })).toEqual({ action: "opacity", opacity: 0.3 })
     expect(parseOverlayRequest({ action: "close", path: "/x" })).toEqual({ action: "close" })
   })

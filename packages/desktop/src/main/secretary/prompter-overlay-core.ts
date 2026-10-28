@@ -5,6 +5,8 @@ import { isNavigatePath } from "./shell-command"
 
 export const MIN_OPACITY = 0.3
 export const MAX_OPACITY = 1
+/** The overlay's opacity when her page names none. */
+export const OPEN_OPACITY = 0.85
 
 export type OverlayRequest =
   | { action: "open"; path: string; opacity: number }
@@ -36,7 +38,7 @@ export function parseOverlayRequest(value: unknown): OverlayRequest | undefined 
       : undefined
 
   if (message.action === "open" && isPrompterPath(message.path))
-    return { action: "open", path: message.path, opacity: clampOpacity(message.opacity) }
+    return { action: "open", path: message.path, opacity: clampOpacity(message.opacity, OPEN_OPACITY) }
 }
 
 /** Whether a media permission asks for the microphone alone (no camera, no screen). */

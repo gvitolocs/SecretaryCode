@@ -3,7 +3,9 @@
 Lucina Prompter (`/prompter` in her web app) shows the owner's talking points and crosses them out live while he
 speaks. In Secretary Code a take can run in a small window that stays above other apps (a call, slides). This file is
 the contract between her web app and the Mac app. The web side is SecretaryIOS `web/src/lib/desktopShell.ts`; callers
-are `web/src/views/Prompter.tsx` and `PrompterLive.tsx`.
+are `web/src/views/Prompter.tsx` and `PrompterLive.tsx`. The prompter session's request is
+`~/Projects/Lucina/notes/prompter-overlay-for-secretary-code.md` on the Mac; the design doc is SecretaryIOS `docs/prompter.md`
+(lucina-rs line), section "Secretary Code overlay".
 
 ## Bridge (`window.secretaryShell`, preload `src/preload/lucina.ts`)
 
@@ -21,15 +23,17 @@ and the opacity slider only inside the overlay when `setOverlayOpacity` exists.
 - The main process (`prompter-overlay.ts`) rebuilds the request from validated fields (`prompter-overlay-core.ts`,
   `parseOverlayRequest`) and checks the sender; anything else is dropped silently.
 - Path: `isNavigatePath` (same rule as the shell's routing) and `/prompter/<one segment>`. Opacity is clamped to 0.3–1;
-  a missing or non-finite one opens at 1.
+  a missing or non-finite one opens at 0.85.
 
 ## Window
 
-- Frameless, 440 × 640 (shorter on a small screen), placed at the top right of the primary display's work area, min 320 × 240,
-  resizable, not minimizable or full-screenable, hidden from the Dock's window list.
-- Always on top at the `floating` level, on every Space and over full-screen apps.
-- Moved by her page's own drag region (`-webkit-app-region: drag` in `prompter.css`).
-- One overlay at a time: a second `openPrompterOverlay` routes the open one to the new path (no reload) and applies the opacity.
+- Frameless, opaque (`#05070a`), with a shadow, 440 × 560 (shorter on a small screen), placed at the top right of the
+  primary display's work area, min 320 × 300, resizable, not minimizable or full-screenable.
+- Always on top at the `screen-saver` level, on every Space and over full-screen apps (Keynote, Zoom, Photo Booth).
+- Moved by her page's own drag region (`-webkit-app-region: drag` in `prompter.css`; buttons are `no-drag`).
+- One overlay at a time: a second `openPrompterOverlay` routes the open one to the new path (no reload), applies the
+  opacity and focuses it.
+- Its last bounds are not remembered (the request lists that as optional).
 - Shown once her page has loaded (or after 3 s), never as an empty frame.
 - Closes with the main window, on `closePrompterOverlay()`, or when the owner quits.
 - Content: her web app (`lucinaWebView`) in the shared `persist:lucina-web` partition, with the bundled UI, the web sign-in

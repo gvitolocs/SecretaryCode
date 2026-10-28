@@ -11,7 +11,7 @@ import { ensureWebSession } from "./web-session"
 // overlay is her web app itself in the shared partition, with the same preload and the microphone (audio only).
 
 const WIDTH = 440
-const HEIGHT = 640
+const HEIGHT = 560
 const MARGIN = 24
 
 let overlay: BrowserWindow | undefined
@@ -31,6 +31,7 @@ function open(path: string, opacity: number) {
     const page = views.get(existing)
     if (page && !page.isDestroyed()) void navigateLucinaView(page, path)
     existing.show()
+    existing.focus()
 
     return
   }
@@ -42,20 +43,22 @@ function open(path: string, opacity: number) {
     x: workArea.x + workArea.width - WIDTH - MARGIN,
     y: workArea.y + MARGIN,
     minWidth: 320,
-    minHeight: 240,
+    minHeight: 300,
     frame: false,
+    transparent: false,
+    hasShadow: true,
     alwaysOnTop: true,
+    resizable: true,
     fullscreenable: false,
     minimizable: false,
     maximizable: false,
-    skipTaskbar: true,
     show: false,
     title: "Lucina Prompter",
-    backgroundColor: "#0b1020",
+    backgroundColor: "#05070a",
     opacity,
   })
-  // Above other apps' windows, on every Space, and over a full-screen call or presentation.
-  window.setAlwaysOnTop(true, "floating")
+  // Above other apps' windows, on every Space, and over a full-screen call or presentation (Keynote, Zoom, Photo Booth).
+  window.setAlwaysOnTop(true, "screen-saver")
   window.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
   const page = lucinaWebView(path, ensureWebSession, { preload: join(import.meta.dirname, "../preload/lucina.cjs") })
   allowMicrophone(page.webContents)
