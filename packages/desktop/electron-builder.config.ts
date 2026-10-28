@@ -51,11 +51,11 @@ async function signWindows(configuration: { path: string }) {
 function macSignOptions(options: CustomMacSignOptions): CustomMacSignOptions {
   return {
     ...options,
-    // Local builds are never notarized, so they can skip Apple's timestamp server ("none"): when it is unreachable,
-    // codesign fails and the build would otherwise lose its stable signature.
-    ...(process.env.SECRETARY_SIGN_TIMESTAMP ? { timestamp: process.env.SECRETARY_SIGN_TIMESTAMP } : {}),
     optionsForFile: (file) => {
-      const defaults = options.optionsForFile?.(file)
+      // Local builds are never notarized, so they can skip Apple's timestamp server ("none"): when it is unreachable,
+      // codesign fails and the build would otherwise lose its stable signature. Per file, because these options win.
+      const stamp = process.env.SECRETARY_SIGN_TIMESTAMP
+      const defaults = { ...options.optionsForFile?.(file), ...(stamp ? { timestamp: stamp } : {}) }
 
       // The meeting recorder needs only the microphone entitlement; Screen Recording is a TCC grant.
       if (file === path.join(options.app, "Contents/Resources/secretary-recorder"))
@@ -65,7 +65,7 @@ function macSignOptions(options: CustomMacSignOptions): CustomMacSignOptions {
       if (ENGINE_RS_BINARIES.some((binary) => file === path.join(options.app, `Contents/Resources/engine-rs/${binary}`)))
         return { ...defaults, entitlements: path.join(packageDir, "resources/entitlements.cli.plist") }
 
-      if (file !== path.join(options.app, "Contents/Resources/opencode-cli")) return defaults ?? {}
+      if (file !== path.join(options.app, "Contents/Resources/opencode-cli")) return defaults
 
       // The Bun CLI loads bun-pty's native library; Electron and its helpers do not need this exception.
       return { ...defaults, entitlements: path.join(packageDir, "resources/entitlements.cli.plist") }
