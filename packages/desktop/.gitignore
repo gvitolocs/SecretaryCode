@@ -29,5 +29,6 @@ resources/secretary-recorder
 resources/engine-rs
 resources/lucina-web
 native/secretary-recorder/.build
+native/secretary-approver/.build
 resources/icons
 resources/*.metainfo.xml

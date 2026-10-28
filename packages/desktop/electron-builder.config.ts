@@ -116,6 +116,7 @@ const getBase = (appId: string): Configuration => {
       "resources/**/*",
       "!resources/opencode-cli*",
       "!resources/secretary-recorder",
+      "!resources/secretary-approver",
       // The Rust preview binaries are extraResources, not asar contents.
       "!resources/engine-rs{,/**/*}",
       // Lucina's bundled web app is an extraResource the main process serves from disk.
@@ -151,6 +152,7 @@ const getBase = (appId: string): Configuration => {
           "opencode-cli.version",
           "secretary-code.png",
           "secretary-recorder",
+          "secretary-approver",
           ...ENGINE_RS_BINARIES.map((binary) => `engine-rs/${binary}`),
         ],
       },

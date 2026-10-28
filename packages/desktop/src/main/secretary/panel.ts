@@ -143,7 +143,7 @@ function toHost(command: ShellCommand) {
 }
 
 /** Whether an IPC message comes from one of her views (Lucina or Computer), in its top frame, on her origin. */
-function fromLucina(event: { sender: unknown; senderFrame?: { url: string; parent: unknown } | null }) {
+export function fromLucina(event: { sender: unknown; senderFrame?: { url: string; parent: unknown } | null }) {
   const views = [lucinaWebContents(), computerWebContents()].filter((contents) => !!contents)
   const frame = event.senderFrame
 

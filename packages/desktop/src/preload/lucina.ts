@@ -11,7 +11,40 @@ function send(command: ShellCommand) {
   ipcRenderer.send("secretary:shell", command)
 }
 
+/** One window.secretaryApprover call: the main process (main/secretary/approver.ts) does the work and the Touch ID. */
+function approver(action: string, input?: unknown): Promise<Record<string, unknown>> {
+  return ipcRenderer.invoke("secretary:approver", action, input) as Promise<Record<string, unknown>>
+}
+
 if (location.origin === LUCINA_ORIGIN && window.top === window) {
+  // Owner approvals with Touch ID on this Mac. Her page names a request; the main process reads it from the server,
+  // asks for Touch ID with the server's own summary, signs it in the Secure Enclave and sends the decision.
+  contextBridge.exposeInMainWorld(
+    "secretaryApprover",
+    Object.freeze({
+      version: 1,
+      async status() {
+        const r = await approver("status")
+        return r.ok === true
+          ? { available: r.available === true, hasKey: r.hasKey === true, ...(typeof r.keyId === "string" ? { keyId: r.keyId } : {}) }
+          : { available: false, hasKey: false }
+      },
+      setup() {
+        return approver("setup")
+      },
+      approve(approvalId: string) {
+        if (typeof approvalId !== "string") throw new TypeError("approvalId must be a string")
+        return approver("approve", approvalId)
+      },
+      revoke(deviceId: string) {
+        if (typeof deviceId !== "string") throw new TypeError("deviceId must be a string")
+        return approver("revoke", deviceId)
+      },
+      remove() {
+        return approver("remove")
+      },
+    }),
+  )
   contextBridge.exposeInMainWorld(
     "secretaryShell",
     Object.freeze({
