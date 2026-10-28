@@ -8,6 +8,7 @@ import {
   revealsCode,
   routeKey,
   SHELL_VIEWS,
+  viewAllowed,
   viewPanel,
   viewRoute,
   VIEW_ROUTES,
@@ -21,6 +22,9 @@ test("the route map is the agreed one", () => {
     training: "/training",
     gallery: "/gallery",
     films: "/films",
+    instagram: "/instagram",
+    pixiv: "/pixiv",
+    nclient: "/nclient",
     chats: "/chats",
     secrets: "/secrets",
     health: "/server-health",
@@ -37,7 +41,7 @@ test("Code and Computer have no Lucina route; every other view has one", () => {
 test("only Code leaves the content card empty, and Computer has its own native view", () => {
   expect(viewPanel("code")).toBeUndefined()
   expect(viewPanel("computer")).toBe("computer")
-  for (const view of ["lucina", "keep", "shopping", "training", "gallery", "films", "chats", "secrets", "health"] as const)
+  for (const view of ["lucina", "keep", "shopping", "training", "gallery", "films", "instagram", "pixiv", "nclient", "chats", "secrets", "health"] as const)
     expect(viewPanel(view)).toBe("lucina")
 })
 
@@ -99,4 +103,9 @@ test("focus mode can always be left by the shell, with no help from the page", (
   for (const exit of ["exit", "escape", "view-change"] as const) expect(nextFocus(nextFocus(false, "page-on"), exit)).toBe(false)
   expect(nextFocus(true, "page-off")).toBe(false)
   expect(nextFocus(false, "page-on")).toBe(true)
+})
+
+test("the adult plugins (NClient) are offered only while her switch is on", () => {
+  for (const view of SHELL_VIEWS) expect(viewAllowed(view, true)).toBe(true)
+  expect(SHELL_VIEWS.filter((view) => !viewAllowed(view, false))).toEqual(["nclient"])
 })
