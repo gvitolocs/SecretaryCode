@@ -15,6 +15,7 @@ import { useWorkspace, WorkspaceProvider } from "@/shell/workspace/workspace"
 import { WorkspaceSidebar } from "@/shell/workspace/sidebar"
 import { ContentCard } from "@/shell/workspace/companion"
 import { ShellRail } from "@/shell/rail/rail"
+import "./glass.css"
 
 export default function Layout(props: ParentProps) {
   return (
@@ -46,6 +47,7 @@ function Workspace(props: ParentProps) {
   return (
     <TitlebarRightProvider>
       <div
+        data-shell-rail={workspace.rail.available() ? "" : undefined}
         class="relative bg-v2-background-bg-deep flex-1 min-h-0 min-w-0 flex flex-col select-none [&_input]:select-text [&_textarea]:select-text [&_[contenteditable]]:select-text"
         style={{
           // Mobile panels only need clearance for their outer border.
