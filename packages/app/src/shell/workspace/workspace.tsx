@@ -13,7 +13,7 @@ import { useGlobal } from "@/runtime/server/runtime"
 import { ServerConnection, useServers } from "@/runtime/server/registry"
 import { useLayout } from "@/shell/state/layout"
 import { addProjects } from "@/home/projects/add"
-import { commandPage, commandProject, DEFAULT_VIEW, railBadge, reduceView, revealsCode, routeKey, SHELL_VIEWS, viewAllowed } from "./views"
+import { commandPage, commandProject, DEFAULT_VIEW, nextFocus, railBadge, reduceView, revealsCode, routeKey, SHELL_VIEWS, viewAllowed, type FocusEvent } from "./views"
 
 export const SIDEBAR_WIDTH = { min: 220, default: 264, max: 420 }
 
@@ -104,11 +104,14 @@ export const { use: useWorkspace, provider: WorkspaceProvider } = createSimpleCo
     // Focus mode: a plugin's page takes nearly the whole window while the rail steps aside (the viewer's fullscreen
     // inside the shell). Code has no web page to focus. The main process owns it and sends every change as a `focus`
     // command; its ways out (Exit focus, Esc, View → Exit Focus, another view, a reload) work whatever the page does.
+    // The rules are nextFocus: the shell's own exits apply at once, before the main process confirms.
     const [focus, setFocus] = createSignal(false)
     const focused = () => focus() && railAvailable() && !codeVisible()
+    const move = (event: FocusEvent) => setFocus((current) => nextFocus(current, event))
+    createEffect(on(view, () => move("view-change"), { defer: true }))
 
     const run = (next: ShellCommand) => {
-      if (next.action === "focus") return void setFocus(next.on)
+      if (next.action === "focus") return void move(next.on ? "page-on" : "page-off")
       if (next.action === "adult") return void setAdultStore("on", next.on)
       const page = commandPage(next)
 
@@ -213,7 +216,10 @@ export const { use: useWorkspace, provider: WorkspaceProvider } = createSimpleCo
       focus: {
         on: focused,
         // The titlebar's Exit focus.
-        exit: () => platform.companion?.exitFocusMode?.(),
+        exit: () => {
+          move("exit")
+          platform.companion?.exitFocusMode?.()
+        },
       },
       view: {
         current: view,
