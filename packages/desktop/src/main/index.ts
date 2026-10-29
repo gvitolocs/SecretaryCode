@@ -17,6 +17,7 @@ import { setupRecorder } from "./secretary/recorder"
 import { setupApprover } from "./secretary/approver"
 import { setupAttention } from "./secretary/attention"
 import { setupPrompterOverlay } from "./secretary/prompter-overlay"
+import { setupPixivLogin } from "./secretary/pixiv-login"
 
 import { ImageOpenQueue, imageArguments } from "./secretary/image-viewer/queue"
 
@@ -43,6 +44,7 @@ setupRecorder()
 setupApprover()
 setupAttention()
 setupPrompterOverlay()
+setupPixivLogin()
 setupAgentsMirror()
 
 if (acquireApplicationLock()) {

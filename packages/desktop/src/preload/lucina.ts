@@ -123,6 +123,14 @@ if (location.origin === LUCINA_ORIGIN && window.top === window) {
       closePrompterOverlay() {
         overlay({ action: "close" })
       },
+      /**
+       * Settings → Plugins → Pixiv → Connect: pixiv's own login page (the loginUrl from the Pixiv service) in a window of
+       * the shell. Settles with the authorization code once the owner has signed in, or with an error.
+       */
+      pixivLogin(loginUrl: string): Promise<{ code: string } | { error: "cancelled" | "failed" | "bad_url" }> {
+        if (typeof loginUrl !== "string") throw new TypeError("loginUrl must be a string")
+        return ipcRenderer.invoke("secretary:pixiv-login", loginUrl)
+      },
       /** The shell's focus mode as it changes, including when the shell itself leaves it. Returns the unsubscribe. */
       onFocusModeChange(listener: (on: boolean) => void) {
         if (typeof listener !== "function") throw new TypeError("listener must be a function")
