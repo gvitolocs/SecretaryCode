@@ -181,13 +181,20 @@ computer.emit("did-start-navigation", { isMainFrame: true, isSameDocument: false
 assert.deepEqual(sent, [on, off])
 assert.deepEqual(computer.sent.at(-1), ["secretary:focus-mode", false])
 sent.length = 0
-// Her page answering the "off" by asking again does not flip it straight back on; a later click does.
+// Her page answering the "off" by asking again does not flip it straight back on, nor does it minutes later (the desk
+// page asks each time the window is shown): the page is told it is off. The owner's click in the view does.
 ipc.emit("secretary:shell", computerFrame, { action: "focus", on: true })
 assert.deepEqual(sent, [])
 const later = () => setSystemTime(new Date(Date.now() + 2_000))
-later()
+setSystemTime(new Date(Date.now() + 5 * 60_000))
+computer.sent.length = 0
+ipc.emit("secretary:shell", computerFrame, { action: "focus", on: true })
+assert.deepEqual(sent, [], "the window shown again does not bring focus mode back")
+assert.deepEqual(computer.sent.at(-1), ["secretary:focus-mode", false])
+const click = () => computer.emit("input-event", {}, { type: "mouseDown" })
 // Esc reaches the main process before any page: the remote desktop canvas cannot swallow it, nor the shell's own page.
 for (const contents of [computer, host.webContents]) {
+  click()
   ipc.emit("secretary:shell", computerFrame, { action: "focus", on: true })
   let prevented = 0
   contents.emit("before-input-event", { preventDefault: () => prevented++ }, { type: "keyDown", key: "Escape" })
@@ -197,13 +204,15 @@ for (const contents of [computer, host.webContents]) {
   assert.equal(prevented, 1)
   later()
 }
-// ⌃⌘F, View → Exit Focus, works the same way and never reaches the full-screen toggle.
+// ⌥⌘F, View → Exit Focus, works the same way (⌃⌘F stays the full-screen toggle's).
+click()
 ipc.emit("secretary:shell", computerFrame, { action: "focus", on: true })
-computer.emit("before-input-event", { preventDefault() {} }, { type: "keyDown", key: "f", control: true, meta: true })
+computer.emit("before-input-event", { preventDefault() {} }, { type: "keyDown", key: "ƒ", code: "KeyF", alt: true, meta: true })
 later()
 assert.deepEqual(sent, [on, off, on, off, on, off])
 sent.length = 0
 // Another of her pages or plugins, a reload of the window and a crash each reset it.
+click()
 ipc.emit("secretary:shell", computerFrame, { action: "focus", on: true })
 ipc.emit("secretary:navigate", renderer, "/gallery")
 ipc.emit("secretary:shell", computerFrame, { action: "focus", on: true })

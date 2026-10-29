@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { createFocusMode, focusExitKey, REENTRY_GRACE_MS } from "./focus-mode-core"
+import { createFocusMode, focusExitKey, INPUT_WINDOW_MS, REENTRY_GRACE_MS } from "./focus-mode-core"
 
 function focus() {
   const clock = { now: 10_000 }
@@ -41,8 +41,9 @@ test("one exit clears the Computer view's and the viewer's tokens together", () 
   // The page answering the "off" by asking again does not flip it back on.
   expect(mode.enter("computer")).toBeUndefined()
   expect(mode.active()).toBe(false)
-  // A later, deliberate request does.
+  // A later, deliberate request (the owner's click in the view) does.
   clock.now += REENTRY_GRACE_MS
+  mode.input()
   expect(mode.enter("computer")).toBe("computer-3")
 })
 
@@ -90,12 +91,66 @@ test("a reload or a crash resets focus mode", () => {
   ])
 })
 
-test("Esc and ⌃⌘F are focus mode's keys, nothing else", () => {
+test("Esc and ⌥⌘F are focus mode's keys, nothing else", () => {
   expect(focusExitKey({ type: "keyDown", key: "Escape" })).toBe("escape")
-  expect(focusExitKey({ type: "keyDown", key: "f", control: true, meta: true })).toBe("menu")
-  expect(focusExitKey({ type: "keyDown", key: "F", control: true, meta: true })).toBe("menu")
+  expect(focusExitKey({ type: "keyDown", key: "f", alt: true, meta: true })).toBe("menu")
+  expect(focusExitKey({ type: "keyDown", key: "F", alt: true, meta: true })).toBe("menu")
+  // ⌥F types ƒ on a Mac keyboard; the physical key is what counts.
+  expect(focusExitKey({ type: "keyDown", key: "ƒ", code: "KeyF", alt: true, meta: true })).toBe("menu")
+  // ⌃⌘F is View → Toggle Full Screen's.
+  expect(focusExitKey({ type: "keyDown", key: "f", control: true, meta: true })).toBeUndefined()
+  expect(focusExitKey({ type: "keyDown", key: "f", control: true, alt: true, meta: true })).toBeUndefined()
+  expect(focusExitKey({ type: "keyDown", key: "Escape", alt: true })).toBeUndefined()
   expect(focusExitKey({ type: "keyUp", key: "Escape" })).toBeUndefined()
   expect(focusExitKey({ type: "keyDown", key: "Escape", meta: true })).toBeUndefined()
   expect(focusExitKey({ type: "keyDown", key: "f", meta: true })).toBeUndefined()
-  expect(focusExitKey({ type: "keyDown", key: "f", control: true, meta: true, shift: true })).toBeUndefined()
+  expect(focusExitKey({ type: "keyDown", key: "f", alt: true, meta: true, shift: true })).toBeUndefined()
+})
+
+// The desk page asks for focus mode again every time the window is shown: after the owner's own exit that must not
+// bring it back, however much later. Only his input in the view right before the request, or placing the view again,
+// does. One row per way: [exit, what happens next, ms later, entered?]
+test.each([
+  ["button", "nothing", 60_000, false],
+  ["escape", "nothing", 60_000, false],
+  ["menu", "nothing", 5 * 60_000, false],
+  ["escape", "input long before", 60_000, false],
+  ["button", "input", 2_000, true],
+  ["menu", "placed", 60_000, true],
+  ["navigation", "nothing", 60_000, true],
+  ["view-change", "nothing", 60_000, true],
+  ["reload", "nothing", 60_000, true],
+  ["crash", "nothing", 60_000, true],
+] as const)("after a %s exit, %s, %i ms later: entered = %p", (exit, next, later, entered) => {
+  const { mode, clock, logged } = focus()
+  mode.enter("viewer")
+  mode.exit(exit)
+  if (next === "input long before") {
+    clock.now += 1_000
+    mode.input()
+  }
+  clock.now += later
+  if (next === "input") mode.input()
+  if (next === "placed") mode.placed()
+  for (const source of ["viewer", "computer"] as const) {
+    expect(!!mode.enter(source)).toBe(entered)
+    if (entered) mode.release(source)
+  }
+  if (!entered) {
+    expect(mode.active()).toBe(false)
+    expect(logged.at(-1)).toEqual(["focus mode: enter refused after the owner's exit", { source: "computer" }])
+  }
+})
+
+test("an input before the owner's exit does not count as asking again", () => {
+  const { mode, clock } = focus()
+  mode.enter("computer")
+  mode.input()
+  clock.now += 200
+  mode.exit("button")
+  clock.now += REENTRY_GRACE_MS
+  expect(INPUT_WINDOW_MS).toBeGreaterThan(REENTRY_GRACE_MS)
+  expect(mode.enter("computer")).toBeUndefined()
+  mode.input()
+  expect(mode.enter("computer")).toBe("computer-2")
 })

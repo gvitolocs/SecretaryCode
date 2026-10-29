@@ -101,7 +101,11 @@ export function setupCompanionPanels() {
 function requestFocus(contents: WebContents, source: FocusSource, on: boolean) {
   if (contents !== state.placed) return
 
-  if (on) return void focusMode.enter(source)
+  if (on) {
+    // Refused (the owner exited, and this is not his click): the page hears it is off, so its own state matches.
+    if (!focusMode.enter(source) && !focusMode.active()) contents.send("secretary:focus-mode", false)
+    return
+  }
   // Her page leaving takes the viewer's refused fullscreen with it: its Exit pill and Esc in Watch mode ask this way,
   // and the page never sees the fullscreen it was refused.
   focusMode.release(source, ...(contents === computerWebContents() ? (["computer"] as const) : []))
@@ -109,20 +113,28 @@ function requestFocus(contents: WebContents, source: FocusSource, on: boolean) {
 
 /**
  * Focus mode's ways out that no page can swallow, on the window's own renderer and on each companion view: Esc and
- * ⌃⌘F reach the main process before the page (a remote desktop canvas capturing keys), and a reload, another page or a
+ * ⌥⌘F reach the main process before the page (a remote desktop canvas capturing keys), and a reload, another page or a
  * crash of the window or of the view on screen ends it. `screen` says whether `contents` is what the window shows.
+ * On a companion view (`view`), the owner's own clicks and keys are noted: after his exit only a request right after
+ * one of them turns focus mode back on.
  */
-function watchFocusExits(contents: WebContents, screen: () => boolean, reload: FocusExit) {
+function watchFocusExits(contents: WebContents, screen: () => boolean, reload: FocusExit, view = false) {
   // A window adopted again (the companion moved back to it) is already watched.
   if (watched.has(contents)) return
   watched.add(contents)
   contents.on("before-input-event", (event, input) => {
-    const key = focusMode.active() && screen() ? focusExitKey(input) : undefined
+    if (!screen()) return
+    const key = focusMode.active() ? focusExitKey(input) : undefined
 
-    if (!key) return
-    event.preventDefault()
-    focusMode.exit(key)
+    if (key) {
+      event.preventDefault()
+      focusMode.exit(key)
+    } else if (view && input.type === "keyDown") focusMode.input()
   })
+  if (view)
+    contents.on("input-event", (_event, input) => {
+      if (input.type === "mouseDown" && screen()) focusMode.input()
+    })
   // Her own history changes (same document) and subframes keep it.
   contents.on("did-start-navigation", ((details: { isMainFrame?: boolean; isSameDocument?: boolean }, _url?: string, isInPlace?: boolean, isMainFrame?: boolean) => {
     if (screen() && (details?.isMainFrame ?? isMainFrame) && !(details?.isSameDocument ?? isInPlace)) focusMode.exit(reload)
@@ -180,8 +192,11 @@ function place(window: BrowserWindow, panel: CompanionPanel | undefined, rect: R
     if (view !== target && window.contentView.children.includes(view)) window.contentView.removeChildView(view)
   })
   // Another view, settings over it, the card hidden: the view in focus mode left the window.
-  if (state.placed !== target?.webContents) focusMode.exit("view-change")
+  const moved = state.placed !== target?.webContents
+  if (moved) focusMode.exit("view-change")
   state.placed = target?.webContents
+  // A view placed again may ask for focus mode again, even after the owner's exit.
+  if (moved && target) focusMode.placed()
 
   if (!target || !rect) return
 
@@ -189,7 +204,7 @@ function place(window: BrowserWindow, panel: CompanionPanel | undefined, rect: R
     state.created.add(target)
     target.webContents.once("destroyed", () => state.created.delete(target))
     const contents = target.webContents
-    watchFocusExits(contents, () => state.placed === contents, "navigation")
+    watchFocusExits(contents, () => state.placed === contents, "navigation", true)
   }
 
   if (!window.contentView.children.includes(target)) {

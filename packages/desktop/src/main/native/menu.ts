@@ -101,11 +101,11 @@ export function createMenu(deps: Deps) {
   windowMenu?.on("menu-will-show", () => {
     preview.enabled = hasFocusedImage()
   })
-  // ⌃⌘F is caught before the page while focus mode is on (panel.ts), so a canvas capturing keys cannot swallow it and
-  // it never reaches the full-screen toggle that shares it; the menu only shows it.
+  // ⌥⌘F (⌃⌘F is View → Toggle Full Screen's) is caught before the page while focus mode is on (panel.ts), so a canvas
+  // capturing keys cannot swallow it; the menu only shows it.
   exitFocus = new MenuItem({
     label: nativeT("desktop.menu.exitFocus"),
-    accelerator: "Ctrl+Cmd+F",
+    accelerator: "Alt+Cmd+F",
     registerAccelerator: false,
     enabled: focusMode.active(),
     click: () => focusMode.exit("menu"),
