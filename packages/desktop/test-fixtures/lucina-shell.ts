@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import { EventEmitter } from "node:events"
-import { mock } from "bun:test"
+import { mock, setSystemTime } from "bun:test"
 
 // secretary:navigate and secretary:shell through the real panel module, with Electron and the views mocked.
 const sent: [string, unknown][] = []
@@ -11,7 +11,9 @@ const makeWindow = (name: string) => ({
     return this.destroyed
   },
   once() {},
-  webContents: { send: (channel: string, payload: unknown) => sent.push([`${name}:${channel}`, payload]) },
+  webContents: Object.assign(new EventEmitter(), {
+    send: (channel: string, payload: unknown) => sent.push([`${name}:${channel}`, payload]),
+  }),
   contentView: { children: [] as unknown[], addChildView() {}, removeChildView() {} },
 })
 const host = makeWindow("host")
@@ -38,6 +40,9 @@ mock.module("electron", () => ({
   ipcMain: ipc,
   protocol: {},
 }))
+// Focus mode logs each enter and exit at info level, so it can be checked without the screen.
+const logged: [string, unknown][] = []
+mock.module("electron-log/main.js", () => ({ default: { info: (message: string, data: unknown) => logged.push([message, data]) } }))
 mock.module("../src/main/secretary/index", () => ({
   lucinaView: () => ({ webContents: lucina, setBounds() {}, setBorderRadius() {} }),
   lucinaWebContents: () => (lucinaExists ? lucina : undefined),
@@ -48,10 +53,14 @@ mock.module("../src/main/secretary/index", () => ({
 }))
 mock.module("../src/main/secretary/lane-window", () => ({ codingLanesView: () => ({}) }))
 const computer = new Contents()
+const fullscreen = { request: (_on: boolean) => {} }
+const computerFocus = (on: boolean) => fullscreen.request(on)
 mock.module("../src/main/secretary/computer-view", () => ({
   computerView: () => ({ webContents: computer, setBounds() {}, setBorderRadius() {} }),
   computerWebContents: () => computer,
-  onComputerFocusRequest: () => {},
+  onComputerFocusRequest: (request: (on: boolean) => void) => {
+    fullscreen.request = request
+  },
 }))
 const { setupCompanionPanels } = await import("../src/main/secretary/panel")
 setupCompanionPanels()
@@ -149,19 +158,73 @@ ipc.emit("secretary:shell", computerFrame, { action: "focus", on: true })
 ipc.emit("secretary:place", renderer, undefined, undefined)
 assert.deepEqual(sent, [on, off])
 sent.length = 0
-// The window leaving focus mode itself (Esc, Exit focus) stops the watch: a later reload sends nothing.
+// Her web views hear every change, so a page can hide its own header.
 ipc.emit("secretary:place", renderer, "computer", area)
+assert.deepEqual(computer.sent.at(-1), ["secretary:focus-mode", false])
+// The Computer view and the viewer each hold a token: one leaving keeps focus mode on, and one exit clears both.
 ipc.emit("secretary:shell", computerFrame, { action: "focus", on: true })
-ipc.emit("secretary:focus-mode", renderer, false)
+computerFocus(true)
+assert.deepEqual(sent, [on], "asking again is not a toggle")
+assert.deepEqual(computer.sent.at(-1), ["secretary:focus-mode", true])
+computerFocus(false)
+assert.deepEqual(sent, [on], "the viewer's fullscreen holds its own token")
+ipc.emit("secretary:shell", computerFrame, { action: "focus", on: false })
+assert.deepEqual(sent, [on, off], "her page leaving releases both of the view's tokens")
+sent.length = 0
+// The titlebar's Exit focus, from the app renderer alone, clears both tokens at once; a later reload sends nothing.
+ipc.emit("secretary:shell", computerFrame, { action: "focus", on: true })
+computerFocus(true)
+ipc.emit("secretary:focus-exit", { sender: computer, senderFrame: computerFrame.senderFrame })
+assert.deepEqual(sent, [on], "only the app renderer has the titlebar")
+ipc.emit("secretary:focus-exit", renderer)
 computer.emit("did-start-navigation", { isMainFrame: true, isSameDocument: false })
-assert.deepEqual(sent, [on])
+assert.deepEqual(sent, [on, off])
 assert.deepEqual(computer.sent.at(-1), ["secretary:focus-mode", false])
 sent.length = 0
+// Her page answering the "off" by asking again does not flip it straight back on; a later click does.
+ipc.emit("secretary:shell", computerFrame, { action: "focus", on: true })
+assert.deepEqual(sent, [])
+const later = () => setSystemTime(new Date(Date.now() + 2_000))
+later()
+// Esc reaches the main process before any page: the remote desktop canvas cannot swallow it, nor the shell's own page.
+for (const contents of [computer, host.webContents]) {
+  ipc.emit("secretary:shell", computerFrame, { action: "focus", on: true })
+  let prevented = 0
+  contents.emit("before-input-event", { preventDefault: () => prevented++ }, { type: "keyDown", key: "Escape" })
+  assert.equal(prevented, 1)
+  // Out of focus mode, Esc is the page's (the remote apps') again.
+  contents.emit("before-input-event", { preventDefault: () => prevented++ }, { type: "keyDown", key: "Escape" })
+  assert.equal(prevented, 1)
+  later()
+}
+// ⌃⌘F, View → Exit Focus, works the same way and never reaches the full-screen toggle.
+ipc.emit("secretary:shell", computerFrame, { action: "focus", on: true })
+computer.emit("before-input-event", { preventDefault() {} }, { type: "keyDown", key: "f", control: true, meta: true })
+later()
+assert.deepEqual(sent, [on, off, on, off, on, off])
+sent.length = 0
+// Another of her pages or plugins, a reload of the window and a crash each reset it.
+ipc.emit("secretary:shell", computerFrame, { action: "focus", on: true })
+ipc.emit("secretary:navigate", renderer, "/gallery")
+ipc.emit("secretary:shell", computerFrame, { action: "focus", on: true })
+host.webContents.emit("did-start-navigation", { isMainFrame: true, isSameDocument: false })
+ipc.emit("secretary:shell", computerFrame, { action: "focus", on: true })
+host.webContents.emit("render-process-gone", {}, { reason: "crashed" })
+ipc.emit("secretary:shell", computerFrame, { action: "focus", on: true })
+computer.emit("render-process-gone", {}, { reason: "oom" })
+assert.deepEqual(sent, [on, off, on, off, on, off, on, off])
+sent.length = 0
+assert.deepEqual(
+  logged.filter(([message]) => message === "focus mode: exit").map(([, data]) => (data as { source: string }).source),
+  ["navigation", "view-change", "view-change", "button", "escape", "escape", "menu", "navigation", "reload", "crash", "crash"],
+)
+assert.deepEqual(logged.find(([message]) => message === "focus mode: enter"), ["focus mode: enter", { source: "viewer", token: "viewer-1" }])
 // The focused view going away ends it.
 ipc.emit("secretary:shell", computerFrame, { action: "focus", on: true })
 computer.emit("destroyed")
 assert.deepEqual(sent, [on, off])
 sent.length = 0
+setSystemTime()
 
 // A view that does not exist hears nothing.
 lucinaExists = false

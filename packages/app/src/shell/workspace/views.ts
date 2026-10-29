@@ -133,13 +133,3 @@ export function routeKey(route: LayoutRoute): string {
 export function revealsCode(shown: string, next: LayoutRoute): boolean {
   return next.type !== "settings" && routeKey(next) !== shown
 }
-
-/**
- * What moves focus mode. Her page only asks ("page-on", "page-off"); the shell's own ways out (its titlebar's Exit
- * focus, Esc while the window has focus, another view) always leave it, whatever the page does or never does.
- */
-export type FocusEvent = "page-on" | "page-off" | "exit" | "escape" | "view-change"
-
-export function nextFocus(_current: boolean, event: FocusEvent): boolean {
-  return event === "page-on"
-}

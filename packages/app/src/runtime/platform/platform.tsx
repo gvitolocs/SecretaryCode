@@ -190,8 +190,11 @@ type PlatformBase = {
     navigate?(path: string): void
     /** Commands from Lucina's web app (`window.secretaryShell`). Returns the unsubscribe function. */
     onCommand?(listener: (command: ShellCommand) => void): () => void
-    /** Tells her web views whether the shell is in focus mode, so a page can hide its own header. */
-    setFocusMode?(on: boolean): void
+    /**
+     * Leaves focus mode (the titlebar's Exit focus). The host owns focus mode and answers with a `focus` command, as it
+     * does for every change: a page asking, Esc, the menu, a reload.
+     */
+    exitFocusMode?(): void
     /** How many approvals and decisions wait for the owner (the main process polls the server). */
     attention?: {
       counts(): Promise<AttentionCounts>

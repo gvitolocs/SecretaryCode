@@ -11,7 +11,7 @@ export type ElectronNative = {
     ): void
     navigate(path: string): void
     onCommand(listener: (command: ShellCommand) => void): () => void
-    setFocusMode(on: boolean): void
+    exitFocusMode(): void
     attention(): Promise<AttentionCounts>
     onAttention(listener: (counts: AttentionCounts) => void): () => void
     request(action: string, input?: unknown): Promise<{ ok: boolean; data?: unknown; error?: string }>

@@ -16,6 +16,7 @@ import { runDesktopMenuAction } from "./menu-actions"
 import { nativeT } from "./translations"
 import { hasFocusedImage, previewFocusedImage } from "../secretary/image-viewer"
 import { openRecorder } from "../secretary/recorder"
+import { focusMode } from "../secretary/focus-mode"
 import recorderCopy from "../../renderer/secretary-recorder/en.json"
 
 type Deps = {
@@ -40,6 +41,12 @@ export type MenubarEntry = {
 let menubar: () => readonly MenubarEntry[] = () => []
 
 let installed: Deps | undefined
+
+// View → Exit Focus in the installed menu, enabled only while the window is in focus mode.
+let exitFocus: MenuItem | undefined
+focusMode.subscribe((on) => {
+  if (exitFocus) exitFocus.enabled = on
+})
 
 /** Contributions are read on every build; setting a provider rebuilds an installed menu. */
 export function setMenubarProvider(provider: () => readonly MenubarEntry[]) {
@@ -94,6 +101,20 @@ export function createMenu(deps: Deps) {
   windowMenu?.on("menu-will-show", () => {
     preview.enabled = hasFocusedImage()
   })
+  // ⌃⌘F is caught before the page while focus mode is on (panel.ts), so a canvas capturing keys cannot swallow it and
+  // it never reaches the full-screen toggle that shares it; the menu only shows it.
+  exitFocus = new MenuItem({
+    label: nativeT("desktop.menu.exitFocus"),
+    accelerator: "Ctrl+Cmd+F",
+    registerAccelerator: false,
+    enabled: focusMode.active(),
+    click: () => focusMode.exit("menu"),
+  })
+  const viewMenu = built.getMenuItemById("view")?.submenu
+  viewMenu?.append(exitFocus)
+  viewMenu?.on("menu-will-show", () => {
+    if (exitFocus) exitFocus.enabled = focusMode.active()
+  })
   Menu.setApplicationMenu(built)
 }
 
@@ -113,6 +134,7 @@ function nativeMenu(menu: DesktopMenu, extra: readonly MenubarEntry[], deps: Dep
 
   return {
     ...(menu.role ? { role: nativeRole(menu.role) } : {}),
+    id: menu.id,
     label: nativeT(menu.labelKey),
     submenu: items.map((item) => {
       const entry = item.entry

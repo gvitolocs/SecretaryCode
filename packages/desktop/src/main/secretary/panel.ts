@@ -5,6 +5,8 @@ import { isLucinaUrl } from "./lucina-web-policy"
 import { isNavigatePath, parseShellCommand, type ShellCommand } from "./shell-command"
 import { codingLanesView } from "./lane-window"
 import { computerView, computerWebContents, onComputerFocusRequest } from "./computer-view"
+import { focusExitKey, type FocusExit, type FocusSource } from "./focus-mode-core"
+import { focusMode } from "./focus-mode"
 
 export type CompanionPanel = "lucina" | "agents" | "computer"
 
@@ -21,11 +23,11 @@ const views: Record<CompanionPanel, () => WebContentsView> = {
 const state = {
   host: undefined as BrowserWindow | undefined,
   created: new Set<WebContentsView>(),
-  // The view the window shows now; only it may switch focus mode.
+  // The view the window shows now; only it may turn focus mode on, so it is the only one that can hold a token.
   placed: undefined as WebContents | undefined,
-  // The view that turned focus mode on, and how to stop watching it.
-  focused: undefined as { contents: WebContents; unwatch: () => void } | undefined,
 }
+
+const watched = new WeakSet<WebContents>()
 
 /** Call once during startup; the main renderer places the companion panels through `secretary:place`. */
 export function setupCompanionPanels() {
@@ -47,7 +49,10 @@ export function setupCompanionPanels() {
   ipcMain.on("secretary:navigate", (event, path: unknown) => {
     if (!event.senderFrame || event.senderFrame.parent || !isRendererUrl(event.senderFrame.url)) return
 
-    if (isNavigatePath(path)) openLucinaPath(path)
+    if (!isNavigatePath(path)) return
+    // Another of her pages or plugins (the rail's Gallery, Films ...) is never shown in focus mode.
+    focusMode.exit("navigation")
+    openLucinaPath(path)
   })
 
   // window.secretaryShell in her web views (Lucina, Computer). Only their own top frames are heard; the window hosting
@@ -56,7 +61,7 @@ export function setupCompanionPanels() {
     if (!fromLucina(event)) return
     const command = parseShellCommand(message)
 
-    if (command?.action === "focus") requestFocus(event.sender, command.on)
+    if (command?.action === "focus") requestFocus(event.sender, "viewer", command.on)
     else if (command) toHost(command)
   })
 
@@ -64,17 +69,21 @@ export function setupCompanionPanels() {
   onComputerFocusRequest((on) => {
     const contents = computerWebContents()
 
-    if (contents) requestFocus(contents, on)
+    if (contents) requestFocus(contents, "computer", on)
   })
 
-  // The window's focus mode, relayed to her web views so a page can hide its own header (onFocusModeChange).
-  ipcMain.on("secretary:focus-mode", (event, on: unknown) => {
+  // The titlebar's Exit focus.
+  ipcMain.on("secretary:focus-exit", (event) => {
     if (!event.senderFrame || event.senderFrame.parent || !isRendererUrl(event.senderFrame.url)) return
-    const value = on === true
-    // The window left focus mode (Esc, Exit focus, another view): nothing to watch any more.
-    if (!value) unwatchFocus()
+    focusMode.exit("button")
+  })
+
+  // The main process owns focus mode: the window's shell shows it (rail, titlebar) and her web views hear it, so a
+  // page can hide its own header (onFocusModeChange).
+  focusMode.subscribe((on) => {
+    toHost({ action: "focus", on })
     for (const contents of [lucinaWebContents(), computerWebContents()])
-      if (contents && !contents.isDestroyed()) contents.send("secretary:focus-mode", value)
+      if (contents && !contents.isDestroyed()) contents.send("secretary:focus-mode", on)
   })
 
   // window.secretaryShell.signOut(): her web app awaits this before it ends its own session and clears its data, so
@@ -87,52 +96,43 @@ export function setupCompanionPanels() {
 
 /**
  * Focus mode asked for by one of her views. Only the view the window shows now may switch it: a view in the background
- * (the Computer page reloading after a sign-in while the Chat is open) is ignored. The view that turns it on is
- * watched, so focus mode ends when that view leaves the window, loads another page or goes away; the rail can never
- * stay hidden behind it.
+ * (the Computer page reloading after a sign-in while the Chat is open) is ignored.
  */
-function requestFocus(contents: WebContents, on: boolean) {
+function requestFocus(contents: WebContents, source: FocusSource, on: boolean) {
   if (contents !== state.placed) return
 
-  if (on) watchFocus(contents)
-  else unwatchFocus()
-  toHost({ action: "focus", on })
+  if (on) return void focusMode.enter(source)
+  // Her page leaving takes the viewer's refused fullscreen with it: its Exit pill and Esc in Watch mode ask this way,
+  // and the page never sees the fullscreen it was refused.
+  focusMode.release(source, ...(contents === computerWebContents() ? (["computer"] as const) : []))
 }
 
-function watchFocus(contents: WebContents) {
-  if (state.focused?.contents === contents) return
-  unwatchFocus()
-  // A reload or another page in the main frame ends it; her own history changes (same document) do not.
-  const navigated = (
-    details: { isMainFrame?: boolean; isSameDocument?: boolean },
-    _url?: string,
-    isInPlace?: boolean,
-    isMainFrame?: boolean,
-  ) => {
-    if ((details?.isMainFrame ?? isMainFrame) && !(details?.isSameDocument ?? isInPlace)) endFocus(contents)
-  }
-  const destroyed = () => endFocus(contents)
-  contents.on("did-start-navigation", navigated as never)
-  contents.once("destroyed", destroyed)
-  state.focused = {
-    contents,
-    unwatch: () => {
-      contents.removeListener("did-start-navigation", navigated as never)
-      contents.removeListener("destroyed", destroyed)
-    },
-  }
-}
+/**
+ * Focus mode's ways out that no page can swallow, on the window's own renderer and on each companion view: Esc and
+ * ⌃⌘F reach the main process before the page (a remote desktop canvas capturing keys), and a reload, another page or a
+ * crash of the window or of the view on screen ends it. `screen` says whether `contents` is what the window shows.
+ */
+function watchFocusExits(contents: WebContents, screen: () => boolean, reload: FocusExit) {
+  // A window adopted again (the companion moved back to it) is already watched.
+  if (watched.has(contents)) return
+  watched.add(contents)
+  contents.on("before-input-event", (event, input) => {
+    const key = focusMode.active() && screen() ? focusExitKey(input) : undefined
 
-function unwatchFocus() {
-  state.focused?.unwatch()
-  state.focused = undefined
-}
-
-/** Ends focus mode when the view that turned it on is no longer the one on screen. */
-function endFocus(contents: WebContents) {
-  if (state.focused?.contents !== contents) return
-  unwatchFocus()
-  toHost({ action: "focus", on: false })
+    if (!key) return
+    event.preventDefault()
+    focusMode.exit(key)
+  })
+  // Her own history changes (same document) and subframes keep it.
+  contents.on("did-start-navigation", ((details: { isMainFrame?: boolean; isSameDocument?: boolean }, _url?: string, isInPlace?: boolean, isMainFrame?: boolean) => {
+    if (screen() && (details?.isMainFrame ?? isMainFrame) && !(details?.isSameDocument ?? isInPlace)) focusMode.exit(reload)
+  }) as never)
+  contents.on("render-process-gone", () => {
+    if (screen()) focusMode.exit("crash")
+  })
+  contents.once("destroyed", () => {
+    if (screen()) focusMode.exit("view-change")
+  })
 }
 
 /** A validated command for the window hosting the companion views, or else the focused one. */
@@ -179,15 +179,17 @@ function place(window: BrowserWindow, panel: CompanionPanel | undefined, rect: R
   state.created.forEach((view) => {
     if (view !== target && window.contentView.children.includes(view)) window.contentView.removeChildView(view)
   })
+  // Another view, settings over it, the card hidden: the view in focus mode left the window.
+  if (state.placed !== target?.webContents) focusMode.exit("view-change")
   state.placed = target?.webContents
-  // The view in focus mode left the window (another view, settings over it, the card hidden).
-  if (state.focused && state.focused.contents !== state.placed) endFocus(state.focused.contents)
 
   if (!target || !rect) return
 
   if (!state.created.has(target)) {
     state.created.add(target)
     target.webContents.once("destroyed", () => state.created.delete(target))
+    const contents = target.webContents
+    watchFocusExits(contents, () => state.placed === contents, "navigation")
   }
 
   if (!window.contentView.children.includes(target)) {
@@ -208,6 +210,7 @@ function adopt(window: BrowserWindow) {
       if (previous.contentView.children.includes(view)) previous.contentView.removeChildView(view)
     })
   state.host = window
+  watchFocusExits(window.webContents, () => state.host === window, "reload")
   window.once("closed", () => {
     if (state.host !== window) return
     state.host = undefined

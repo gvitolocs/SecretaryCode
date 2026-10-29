@@ -61,7 +61,12 @@ class View {
 }
 const window = Object.assign(new EventEmitter(), {
   isDestroyed: () => false,
-  webContents: { sent: [] as [string, unknown][], send(channel: string, payload: unknown) { this.sent.push([channel, payload]) } },
+  webContents: Object.assign(new EventEmitter(), {
+    sent: [] as [string, unknown][],
+    send(channel: string, payload: unknown) {
+      this.sent.push([channel, payload])
+    },
+  }),
   contentView: {
     children: [] as View[],
     addChildView(view: View) {
@@ -85,6 +90,7 @@ mock.module("electron", () => ({
   session: { fromPartition },
   shell: { openExternal: external },
 }))
+mock.module("electron-log/main.js", () => ({ default: { info: () => {} } }))
 mock.module("../src/main/secretary/index", () => ({
   lucinaView: () => new View({}),
   lucinaWebContents: () => undefined,
@@ -162,6 +168,8 @@ for (const [url, trusted] of [
   ["null", false],
   ["", false],
 ] as const) {
+  // The first refused fullscreen turns focus mode on; asking again keeps the viewer's token and says nothing new.
+  window.webContents.sent.length = 0
   for (const permission of [
     "pointerLock",
     "fullscreen",
@@ -181,15 +189,13 @@ for (const [url, trusted] of [
     const contents = view.webContents as unknown as WebContents
     assert.equal(partition.check?.(contents, permission, url, { isMainFrame: false }), viewer, `${url}: ${permission}`)
     const callback = mock((_allowed: boolean) => {})
-    window.webContents.sent.length = 0
     partition.request?.(contents, permission, callback, { requestingUrl: url, isMainFrame: false })
     assert.deepEqual(callback.mock.calls, [[viewer]], `${url}: ${permission}`)
-    assert.deepEqual(
-      window.webContents.sent,
-      permission === "fullscreen" ? [["secretary:shell-command", { action: "focus", on: true }]] : [],
-      `${url}: ${permission} asks the window for focus mode`,
-    )
   }
+  assert.deepEqual(window.webContents.sent, [["secretary:shell-command", { action: "focus", on: true }]], `${url} asks the window for focus mode`)
+  // Exit focus, so the next origin asks again.
+  ipc.emit("secretary:place", event, undefined, undefined)
+  ipc.emit("secretary:place", event, "computer", rect)
 }
 
 // Reading the clipboard (LucinaDesk's ⌘V): the viewer's own top page on her origin, nothing else.
@@ -213,18 +219,21 @@ for (const [contents, url, isMainFrame, allowed, label] of [
 for (const permission of ["media", "display-capture", "notifications", "keyboardLock", "unknown"] as const)
   assert.equal(partition.check?.(viewerContents, permission, "https://getsecretary.tech/computer", { isMainFrame: true }), false, permission)
 
-// Esc in the viewer belongs to her page and the remote desktop (driving it needs Esc): the shell never leaves focus
-// mode on it. The window relays its focus mode to the viewer, whose page follows it.
+// While the shell is in focus mode, Esc in the viewer leaves it before the remote desktop canvas can take it; out of
+// focus mode Esc is the remote apps' again. The window relays its focus mode to the viewer, whose page follows it.
 window.webContents.sent.length = 0
-ipc.emit("secretary:focus-mode", event, true)
+partition.request?.(viewerContents, "fullscreen", () => {}, { requestingUrl: "https://getsecretary.tech/computer", isMainFrame: true })
 assert.deepEqual(view.webContents.sent.at(-1), ["secretary:focus-mode", true])
-view.webContents.emit("before-input-event", {}, { type: "keyDown", key: "Escape" })
-assert.equal(view.webContents.listenerCount("before-input-event"), 0, "the shell does not watch keys in the viewer")
-assert.deepEqual(window.webContents.sent, [], "Esc in the viewer does not leave focus mode")
-ipc.emit("secretary:focus-mode", { sender, senderFrame: { url: "https://getsecretary.tech/", parent: null } }, false)
-assert.deepEqual(view.webContents.sent.at(-1), ["secretary:focus-mode", true], "only the app renderer sets focus mode")
-ipc.emit("secretary:focus-mode", event, false)
+const escape = mock(() => {})
+view.webContents.emit("before-input-event", { preventDefault: escape }, { type: "keyDown", key: "Escape" })
+assert.equal(escape.mock.calls.length, 1, "the page never sees the Esc that left focus mode")
+assert.deepEqual(window.webContents.sent, [
+  ["secretary:shell-command", { action: "focus", on: true }],
+  ["secretary:shell-command", { action: "focus", on: false }],
+])
 assert.deepEqual(view.webContents.sent.at(-1), ["secretary:focus-mode", false])
+view.webContents.emit("before-input-event", { preventDefault: escape }, { type: "keyDown", key: "Escape" })
+assert.equal(escape.mock.calls.length, 1, "out of focus mode, Esc reaches the remote desktop")
 for (const [code, mainFrame] of [
   [-3, true],
   [-105, false],

@@ -21,8 +21,8 @@ export const secretaryBridge = Object.freeze({
       ipcRenderer.removeListener("secretary:shell-command", handler)
     }
   },
-  /** Tells her web views whether the shell is in focus mode. */
-  setFocusMode: (on: boolean) => ipcRenderer.send("secretary:focus-mode", on === true),
+  /** The titlebar's Exit focus: the main process owns focus mode and answers with a `focus` command. */
+  exitFocusMode: () => ipcRenderer.send("secretary:focus-exit"),
   /** How many approvals and decisions wait for the owner now. */
   attention: (): Promise<AttentionCounts> => ipcRenderer.invoke("secretary:attention-counts"),
   /** Changes of those counts. Returns the unsubscribe function. */

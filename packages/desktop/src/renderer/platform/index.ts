@@ -58,7 +58,7 @@ export function createDesktopPlatform(api: ElectronAPI, windowState: DesktopWind
       place: (panel, rect) => window.electron.secretary.place(panel, rect),
       navigate: (path) => window.electron.secretary.navigate(path),
       onCommand: (listener) => window.electron.secretary.onCommand(listener),
-      setFocusMode: (on) => window.electron.secretary.setFocusMode(on),
+      exitFocusMode: () => window.electron.secretary.exitFocusMode(),
       attention: {
         counts: () => window.electron.secretary.attention(),
         onChange: (listener) => window.electron.secretary.onAttention(listener),
