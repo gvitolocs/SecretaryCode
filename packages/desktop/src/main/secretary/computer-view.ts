@@ -1,7 +1,7 @@
 import { session, shell, WebContentsView } from "electron"
 import { join } from "node:path"
 import { nativeT } from "../native/translations"
-import { microphoneGranted } from "./lucina-web"
+import { lucinaWebReady, microphoneGranted } from "./lucina-web"
 import { LUCINA_PARTITION } from "./lucina-web-policy"
 import { withShellFlag } from "./shell-command"
 import { applyWebLanguage, ensureWebSession } from "./web-session"
@@ -88,6 +88,7 @@ export function computerView() {
   // second login form. ensureWebSession always settles.
   applyWebLanguage(created.webContents)
   void ensureWebSession()
+    .then(() => lucinaWebReady(partition))
     .then(() => created.webContents.loadURL(page))
     .catch(() => {})
   return created

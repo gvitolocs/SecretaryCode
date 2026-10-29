@@ -15,6 +15,7 @@ const partition = {
   // Already signed in: the Computer tab must not trade the device token again.
   fetch: mock(async (_url: string) => Response.json({ authenticated: true })),
   cookies: { set: mock(async () => {}) },
+  clearStorageData: mock(async () => {}),
 }
 const netFetch = mock(async () => new Response(null, { status: 500 }))
 class Contents extends EventEmitter {
@@ -111,6 +112,8 @@ assert.equal(view, computerView())
 assert.deepEqual(view.webContents.urls, [], "the page waits for the web session and the language")
 for (let tick = 0; tick < 100 && !view.webContents.urls.length; tick++) await Bun.sleep(1)
 assert.deepEqual(view.webContents.urls, ["https://getsecretary.tech/computer?shell=1"])
+// The partition's old service workers and their caches go before the first page (an old cached shell broke routes).
+assert.deepEqual(partition.clearStorageData.mock.calls[0]?.[0], { storages: ["serviceworkers", "cachestorage"] })
 assert.equal(fromPartition.mock.calls[0]?.[0], "persist:lucina-web")
 assert.equal(partition.fetch.mock.calls[0]?.[0], "https://getsecretary.tech/v1/session")
 assert.equal(netFetch.mock.calls.length, 0, "a signed-in partition needs no token exchange")

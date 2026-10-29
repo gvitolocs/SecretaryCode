@@ -30,6 +30,10 @@ const partition = {
     passed.push({ url: request.url, options })
     return new Response("server")
   },
+  cleared: [] as unknown[],
+  clearStorageData: async (options: unknown) => {
+    partition.cleared.push(options)
+  },
 }
 class Contents extends EventEmitter {
   urls: string[] = []
@@ -93,6 +97,9 @@ assert.deepEqual(view.webContents.urls, [])
 release()
 await new Promise((resolve) => setTimeout(resolve, 0))
 assert.deepEqual(view.webContents.urls, ["https://getsecretary.tech/"])
+// An old service worker would answer that load with its cached page shell (routes to chunks this build lacks, an old
+// CSP): every start drops the workers and their caches first.
+assert.deepEqual(partition.cleared, [{ storages: ["serviceworkers", "cachestorage"] }])
 // Automatic follows the Mac, so the page stays English from its first request instead of turning Danish.
 assert.deepEqual(view.webContents.commands, [
   ["Emulation.setUserAgentOverride", { userAgent: "Secretary-Test", acceptLanguage: "en-US,en" }],

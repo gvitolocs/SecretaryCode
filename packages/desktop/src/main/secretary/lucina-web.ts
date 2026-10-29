@@ -19,6 +19,7 @@ import { applyWebLanguage } from "./web-session"
 // UI and the web sign-in.
 
 let configured: Session | undefined
+let workersCleared: Promise<void> | undefined
 
 function bundleDir() {
   return app.isPackaged ? join(process.resourcesPath, "lucina-web") : join(app.getAppPath(), "resources", "lucina-web")
@@ -69,11 +70,22 @@ async function bundled(dir: string, csp: string, request: Request) {
   return new Response(body, { headers })
 }
 
+/**
+ * Settles once the partition's service workers and their caches are gone (once per start); her views load after it.
+ * Her web app's worker answered page loads from its own cache: an older page shell, whose routes point at chunks this
+ * build no longer has (the rail's Gallery and Films did nothing, 2026-10-29) and whose CSP is old. The bundle is the
+ * cache here.
+ */
+export function lucinaWebReady(web: Pick<Session, "clearStorageData"> = lucinaWebSession()): Promise<void> {
+  return (workersCleared ??= web.clearStorageData({ storages: ["serviceworkers", "cachestorage"] }).catch(() => {}))
+}
+
 /** The shared partition, serving the bundled UI when the app has one. Safe to call more than once. */
 export function lucinaWebSession() {
   if (configured) return configured
   const web = session.fromPartition(LUCINA_PARTITION)
   configured = web
+  void lucinaWebReady(web)
   const dir = bundleDir()
   // Without a bundle (a build with SECRETARY_SKIP_LUCINA_WEB=1) the views load the web app live.
   if (existsSync(join(dir, "index.html")) && !web.protocol.isProtocolHandled("https")) {
@@ -149,6 +161,7 @@ export function lucinaWebView(path: string, beforeLoad?: () => Promise<unknown>,
   void Promise.resolve()
     .then(beforeLoad)
     .catch(() => {})
+    .then(() => lucinaWebReady())
     .then(() => {
       first.started = true
 
