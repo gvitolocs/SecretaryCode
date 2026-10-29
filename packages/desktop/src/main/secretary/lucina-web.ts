@@ -1,4 +1,5 @@
 import { app, session, shell, WebContentsView, type Session, type WebContents } from "electron"
+import log from "electron-log/main.js"
 import { existsSync } from "node:fs"
 import { readFileSync } from "node:fs"
 import { readFile, stat } from "node:fs/promises"
@@ -204,6 +205,17 @@ export async function navigateLucinaView(contents: WebContents, path: string) {
   })()`
 
   await contents.executeJavaScript(script).catch(reload)
+  // Each rail navigation in main.log, with what her page shows a moment later: a route that never loads (its chunk
+  // missing) still shows the previous page's heading.
+  log.info("lucina navigate", { path })
+  const check = setTimeout(() => {
+    if (contents.isDestroyed()) return
+    void contents
+      .executeJavaScript(`({ path: location.pathname + location.search, heading: (document.querySelector("h1, h2")?.textContent ?? "").trim().slice(0, 60) })`)
+      .then((shown: unknown) => log.info("lucina navigate: shown", { path, shown }))
+      .catch(() => {})
+  }, 1500)
+  check.unref?.()
 }
 
 function openExternal(value: string) {

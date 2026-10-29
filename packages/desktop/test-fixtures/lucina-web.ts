@@ -85,6 +85,8 @@ mock.module("electron", () => ({
   shell: { openExternal: external },
 }))
 mock.module("../src/main/native/translations", () => ({ nativeT: (key: string) => key, nativeLocale: () => "da" }))
+const logged: [string, unknown][] = []
+mock.module("electron-log/main.js", () => ({ default: { info: (message: string, data: unknown) => logged.push([message, data]) } }))
 const { lucinaWebView, navigateLucinaView } = await import("../src/main/secretary/lucina-web")
 
 let release!: () => void
@@ -182,6 +184,8 @@ assert.ok(script.includes('location.origin !== "https://getsecretary.tech"'))
 // Routing to the open page is not skipped outright: her chat still hears the rail's Lucina item.
 assert.ok(!script.includes("=== path) return"))
 assert.ok(script.includes('if (path === "/") dispatchEvent(new CustomEvent("secretary:chat-latest"))'))
+// Each routing is logged, so main.log shows what the rail asked for (and, a moment later, what the page shows).
+assert.deepEqual(logged.at(-1), ["lucina navigate", { path: "/chats?tab=all" }])
 
 // No page yet, an error page or another origin: load the URL.
 for (const current of ["", "about:blank", "data:text/html;charset=utf-8,x", "https://example.com/gallery"]) {
