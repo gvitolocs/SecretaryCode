@@ -8,6 +8,7 @@ import { ACCOUNT_ROUTE } from "@/shell/workspace/views"
 import "./rail.css"
 
 type RailIcon =
+  | "calendar"
   | "bulb"
   | "code"
   | "agents"
@@ -28,6 +29,13 @@ type RailIcon =
 
 // Stroke icons on a 24px grid, the same artwork as the approved mock.
 const ICONS: Record<RailIcon, () => JSX.Element> = {
+  calendar: () => (
+    <>
+      <rect x="3.5" y="5.5" width="17" height="14.5" rx="2.5" />
+      <path d="M8 3.5v4M16 3.5v4M3.5 10h17" />
+      <circle cx="8" cy="14.5" r="1.2" />
+    </>
+  ),
   code: () => <path d="m8.5 7.5-5 4.5 5 4.5M15.5 7.5l5 4.5-5 4.5M13.5 4.5l-3 15" />,
   computer: () => (
     <>
@@ -127,6 +135,7 @@ const ICONS: Record<RailIcon, () => JSX.Element> = {
 
 /** The views below Lucina, in rail order. */
 const VIEW_ICONS: { view: ShellView; icon: RailIcon }[] = [
+  { view: "calendar", icon: "calendar" },
   { view: "keep", icon: "bulb" },
   { view: "code", icon: "code" },
   { view: "agents", icon: "agents" },
