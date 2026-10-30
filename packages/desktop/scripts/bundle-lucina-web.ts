@@ -3,8 +3,10 @@
 // Contents/Resources. The desktop serves it as https://getsecretary.tech in the persist:lucina-web partition
 // (src/main/secretary/lucina-web.ts), so the UI opens offline and updates with each app build; data still comes
 // from the server.
-// - Default: the web deploy line (`origin/web-live`) of the SecretaryIOS checkout at SECRETARY_IOS_REPO
-//   (~/Projects/Lucina/SecretaryIOS), exported with `git archive` and built there: lucina-stage first, then web.
+// - Default: the newest `deploy/web/*` tag of the SecretaryIOS checkout at SECRETARY_IOS_REPO
+//   (~/Projects/Lucina/SecretaryIOS), which is what p1 serves; `origin/main` when there is none (one trunk since
+//   2026-10-30, SecretaryIOS docs/repo-workflow.md). Exported with `git archive` and built there: lucina-stage first,
+//   then web.
 // - LUCINA_WEB_REF picks another ref; LUCINA_WEB_DIST copies an already built dist instead.
 // - SECRETARY_SKIP_LUCINA_WEB=1 skips it: the app then loads the web app live.
 import { $ } from "bun"
@@ -30,6 +32,15 @@ async function install(dist: string, source: Record<string, string>) {
     .catch(() => null)
   if (csp) await writeFile(path.join(LUCINA_WEB_RESOURCES, "headers.json"), JSON.stringify({ contentSecurityPolicy: csp }, null, 2))
   console.log(`Lucina web bundled into ${LUCINA_WEB_RESOURCES} (${JSON.stringify(source)})`)
+}
+
+// deploy-guard tags every web deploy deploy/web/<UTC yyyymmddThhmmZ>-<sha8>, so the name order is the deploy order.
+async function liveWebRef(repo: string) {
+  // Interpolated so Bun's shell passes the patterns to git instead of globbing them; offline, the local tags are used.
+  const fetched = await $`git -C ${repo} fetch --quiet origin main ${"+refs/tags/deploy/web/*:refs/tags/deploy/web/*"}`.quiet().nothrow()
+  if (fetched.exitCode !== 0) console.warn(`could not fetch the web deploy tags in ${repo}; using the local ones`)
+  const tags = (await $`git -C ${repo} tag --list ${"deploy/web/*"} --sort=-refname`.text()).split("\n").filter(Boolean)
+  return tags[0] ?? "origin/main"
 }
 
 async function build(repo: string, ref: string) {
@@ -58,6 +69,6 @@ if (import.meta.main) {
     await install(path.resolve(Bun.env.LUCINA_WEB_DIST), { dist: Bun.env.LUCINA_WEB_DIST })
   } else {
     const repo = Bun.env.SECRETARY_IOS_REPO ?? path.join(homedir(), "Projects", "Lucina", "SecretaryIOS")
-    await build(repo, Bun.env.LUCINA_WEB_REF ?? "origin/web-live")
+    await build(repo, Bun.env.LUCINA_WEB_REF ?? (await liveWebRef(repo)))
   }
 }
