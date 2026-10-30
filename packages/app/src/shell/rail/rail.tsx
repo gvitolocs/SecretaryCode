@@ -1,4 +1,4 @@
-import { For, Show, type JSX } from "solid-js"
+import { createEffect, For, onCleanup, onMount, Show, type JSX } from "solid-js"
 import lucina from "../../../../ui/src/assets/images/secretary-lucina.png"
 import { useLanguage } from "@/runtime/i18n/language"
 import type { ShellView } from "@/runtime/platform/platform"
@@ -169,6 +169,35 @@ export function ShellRail() {
   // Settings covers the view while it is open, so the ring moves to it and returns when it closes.
   const current = (view: ShellView) => !settings.active() && workspace.view.current() === view
 
+  // A short window cannot show every item: the rail scrolls, and its edges fade only on the side with more items,
+  // so an item is never cut flat by the pill's curve (owner, 2026-10-30: "Computer" clipped under the titlebar).
+  let nav: HTMLElement | undefined
+  const edges = () => {
+    if (!nav) return
+    nav.dataset.moreAbove = nav.scrollTop > 1 ? "true" : "false"
+    nav.dataset.moreBelow = nav.scrollTop + nav.clientHeight < nav.scrollHeight - 1 ? "true" : "false"
+  }
+  onMount(() => {
+    if (!nav) return
+    edges()
+    nav.addEventListener("scroll", edges, { passive: true })
+    const observer = new ResizeObserver(edges)
+    observer.observe(nav)
+    onCleanup(() => {
+      nav?.removeEventListener("scroll", edges)
+      observer.disconnect()
+    })
+  })
+  // The current view's item stays in sight when the view changes from elsewhere (a link, a notification).
+  createEffect(() => {
+    workspace.view.current()
+    settings.active()
+    queueMicrotask(() => {
+      nav?.querySelector<HTMLElement>('[data-slot="rail-item"][aria-current="page"]')?.scrollIntoView({ block: "nearest" })
+      edges()
+    })
+  })
+
   const item = (view: ShellView, icon: JSX.Element) => (
     <button
       type="button"
@@ -187,7 +216,7 @@ export function ShellRail() {
 
   return (
     <div data-slot="shell-rail-region">
-      <nav data-slot="shell-rail" aria-label={language.t("shell.rail")}>
+      <nav data-slot="shell-rail" ref={nav} aria-label={language.t("shell.rail")}>
         <div data-slot="rail-group">
           {item("lucina", <img src={lucina} alt="" draggable={false} />)}
           <div data-slot="rail-sep" />
