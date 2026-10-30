@@ -34,17 +34,35 @@ async function install(dist: string, source: Record<string, string>) {
   console.log(`Lucina web bundled into ${LUCINA_WEB_RESOURCES} (${JSON.stringify(source)})`)
 }
 
+// GitHub first: deploy-guard pushes main and every deploy tag there, while the `main` branch of nezopt's repo (this
+// checkout's usual origin, `nezopt:…`) is the shared checkout's and lags. nezopt answers as `nezopt-remote:…` away from
+// the home LAN.
+const GITHUB = "https://github.com/gvitolocs/SecretaryIOS.git"
+
+async function fetchAny(repo: string, refspecs: string[]) {
+  const origin = (await $`git -C ${repo} remote get-url origin`.quiet().nothrow().text()).trim()
+  const sources = [...new Set([GITHUB, origin, origin.replace(/^nezopt:/, "nezopt-remote:")].filter(Boolean))]
+  for (const source of sources) {
+    // Interpolated so Bun's shell passes the refspecs to git instead of globbing them.
+    const fetched = await $`git -C ${repo} fetch --quiet ${source} ${refspecs}`.quiet().nothrow()
+    if (fetched.exitCode === 0) return true
+  }
+  console.warn(`could not fetch ${refspecs.join(" ")} into ${repo} from ${sources.join(", ")}; using the local refs`)
+  return false
+}
+
 // deploy-guard tags every web deploy deploy/web/<UTC yyyymmddThhmmZ>-<sha8>, so the name order is the deploy order.
 async function liveWebRef(repo: string) {
-  // Interpolated so Bun's shell passes the patterns to git instead of globbing them; offline, the local tags are used.
-  const fetched = await $`git -C ${repo} fetch --quiet origin main ${"+refs/tags/deploy/web/*:refs/tags/deploy/web/*"}`.quiet().nothrow()
-  if (fetched.exitCode !== 0) console.warn(`could not fetch the web deploy tags in ${repo}; using the local ones`)
+  await fetchAny(repo, ["+refs/heads/main:refs/remotes/origin/main", "+refs/tags/deploy/web/*:refs/tags/deploy/web/*"])
   const tags = (await $`git -C ${repo} tag --list ${"deploy/web/*"} --sort=-refname`.text()).split("\n").filter(Boolean)
   return tags[0] ?? "origin/main"
 }
 
 async function build(repo: string, ref: string) {
-  if (ref.startsWith("origin/")) await $`git -C ${repo} fetch --quiet origin ${ref.slice("origin/".length)}`
+  if (ref.startsWith("origin/")) {
+    const branch = ref.slice("origin/".length)
+    await fetchAny(repo, [`+refs/heads/${branch}:refs/remotes/origin/${branch}`])
+  }
   const commit = (await $`git -C ${repo} rev-parse ${ref}`.text()).trim()
   const work = await mkdtemp(path.join(tmpdir(), "lucina-web-"))
   try {
