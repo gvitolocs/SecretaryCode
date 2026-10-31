@@ -43,6 +43,9 @@ function Workspace(props: ParentProps) {
   // The card exists in every view but Code; the card itself steps aside while settings is open.
   const showCard = () => workspace.rail.available() && !workspace.view.code()
   const bottomTitlebar = () => mobile() && preferences.general.mobileTitlebarPosition() === "bottom"
+  // Focus mode is "full tab" (owner, 2026-10-31: "full screen should just be full tab and hide the other things"): her
+  // page gets the whole window, edge to edge, without the titlebar's buttons. Esc and her page's own exit bring it back.
+  const fullTab = () => workspace.focus.on()
 
   return (
     <TitlebarRightProvider>
@@ -51,20 +54,24 @@ function Workspace(props: ParentProps) {
         class="relative bg-v2-background-bg-deep flex-1 min-h-0 min-w-0 flex flex-col select-none [&_input]:select-text [&_textarea]:select-text [&_[contenteditable]]:select-text"
         style={{
           // Mobile panels only need clearance for their outer border.
-          "--shell-inline-inset": mobile() ? "1px" : "8px",
+          "--shell-inline-inset": fullTab() ? "0px" : mobile() ? "1px" : "8px",
           // A bottom mobile titlebar leaves main's top edge to the safe area. Native Windows chrome supplies the gap;
           // retain outer-outline clearance.
-          "--shell-top-inset": bottomTitlebar()
+          "--shell-top-inset": fullTab() || bottomTitlebar()
             ? "0px"
             : platform.platform === "desktop" && platform.os === "windows"
               ? "1px"
               : "8px",
-          "--shell-bottom-inset": bottomTitlebar()
+          "--shell-bottom-inset": fullTab()
+            ? "0px"
+            : bottomTitlebar()
             ? "8px"
             : "max(0px, calc(8px - var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px))))",
         }}
       >
-        <Titlebar verticalTabs={verticalTabs() ? { mount: state.tabsMount } : undefined} />
+        <Show when={!fullTab()}>
+          <Titlebar verticalTabs={verticalTabs() ? { mount: state.tabsMount } : undefined} />
+        </Show>
         <div class="flex flex-1 min-h-0 min-w-0 flex-row">
           {/* Focus mode gives the plugin's page the rail's room too; the titlebar's Exit focus and Esc bring it back. */}
           <Show when={workspace.rail.available() && !workspace.focus.on()}>
