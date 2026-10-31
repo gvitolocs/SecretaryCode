@@ -1,4 +1,4 @@
-import { Show, Suspense, type ParentProps } from "solid-js"
+import { createEffect, onCleanup, Show, Suspense, type ParentProps } from "solid-js"
 import { createStore } from "solid-js/store"
 import { createMediaQuery } from "@solid-primitives/media"
 import { ResizeHandle } from "@opencode/ui/resize-handle"
@@ -46,6 +46,10 @@ function Workspace(props: ParentProps) {
   // Focus mode is "full tab" (owner, 2026-10-31: "full screen should just be full tab and hide the other things"): her
   // page gets the whole window, edge to edge, without the titlebar's buttons. Esc and her page's own exit bring it back.
   const fullTab = () => workspace.focus.on()
+  // Outside #root: the recorder's Record button floats on <body> once the titlebar is gone, where it would cover her
+  // view (companion covered(): the view is withdrawn, which ends focus mode at once). Full tab hides it.
+  createEffect(() => document.documentElement.toggleAttribute("data-full-tab", fullTab()))
+  onCleanup(() => document.documentElement.removeAttribute("data-full-tab"))
 
   return (
     <TitlebarRightProvider>
