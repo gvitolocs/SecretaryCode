@@ -1,7 +1,7 @@
 import { session, shell, WebContentsView } from "electron"
 import { join } from "node:path"
 import { nativeT } from "../native/translations"
-import { lucinaWebReady, microphoneGranted } from "./lucina-web"
+import { attachContextMenu, lucinaWebReady, microphoneGranted } from "./lucina-web"
 import { LUCINA_PARTITION } from "./lucina-web-policy"
 import { withShellFlag } from "./shell-command"
 import { applyWebLanguage, ensureWebSession } from "./web-session"
@@ -87,6 +87,7 @@ export function computerView() {
   // The app's language and the device's web session come first, so the owner sees neither the Mac's locale nor a
   // second login form. ensureWebSession always settles.
   applyWebLanguage(created.webContents)
+  attachContextMenu(created.webContents)
   void ensureWebSession()
     .then(() => lucinaWebReady(partition))
     .then(() => created.webContents.loadURL(page))
