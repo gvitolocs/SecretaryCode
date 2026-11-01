@@ -1,7 +1,7 @@
 import { session, shell, WebContentsView } from "electron"
 import { join } from "node:path"
 import { nativeT } from "../native/translations"
-import { attachContextMenu, lucinaWebReady, microphoneGranted } from "./lucina-web"
+import { attachContextMenu, clipboardReadGranted, lucinaWebReady, microphoneGranted } from "./lucina-web"
 import { LUCINA_PARTITION } from "./lucina-web-policy"
 import { withShellFlag } from "./shell-command"
 import { applyWebLanguage, ensureWebSession } from "./web-session"
@@ -31,11 +31,13 @@ export function computerView() {
     permission === "fullscreen" && !!view && contents === view.webContents
   // Reading the clipboard (LucinaDesk's ⌘V) is the viewer's own top page alone: never a frame inside it (the stream,
   // the home-network host) nor another view of the partition. Electron does not say whether a user gesture asked, so
-  // this is a deliberate grant to that page; Chromium still lets only a focused document read.
+  // this is a deliberate grant to that page; Chromium still lets only a focused document read. Her chat view reads it
+  // too (lucina-web.ts allowClipboardRead: Instagram's Paste), its top page alone.
   // The microphone goes to the views that ask for it (lucina-web.ts allowMicrophone), audio alone.
   const granted = (contents: unknown, permission: string, url: string, mainFrame: boolean, mediaTypes?: readonly unknown[]) => {
     if (!allowedOrigin(url)) return false
-    if (permission === "clipboard-read") return mainFrame && !!view && contents === view.webContents
+    if (permission === "clipboard-read")
+      return mainFrame && ((!!view && contents === view.webContents) || clipboardReadGranted(contents, url, mainFrame))
     if (permission === "media") return microphoneGranted(contents, mediaTypes, url, mainFrame)
 
     return permissions.has(permission)

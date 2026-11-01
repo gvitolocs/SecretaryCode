@@ -112,6 +112,18 @@ export function allowMicrophone(contents: WebContents) {
   microphone.add(contents)
 }
 
+// Her views that may read the clipboard (her chat: Instagram's Paste, 2026-11-01): their top frame, on her origin.
+const clipboardReaders = new WeakSet<WebContents>()
+
+export function allowClipboardRead(contents: WebContents) {
+  clipboardReaders.add(contents)
+}
+
+/** Whether a clipboard-read of the partition is one of those views' top page on her origin. */
+export function clipboardReadGranted(contents: unknown, url: string, mainFrame: boolean) {
+  return mainFrame && isLucinaUrl(url) && clipboardReaders.has(contents as WebContents)
+}
+
 /** Whether a media permission of the partition is one of those views asking for the microphone alone. */
 export function microphoneGranted(contents: unknown, mediaTypes: readonly unknown[] | undefined, url: string, mainFrame: boolean) {
   return mainFrame && isLucinaUrl(url) && microphone.has(contents as WebContents) && audioOnly(mediaTypes)
