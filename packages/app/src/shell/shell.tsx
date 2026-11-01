@@ -46,6 +46,11 @@ function Workspace(props: ParentProps) {
   // Focus mode is "full tab" (owner, 2026-10-31: "full screen should just be full tab and hide the other things"): her
   // page gets the whole window, edge to edge, without the titlebar's buttons. Esc and her page's own exit bring it back.
   const fullTab = () => workspace.focus.on()
+  // On the Mac full tab keeps a bare strip the titlebar's height: the traffic lights and the window's titlebar zone
+  // (where the menu bar also drops in over a full-screen window) stay off her page. Without it her view starts at the
+  // window's top edge and the controls she hangs there (the Computer viewer's drive bar: Take over, ✕) never get the
+  // click (owner, 2026-11-01: "pressing the X does nothing"). The strip also keeps the window draggable.
+  const macStrip = () => fullTab() && platform.platform === "desktop" && platform.os === "macos"
   // Outside #root: the recorder's Record button floats on <body> once the titlebar is gone, where it would cover her
   // view (companion covered(): the view is withdrawn, which ends focus mode at once). Full tab hides it.
   createEffect(() => document.documentElement.toggleAttribute("data-full-tab", fullTab()))
@@ -75,6 +80,9 @@ function Workspace(props: ParentProps) {
       >
         <Show when={!fullTab()}>
           <Titlebar verticalTabs={verticalTabs() ? { mount: state.tabsMount } : undefined} />
+        </Show>
+        <Show when={macStrip()}>
+          <div data-slot="full-tab-strip" data-tauri-drag-region class="h-9 shrink-0" />
         </Show>
         <div class="flex flex-1 min-h-0 min-w-0 flex-row">
           {/* Focus mode gives the plugin's page the rail's room too; the titlebar's Exit focus and Esc bring it back. */}
