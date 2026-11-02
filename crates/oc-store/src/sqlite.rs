@@ -138,6 +138,24 @@ pub(super) fn append_message_row(
     Ok(())
 }
 
+/// All of a session's message rows, in one transaction.
+pub(super) fn replace_history_rows(
+    conn: &Connection,
+    session_id: &str,
+    messages: &[Message],
+) -> Result<(), StoreError> {
+    let tx = conn.unchecked_transaction().map_err(db)?;
+    tx.execute(
+        "DELETE FROM messages WHERE session_id = ?1",
+        rusqlite::params![session_id],
+    )
+    .map_err(db)?;
+    for msg in messages {
+        append_message_row(&tx, session_id, msg)?;
+    }
+    tx.commit().map_err(db)
+}
+
 /// Overwrite one stored message document in place (same `seq`).
 pub(super) fn replace_message_row(
     conn: &Connection,

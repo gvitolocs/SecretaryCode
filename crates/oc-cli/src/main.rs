@@ -19,7 +19,8 @@
 //!
 //! Env: OC_BASE (server), OC_BASE_URL/OC_PROVIDER/OC_MODEL/OC_API_KEY,
 //! OC_API_KEY_FILE, OC_EXTRA_BODY, OC_DATA, OC_PERMISSIONS, OC_SHOW_THINKING,
-//! OC_VERBOSE, OC_MAX_STEPS, OC_CWD.
+//! OC_VERBOSE, OC_MAX_STEPS, OC_CWD, OC_CONTEXT_WINDOW, OC_COMPACT_BUFFER,
+//! OC_COMPACT_KEEP.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -27,6 +28,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
+use oc_agent::compaction::{Compacted, Settings};
 use oc_agent::{Observer, RunEvent, RunOptions};
 use oc_schema::Outcome;
 use oc_store::{CreateInput, Store};
@@ -267,6 +269,15 @@ impl Renderer {
                 }
             }
             RunEvent::StepFinished { .. } => {}
+            RunEvent::CompactionStarted => eprintln!("compacting the conversation…"),
+            RunEvent::CompactionFinished { result } => match result {
+                Compacted::Done { before, after } => {
+                    eprintln!("  about {before} tokens down to about {after}")
+                }
+                Compacted::Nothing => eprintln!("  nothing to compact"),
+                Compacted::Failed(error) => eprintln!("  compaction failed: {error}"),
+                Compacted::Interrupted => {}
+            },
         }
     }
 
@@ -371,6 +382,7 @@ async fn embedded_ask(args: &[String]) -> ! {
         permissions: oc_agent::embedded_permissions_from_env(),
         observer: renderer.observer(),
         permission_ask: None,
+        compaction: Settings::from_env(),
     };
     let registry = Registry::builtin(&dir);
     let client = oc_agent::client_from_env();
@@ -462,6 +474,7 @@ async fn embedded_chat(args: &[String]) -> ! {
             permissions: permissions.clone(),
             observer: renderer.observer(),
             permission_ask: Some(Arc::new(ask_on_terminal)),
+            compaction: Settings::from_env(),
         };
         let started = Instant::now();
         let turn = oc_agent::prompt(

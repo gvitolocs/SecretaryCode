@@ -3,6 +3,7 @@
 //! mapping (`to-llm-message.ts`, subset: no file attachments, no hosted
 //! tools, no provider-metadata replay).
 
+pub mod compaction;
 pub mod task;
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -56,6 +57,10 @@ pub enum RunEvent {
     StepFinished {
         usage: Option<oc_schema::LlmUsage>,
     },
+    CompactionStarted,
+    CompactionFinished {
+        result: compaction::Compacted,
+    },
 }
 
 /// Callback receiving [`RunEvent`]s in order; the default does nothing.
@@ -83,6 +88,8 @@ pub struct RunOptions {
     pub observer: Observer,
     /// Interactive approval for `ask` rules (None refuses like the server).
     pub permission_ask: Option<PermissionAsk>,
+    /// When the context is summarized to stay inside the model's window.
+    pub compaction: compaction::Settings,
 }
 
 fn allow_all_permissions() -> oc_permission::Ruleset {
@@ -104,6 +111,7 @@ impl Default for RunOptions {
             permissions: allow_all_permissions(),
             observer: Arc::new(|_| {}),
             permission_ask: None,
+            compaction: compaction::Settings::default(),
         }
     }
 }
@@ -149,11 +157,29 @@ pub async fn run_turn(
     let system = system_prompt(&model, &worktree);
     let mut step: u32 = 0;
     let mut last_text: Option<String> = None;
+    // What the provider last counted; a new turn starts from an estimate.
+    let mut last_input: Option<u64> = None;
+    let mut overflow_tried = false;
+    let compact_now = |rejected: Option<u64>| {
+        compact_and_report(store, client, &model, &system, session_id, opts, rejected)
+    };
     let outcome = loop {
         if opts.abort.load(Ordering::Relaxed) {
             break Outcome::Interrupted;
         }
         let limit_reached = opts.max_steps.is_some_and(|m| step >= m);
+        if let Some(ceiling) = opts.compaction.ceiling() {
+            let used = match last_input {
+                Some(n) => n,
+                None => compaction::estimate_context(&system, &store.messages(session_id)?),
+            };
+            if used >= ceiling {
+                if compact_now(None).await? == compaction::Compacted::Interrupted {
+                    break Outcome::Interrupted;
+                }
+                last_input = None;
+            }
+        }
         let history = store.messages(session_id)?;
         let mut messages = to_llm_messages(&history);
         if limit_reached {
@@ -191,6 +217,19 @@ pub async fn run_turn(
             None => break Outcome::Interrupted,
             Some(Ok(r)) => r,
             Some(Err(e)) => {
+                // Too long for the window: summarize and send it again, once.
+                if !overflow_tried && compaction::is_overflow(&e.to_string()) {
+                    overflow_tried = true;
+                    let rejected = compaction::estimate_context(&system, &history);
+                    match compact_now(Some(rejected)).await? {
+                        compaction::Compacted::Done { .. } => {
+                            last_input = None;
+                            continue;
+                        }
+                        compaction::Compacted::Interrupted => break Outcome::Interrupted,
+                        _ => {}
+                    }
+                }
                 // A provider failure ends the run as `failed`: the failure is
                 // recorded on a terminal assistant message, the idle marker
                 // lands, and the session outcome flips (upstream's retry
@@ -222,6 +261,10 @@ pub async fn run_turn(
         (opts.observer)(RunEvent::StepFinished {
             usage: resp.usage.clone(),
         });
+        overflow_tried = false;
+        if let Some(u) = &resp.usage {
+            last_input = Some((u.input + u.cache_read + u.cache_write) as u64);
+        }
         last_text = resp.text.clone();
         let has_calls = !resp.tool_calls.is_empty();
         if !has_calls || limit_reached || opts.abort.load(Ordering::Relaxed) {
@@ -240,6 +283,22 @@ pub async fn run_turn(
         steps: step + 1,
         text: last_text,
     })
+}
+
+async fn compact_and_report(
+    store: &Store,
+    client: &Client,
+    model: &ModelRef,
+    system: &str,
+    session_id: &str,
+    opts: &RunOptions,
+    rejected: Option<u64>,
+) -> Result<compaction::Compacted, AgentError> {
+    (opts.observer)(RunEvent::CompactionStarted);
+    let result =
+        compaction::compact(store, client, model, system, session_id, &opts.compaction, rejected, &opts.abort).await?;
+    (opts.observer)(RunEvent::CompactionFinished { result: result.clone() });
+    Ok(result)
 }
 
 /// Run `work` until it ends or `abort` fires; `None` means it was dropped.

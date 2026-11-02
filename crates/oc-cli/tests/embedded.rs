@@ -283,3 +283,70 @@ async fn a_stream_that_ends_without_a_reason_fails_the_turn() {
     assert_eq!(out.status.code(), Some(1), "{}", String::from_utf8_lossy(&out.stderr));
     assert!(String::from_utf8_lossy(&out.stderr).contains("[failed]"));
 }
+
+fn usage_step(inner: String, prompt_tokens: u64) -> String {
+    let usage = format!(
+        "data: {{\"choices\":[{{\"index\":0,\"delta\":{{}}}}],\"usage\":{{\"prompt_tokens\":{prompt_tokens},\"completion_tokens\":1}}}}\n\n"
+    );
+    inner.replace("data: [DONE]\n\n", &format!("{usage}data: [DONE]\n\n"))
+}
+
+#[tokio::test]
+async fn a_context_past_the_ceiling_is_summarized_and_the_turn_goes_on() {
+    use std::sync::{Arc, Mutex};
+    let dir = tempfile::tempdir().unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let requests: Arc<Mutex<Vec<serde_json::Value>>> = Arc::default();
+    let seen = requests.clone();
+    // Step 1 reports a prompt near the window, so the next request is the summary; then the turn goes on.
+    let bodies = Arc::new(vec![
+        usage_step(call_step("shell", serde_json::json!({"command":"true"})), 90_000),
+        text_step("## Objective\n- the checkpoint text"),
+        text_step("finished after compaction"),
+    ]);
+    let app = Router::new().route(
+        "/v1/chat/completions",
+        post(move |axum::Json(body): axum::Json<serde_json::Value>| {
+            let (seen, bodies) = (seen.clone(), bodies.clone());
+            async move {
+                let i = {
+                    let mut s = seen.lock().unwrap();
+                    s.push(body);
+                    s.len() - 1
+                };
+                Response::builder()
+                    .header(CONTENT_TYPE, "text/event-stream")
+                    .body(Body::from(bodies[i].clone()))
+                    .unwrap()
+            }
+        }),
+    );
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let out = tokio::process::Command::new(env!("CARGO_BIN_EXE_oc-cli"))
+        .args(["ask", "go"])
+        .arg(dir.path())
+        .env_remove("OC_BASE")
+        .env("OC_BASE_URL", format!("http://{addr}/v1"))
+        .env("OC_MODEL", "openai/gpt-test")
+        .env("OC_PERMISSIONS", ALLOW_ALL)
+        .env("OC_CONTEXT_WINDOW", "100000")
+        .output()
+        .await
+        .unwrap();
+    server.abort();
+    let (stdout, stderr) = (String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    assert!(out.status.success(), "{stdout}\n{stderr}");
+    assert!(stderr.contains("compacting"), "{stderr}");
+    assert!(stdout.contains("finished after compaction"), "{stdout}");
+    let requests = requests.lock().unwrap();
+    assert_eq!(requests.len(), 3);
+    let summary_request = requests[1].to_string();
+    assert!(summary_request.contains("summarize the conversation above"), "{summary_request}");
+    assert!(requests[1].get("tools").is_none_or(|t| t.as_array().is_some_and(|a| a.is_empty())));
+    let next = requests[2].to_string();
+    assert!(next.contains("conversation-checkpoint"), "{next}");
+    assert!(next.contains("the checkpoint text"), "{next}");
+}

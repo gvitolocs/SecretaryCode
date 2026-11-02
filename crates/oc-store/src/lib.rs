@@ -429,6 +429,26 @@ impl Store {
         Ok(())
     }
 
+    /// Replace a session's whole history: compaction's summary and what it kept.
+    pub fn replace_history(&self, session_id: &str, messages: Vec<Message>) -> Result<(), StoreError> {
+        let mut inner = self.inner.write().unwrap();
+        let list = inner
+            .messages
+            .get_mut(session_id)
+            .ok_or_else(|| StoreError::NotFound(session_id.into()))?;
+        *list = messages;
+        match &inner.backend {
+            Backend::Memory => {}
+            Backend::Files(_) => Self::persist_messages(&inner, session_id)?,
+            #[cfg(feature = "sqlite")]
+            Backend::Db(conn) => {
+                let conn = sqlite::lock(conn)?;
+                sqlite::replace_history_rows(&conn, session_id, &inner.messages[session_id])?;
+            }
+        }
+        Ok(())
+    }
+
     /// Messages of a session, oldest first (ascending `msg_` IDs).
     pub fn messages(&self, session_id: &str) -> Result<Vec<Message>, StoreError> {
         let inner = self.inner.read().unwrap();
