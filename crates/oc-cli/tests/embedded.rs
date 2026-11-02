@@ -398,3 +398,72 @@ async fn a_request_the_endpoint_refuses_fails_at_once_and_says_why() {
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
     assert!(again.try_wait().unwrap().is_none(), "the store must open: {:?}", again.try_wait());
 }
+
+#[tokio::test]
+async fn chat_keeps_the_session_asks_before_acting_and_ends_on_exit() {
+    use std::sync::{Arc, Mutex};
+    use tokio::io::AsyncWriteExt;
+    let dir = tempfile::tempdir().unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let requests: Arc<Mutex<Vec<serde_json::Value>>> = Arc::default();
+    let seen = requests.clone();
+    let bodies = Arc::new(vec![
+        call_step("shell", serde_json::json!({"command":"touch approved"})),
+        text_step("first answer"),
+        call_step("shell", serde_json::json!({"command":"touch refused"})),
+        text_step("second answer"),
+        text_step("after new"),
+    ]);
+    let app = Router::new().route(
+        "/v1/chat/completions",
+        post(move |axum::Json(body): axum::Json<serde_json::Value>| {
+            let (seen, bodies) = (seen.clone(), bodies.clone());
+            async move {
+                let i = {
+                    let mut s = seen.lock().unwrap();
+                    s.push(body);
+                    s.len() - 1
+                };
+                Response::builder()
+                    .header(CONTENT_TYPE, "text/event-stream")
+                    .body(Body::from(bodies[i].clone()))
+                    .unwrap()
+            }
+        }),
+    );
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_oc-cli"))
+        .arg("chat")
+        .arg(dir.path())
+        .env_remove("OC_BASE")
+        .env_remove("OC_PERMISSIONS")
+        .env("OC_BASE_URL", format!("http://{addr}/v1"))
+        .env("OC_MODEL", "openai/gpt-test")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    stdin.write_all(b"make it\ny\nand the other\nn\n/new\nfresh start\n/exit\n").await.unwrap();
+    let out = child.wait_with_output().await.unwrap();
+    server.abort();
+    let (stdout, stderr) = (String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    assert!(out.status.success(), "{stdout}\n{stderr}");
+    assert!(dir.path().join("approved").exists(), "{stderr}");
+    assert!(!dir.path().join("refused").exists(), "{stderr}");
+    assert!(stderr.contains("permission requested: shell"), "{stderr}");
+    assert!(stderr.contains("denied by the user"), "{stderr}");
+    for answer in ["first answer", "second answer", "after new"] {
+        assert!(stdout.contains(answer), "{stdout}");
+    }
+    let requests = requests.lock().unwrap();
+    assert_eq!(requests.len(), 5);
+    // The second turn sees the first; after /new nothing of them is sent.
+    assert!(requests[2].to_string().contains("make it"));
+    let fresh = requests[4].to_string();
+    assert!(fresh.contains("fresh start") && !fresh.contains("make it"), "{fresh}");
+}
