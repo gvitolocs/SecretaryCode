@@ -9,7 +9,17 @@ path = "src/main.rs"
 
 [dependencies]
 oc-schema = { workspace = true }
+oc-store = { workspace = true, default-features = false }
+oc-tools = { workspace = true }
+oc-provider = { workspace = true }
+oc-agent = { workspace = true }
+oc-permission = { workspace = true }
+oc-tunnel = { workspace = true }
 tokio = { workspace = true }
 reqwest = { workspace = true }
 serde_json = { workspace = true }
 futures-util = { workspace = true }
+
+[dev-dependencies]
+axum = { workspace = true }
+tempfile = "3"

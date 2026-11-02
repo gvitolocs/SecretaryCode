@@ -8,10 +8,10 @@ pub mod task;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use oc_provider::{ChatMessage, ChatRequest, Client, ToolChoice};
+use oc_provider::{ChatMessage, ChatRequest, Client, OnEvent, StreamEvent, ToolChoice};
 use oc_schema::{
-    message_id, AssistantContent, AssistantTool, AssistantToolTime, FinishReason, LlmResponse,
-    Message, ModelRef, Outcome, ToolContent, ToolState,
+    AssistantContent, AssistantTool, AssistantToolTime, LlmResponse, Message, ModelRef, Outcome,
+    ToolContent, ToolState,
 };
 use oc_store::{assistant_message, idle_message, session_error, user_message, Store};
 use oc_tools::{Registry, ToolContext};
@@ -32,6 +32,39 @@ pub enum AgentError {
 /// `packages/core/src/session/runner/max-steps.ts`.
 pub const MAX_STEPS_PROMPT: &str = "CRITICAL - MAXIMUM STEPS REACHED\n\nThe maximum number of steps allowed for this task has been reached. Tools are disabled until next user input. Respond with text only.\n\nSTRICT REQUIREMENTS:\n1. Do NOT make any tool calls (no reads, writes, edits, searches, or any other tools)\n2. MUST provide a text response summarizing work done so far\n3. This constraint overrides ALL other instructions, including any user requests for edits or tool use\n\nResponse must include:\n- Statement that maximum steps for this agent have been reached\n- Summary of what has been accomplished so far\n- List of any remaining tasks that were not completed\n- Recommendations for what should be done next\n\nAny attempt to use tools is a critical violation. Respond with text ONLY.";
 
+/// How soon a fired abort stops a model stream or a tool that is running.
+const ABORT_POLL: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// Streaming progress of one runner turn, delivered to the caller's observer.
+#[derive(Debug, Clone, PartialEq)]
+pub enum RunEvent {
+    ReasoningDelta {
+        delta: String,
+    },
+    TextDelta {
+        delta: String,
+    },
+    ToolCallStarted {
+        name: String,
+        input: serde_json::Value,
+    },
+    ToolCallFinished {
+        name: String,
+        ok: bool,
+        preview: String,
+    },
+    StepFinished {
+        usage: Option<oc_schema::LlmUsage>,
+    },
+}
+
+/// Callback receiving [`RunEvent`]s in order; the default does nothing.
+pub type Observer = Arc<dyn Fn(RunEvent) + Send + Sync>;
+
+/// Terminal approval for a rule that resolves to `ask`. Returning `false`
+/// refuses the action, and the refusal goes back to the model.
+pub type PermissionAsk = Arc<dyn Fn(&str, &str) -> bool + Send + Sync>;
+
 /// Options for one turn of the runner.
 #[derive(Clone)]
 pub struct RunOptions {
@@ -42,10 +75,24 @@ pub struct RunOptions {
     /// Cooperative abort: checked before each step; a fired abort ends the
     /// turn as `interrupted`.
     pub abort: Arc<AtomicBool>,
-    /// Permission ruleset evaluated before every tool execution; `deny` and
-    /// `ask` both refuse in this headless runner (ask needs a human surface),
-    /// and the refusal goes back to the model as the tool's error.
+    /// Permission ruleset evaluated before every tool execution; `deny`
+    /// refuses, `ask` calls [`Self::permission_ask`] when present and refuses
+    /// otherwise, and the refusal goes back to the model as the tool's error.
     pub permissions: oc_permission::Ruleset,
+    /// Observer for streamed deltas and tool/step progress.
+    pub observer: Observer,
+    /// Interactive approval for `ask` rules (None refuses like the server).
+    pub permission_ask: Option<PermissionAsk>,
+}
+
+fn allow_all_permissions() -> oc_permission::Ruleset {
+    oc_permission::Ruleset {
+        rules: vec![oc_permission::Rule {
+            action: "*".into(),
+            resource: "*".into(),
+            effect: oc_permission::Effect::Allow,
+        }],
+    }
 }
 
 impl Default for RunOptions {
@@ -54,7 +101,9 @@ impl Default for RunOptions {
             agent: "build".into(),
             max_steps: None,
             abort: Arc::new(AtomicBool::new(false)),
-            permissions: oc_permission::Ruleset::default(),
+            permissions: allow_all_permissions(),
+            observer: Arc::new(|_| {}),
+            permission_ask: None,
         }
     }
 }
@@ -69,7 +118,7 @@ pub struct RunOutput {
 
 /// Append the user turn, then run the loop. (`session.prompt`'s handler.)
 pub async fn prompt(
-    store: &mut Store,
+    store: &Store,
     registry: &Registry,
     client: &Client,
     session_id: &str,
@@ -77,14 +126,16 @@ pub async fn prompt(
     text: &str,
     opts: &RunOptions,
 ) -> Result<RunOutput, AgentError> {
-    store.append_message(session_id, |id, t| user_message(text.to_string(), Vec::new(), id, t))?;
+    store.append_message(session_id, |id, t| {
+        user_message(text.to_string(), Vec::new(), id, t)
+    })?;
     run_turn(store, registry, client, session_id, model, opts).await
 }
 
 /// One runner turn: step until the model answers without tool calls, the
 /// step limit gates, an abort fires, or a provider error ends the run.
 pub async fn run_turn(
-    store: &mut Store,
+    store: &Store,
     registry: &Registry,
     client: &Client,
     session_id: &str,
@@ -94,7 +145,8 @@ pub async fn run_turn(
     if store.get_session(session_id).is_err() {
         return Err(AgentError::NotFound(session_id.to_string()));
     }
-    let system = system_prompt(&model);
+    let worktree = worktree_of(store, session_id);
+    let system = system_prompt(&model, &worktree);
     let mut step: u32 = 0;
     let mut last_text: Option<String> = None;
     let outcome = loop {
@@ -118,11 +170,27 @@ pub async fn run_turn(
             system: Some(system.clone()),
             messages,
             tools: registry.defs(),
-            tool_choice: if limit_reached { ToolChoice::None } else { ToolChoice::Auto },
+            tool_choice: if limit_reached {
+                ToolChoice::None
+            } else {
+                ToolChoice::Auto
+            },
         };
-        let resp = match client.complete(&model.id, &req).await {
-            Ok(r) => r,
-            Err(e) => {
+        let forward = {
+            let observer = opts.observer.clone();
+            Arc::new(move |event: StreamEvent| match event {
+                StreamEvent::Text { delta } => observer(RunEvent::TextDelta { delta }),
+                StreamEvent::Reasoning { delta } => observer(RunEvent::ReasoningDelta { delta }),
+                _ => {}
+            }) as OnEvent
+        };
+        // Dropping the stream on an abort closes the connection, so the
+        // endpoint stops generating and its slot is free again.
+        let streamed = abortable(&opts.abort, client.complete_streaming(&model.id, &req, forward));
+        let resp = match streamed.await {
+            None => break Outcome::Interrupted,
+            Some(Ok(r)) => r,
+            Some(Err(e)) => {
                 // A provider failure ends the run as `failed`: the failure is
                 // recorded on a terminal assistant message, the idle marker
                 // lands, and the session outcome flips (upstream's retry
@@ -130,11 +198,30 @@ pub async fn run_turn(
                 record_provider_failure(store, session_id, &opts.agent, &model, &e.to_string())?;
                 store.append_message(session_id, |id, t| idle_message(Outcome::Failed, id, t))?;
                 store.set_outcome(session_id, Outcome::Failed)?;
-                return Ok(RunOutput { outcome: Outcome::Failed, steps: step, text: None });
+                return Ok(RunOutput {
+                    outcome: Outcome::Failed,
+                    steps: step,
+                    text: None,
+                });
             }
         };
-        settle_step(store, registry, session_id, &opts.agent, &model, &resp, &opts.permissions).await?;
+        settle_step(
+            store,
+            registry,
+            session_id,
+            &opts.agent,
+            &model,
+            &resp,
+            &opts.permissions,
+            opts.permission_ask.as_ref(),
+            &opts.observer,
+            &opts.abort,
+        )
+        .await?;
         fold_usage(store, session_id, &resp)?;
+        (opts.observer)(RunEvent::StepFinished {
+            usage: resp.usage.clone(),
+        });
         last_text = resp.text.clone();
         let has_calls = !resp.tool_calls.is_empty();
         if !has_calls || limit_reached || opts.abort.load(Ordering::Relaxed) {
@@ -148,30 +235,57 @@ pub async fn run_turn(
     };
     store.append_message(session_id, |id, t| idle_message(outcome, id, t))?;
     store.set_outcome(session_id, outcome)?;
-    Ok(RunOutput { outcome, steps: step + 1, text: last_text })
+    Ok(RunOutput {
+        outcome,
+        steps: step + 1,
+        text: last_text,
+    })
+}
+
+/// Run `work` until it ends or `abort` fires; `None` means it was dropped.
+async fn abortable<F: std::future::Future>(abort: &AtomicBool, work: F) -> Option<F::Output> {
+    tokio::pin!(work);
+    loop {
+        tokio::select! {
+            out = &mut work => return Some(out),
+            _ = tokio::time::sleep(ABORT_POLL) => {
+                if abort.load(Ordering::Relaxed) {
+                    return None;
+                }
+            }
+        }
+    }
 }
 
 /// Create the assistant message for one completed provider step: text and
 /// reasoning parts verbatim, one tool part per call in `running` state, then
 /// execute each call and settle its part to `completed`/`error` in place.
+#[allow(clippy::too_many_arguments)]
 async fn settle_step(
-    store: &mut Store,
+    store: &Store,
     registry: &Registry,
     session_id: &str,
     agent: &str,
     model: &ModelRef,
     resp: &LlmResponse,
     permissions: &oc_permission::Ruleset,
+    permission_ask: Option<&PermissionAsk>,
+    observer: &Observer,
+    abort: &AtomicBool,
 ) -> Result<(), AgentError> {
     let now = now_ms();
     let mut content: Vec<AssistantContent> = Vec::new();
     if let Some(r) = &resp.reasoning {
         if !r.is_empty() {
-            content.push(AssistantContent::Reasoning(oc_schema::AssistantReasoning { text: r.clone() }));
+            content.push(AssistantContent::Reasoning(oc_schema::AssistantReasoning {
+                text: r.clone(),
+            }));
         }
     }
     if let Some(t) = &resp.text {
-        content.push(AssistantContent::Text(oc_schema::AssistantText { text: t.clone() }));
+        content.push(AssistantContent::Text(oc_schema::AssistantText {
+            text: t.clone(),
+        }));
     }
     let mut tool_inputs: Vec<(String, serde_json::Value)> = Vec::new();
     for call in &resp.tool_calls {
@@ -182,8 +296,15 @@ async fn settle_step(
             name: call.name.clone(),
             executed: None,
             native: None,
-            state: ToolState::Running { input: input.clone(), metadata: None },
-            time: AssistantToolTime { created: now, ran: None, completed: None },
+            state: ToolState::Running {
+                input: input.clone(),
+                metadata: None,
+            },
+            time: AssistantToolTime {
+                created: now,
+                ran: None,
+                completed: None,
+            },
         }));
         tool_inputs.push((call.id.clone(), input));
     }
@@ -208,10 +329,27 @@ async fn settle_step(
             .and_then(|v| v.as_str())
             .unwrap_or("*")
             .to_string();
-        let executed = match opts_permissions_check(permissions, &call.name, &resource) {
-            Ok(()) => registry.execute(&call.name, input, &ctx).await,
-            Err(reason) => Err(oc_tools::ToolError::Failed(reason)),
+        observer(RunEvent::ToolCallStarted {
+            name: call.name.clone(),
+            input: input.clone(),
+        });
+        let executed =
+            match opts_permissions_check(permissions, &call.name, &resource, permission_ask) {
+                // Dropping a shell call kills its process group.
+                Ok(()) => abortable(abort, registry.execute(&call.name, input, &ctx))
+                    .await
+                    .unwrap_or_else(|| Err(oc_tools::ToolError::Failed("aborted by the user".into()))),
+                Err(reason) => Err(oc_tools::ToolError::Failed(reason)),
+            };
+        let (ok, preview) = match &executed {
+            Ok(out) => (true, tool_output_preview(out)),
+            Err(error) => (false, error.to_string()),
         };
+        observer(RunEvent::ToolCallFinished {
+            name: call.name.clone(),
+            ok,
+            preview,
+        });
         let completed = now_ms();
 
         let history = store.messages(session_id)?;
@@ -219,7 +357,9 @@ async fn settle_step(
             .into_iter()
             .find(|m| message_id_of(m) == assistant_id)
             .ok_or_else(|| AgentError::ToolPartMissing(assistant_id.clone()))?;
-        let Message::Assistant(a) = &mut msg else { continue };
+        let Message::Assistant(a) = &mut msg else {
+            continue;
+        };
         let Some(part) = a.content.iter_mut().find_map(|c| match c {
             AssistantContent::Tool(t) if t.id == *call_id => Some(t),
             _ => None,
@@ -239,7 +379,9 @@ async fn settle_step(
                 input: input.clone(),
                 error: session_error("ToolError", &e.to_string()),
                 // the failure text goes back to the model so it can react
-                content: Some(vec![ToolContent::Text { text: e.to_string() }]),
+                content: Some(vec![ToolContent::Text {
+                    text: e.to_string(),
+                }]),
                 metadata: None,
             },
         };
@@ -268,7 +410,7 @@ fn worktree_of(store: &Store, session_id: &str) -> std::path::PathBuf {
         .unwrap_or_else(|| std::path::PathBuf::from("."))
 }
 
-fn fold_usage(store: &mut Store, session_id: &str, resp: &LlmResponse) -> Result<(), AgentError> {
+fn fold_usage(store: &Store, session_id: &str, resp: &LlmResponse) -> Result<(), AgentError> {
     if let Some(usage) = &resp.usage {
         // Pricing tables (models.dev) are not ported; cost stays 0 —
         // documented delta. Token totals still accumulate.
@@ -279,7 +421,7 @@ fn fold_usage(store: &mut Store, session_id: &str, resp: &LlmResponse) -> Result
 
 /// Record a provider failure on a terminal assistant message for the step.
 fn record_provider_failure(
-    store: &mut Store,
+    store: &Store,
     session_id: &str,
     agent: &str,
     model: &ModelRef,
@@ -303,16 +445,33 @@ fn opts_permissions_check(
     permissions: &oc_permission::Ruleset,
     action: &str,
     resource: &str,
+    ask: Option<&PermissionAsk>,
 ) -> Result<(), String> {
     match permissions.decide(action, resource) {
         oc_permission::Effect::Allow => Ok(()),
         oc_permission::Effect::Deny => {
             Err(format!("permission denied by ruleset: {action} {resource}"))
         }
-        oc_permission::Effect::Ask => Err(format!(
-            "permission requires interactive approval, which this runner cannot ask for: {action} {resource}"
-        )),
+        oc_permission::Effect::Ask => match ask {
+            Some(ask) if ask(action, resource) => Ok(()),
+            Some(_) => Err(format!("permission denied by the user: {action} {resource}")),
+            None => Err(format!(
+                "permission requires interactive approval, which this runner cannot ask for: {action} {resource}"
+            )),
+        },
     }
+}
+
+fn tool_output_preview(output: &oc_tools::ToolOutput) -> String {
+    output
+        .content
+        .iter()
+        .map(|part| match part {
+            ToolContent::Text { text } => text.clone(),
+            ToolContent::File { mime, url } => format!("[file: {mime} {url}]"),
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn now_ms() -> u64 {
@@ -327,6 +486,7 @@ mod tests {
     use super::*;
     use async_trait::async_trait;
     use oc_provider::{ProviderError, Transport};
+    use oc_schema::FinishReason;
     use oc_store::Store;
 
     /// A transport playing back scripted OpenAI-shaped response bodies and
@@ -346,7 +506,11 @@ mod tests {
             }
         }
         fn failing(err: ProviderError) -> Self {
-            Self { responses: std::sync::Mutex::new(vec![]), requests: std::sync::Mutex::new(vec![]), fail_with: Some(err) }
+            Self {
+                responses: std::sync::Mutex::new(vec![]),
+                requests: std::sync::Mutex::new(vec![]),
+                fail_with: Some(err),
+            }
         }
         fn requests(&self) -> Vec<serde_json::Value> {
             self.requests.lock().unwrap().clone()
@@ -393,7 +557,7 @@ mod tests {
 
     fn session() -> (tempfile::TempDir, Store, String) {
         let dir = tempfile::tempdir().unwrap();
-        let mut store = Store::open(dir.path()).unwrap();
+        let store = Store::open(dir.path()).unwrap();
         let s = store
             .create_session(oc_store::CreateInput {
                 title: None,
@@ -411,10 +575,181 @@ mod tests {
         ModelRef::parse("openai/gpt-test").unwrap()
     }
 
+    struct ScriptedStreaming {
+        responses:
+            std::sync::Mutex<std::collections::VecDeque<Vec<Result<bytes::Bytes, ProviderError>>>>,
+    }
+
+    impl ScriptedStreaming {
+        fn new(responses: Vec<Vec<Result<bytes::Bytes, ProviderError>>>) -> Arc<Self> {
+            Arc::new(Self {
+                responses: std::sync::Mutex::new(responses.into()),
+            })
+        }
+    }
+
+    #[async_trait]
+    impl Transport for ScriptedStreaming {
+        async fn post_json(
+            &self,
+            _url: &str,
+            _headers: Vec<(String, String)>,
+            _body: serde_json::Value,
+        ) -> Result<serde_json::Value, ProviderError> {
+            Err(ProviderError::Transport(
+                "post_json must not be used when streaming".into(),
+            ))
+        }
+
+        async fn post_stream(
+            &self,
+            _url: &str,
+            _headers: Vec<(String, String)>,
+            _body: serde_json::Value,
+        ) -> Result<oc_provider::ByteStream, ProviderError> {
+            let chunks = self
+                .responses
+                .lock()
+                .unwrap()
+                .pop_front()
+                .ok_or_else(|| ProviderError::Malformed("stream script exhausted".into()))?;
+            Ok(Box::pin(futures_util::stream::iter(chunks)))
+        }
+    }
+
+    fn sse(frames: &[serde_json::Value]) -> Vec<Result<bytes::Bytes, ProviderError>> {
+        frames
+            .iter()
+            .map(|frame| Ok(bytes::Bytes::from(format!("data: {frame}\n\n"))))
+            .collect()
+    }
+
+    fn done() -> Result<bytes::Bytes, ProviderError> {
+        Ok(bytes::Bytes::from("data: [DONE]\n\n"))
+    }
+
+    fn event_recorder() -> (Observer, Arc<std::sync::Mutex<Vec<RunEvent>>>) {
+        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = events.clone();
+        (
+            Arc::new(move |event| sink.lock().unwrap().push(event)),
+            events,
+        )
+    }
+
+    #[tokio::test]
+    async fn streamed_tool_call_reasoning_and_observer_events() {
+        let (dir, store, sid) = session();
+        let tool_call = sse(&[
+            serde_json::json!({ "choices": [ { "index": 0, "delta": { "reasoning_content": "plan" } } ] }),
+            serde_json::json!({ "choices": [ { "index": 0, "delta": { "tool_calls": [
+                { "index": 0, "id": "call_1", "type": "function", "function": { "name": "write", "arguments": "" } }
+            ] } } ] }),
+            serde_json::json!({ "choices": [ { "index": 0, "delta": { "tool_calls": [
+                { "index": 0, "function": { "arguments": "{\"path\":\"note" } }
+            ] } } ] }),
+            serde_json::json!({ "choices": [ { "index": 0, "delta": { "tool_calls": [
+                { "index": 0, "function": { "arguments": ".txt\",\"content\":\"hi\"}" } }
+            ] } } ] }),
+            serde_json::json!({ "choices": [ { "index": 0, "delta": {}, "finish_reason": "tool_calls" } ] }),
+            serde_json::json!({ "choices": [ { "index": 0, "delta": {} } ], "usage": { "prompt_tokens": 10, "completion_tokens": 4 } }),
+        ]);
+        let mut first = tool_call;
+        first.push(done());
+        let mut second = sse(&[
+            serde_json::json!({ "choices": [ { "index": 0, "delta": { "content": "done" } } ] }),
+            serde_json::json!({ "choices": [ { "index": 0, "delta": {}, "finish_reason": "stop" } ] }),
+            serde_json::json!({ "choices": [ { "index": 0, "delta": {} } ], "usage": { "prompt_tokens": 12, "completion_tokens": 2 } }),
+        ]);
+        second.push(done());
+        let client = Client::with_transport(
+            oc_provider::Endpoint {
+                protocol: oc_provider::Protocol::OpenAI,
+                base_url: "http://mock/v1".into(),
+                api_key: None,
+            },
+            ScriptedStreaming::new(vec![first, second]),
+        );
+        let registry = Registry::builtin(dir.path());
+        let (observer, events) = event_recorder();
+        let out = prompt(
+            &store,
+            &registry,
+            &client,
+            &sid,
+            model(),
+            "write it",
+            &RunOptions { observer, ..opts() },
+        )
+        .await
+        .unwrap();
+        assert_eq!(out.outcome, Outcome::Succeeded);
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("note.txt")).unwrap(),
+            "hi"
+        );
+
+        let events = events.lock().unwrap().clone();
+        assert!(events.contains(&RunEvent::ReasoningDelta {
+            delta: "plan".into()
+        }));
+        assert!(events.contains(&RunEvent::TextDelta {
+            delta: "done".into()
+        }));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            RunEvent::ToolCallStarted { name, input }
+                if name == "write" && input["path"] == "note.txt" && input["content"] == "hi"
+        )));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            RunEvent::ToolCallFinished { name, ok: true, .. } if name == "write"
+        )));
+        let finished = events
+            .iter()
+            .filter(|event| matches!(event, RunEvent::StepFinished { .. }))
+            .count();
+        assert_eq!(finished, 2, "one step-finished event per provider step");
+    }
+
+    #[tokio::test]
+    async fn stream_cut_before_finish_reason_fails_the_turn() {
+        let (_dir, store, sid) = session();
+        let chunks = sse(&[serde_json::json!({
+            "choices": [ { "index": 0, "delta": { "content": "partial answer" } } ]
+        })]);
+        let client = Client::with_transport(
+            oc_provider::Endpoint {
+                protocol: oc_provider::Protocol::OpenAI,
+                base_url: "http://mock/v1".into(),
+                api_key: None,
+            },
+            ScriptedStreaming::new(vec![chunks]),
+        );
+        let registry = Registry::builtin(std::path::Path::new("/tmp"));
+        let out = prompt(&store, &registry, &client, &sid, model(), "go", &opts())
+            .await
+            .unwrap();
+        assert_eq!(out.outcome, Outcome::Failed);
+        assert_eq!(
+            store.get_session(&sid).unwrap().outcome,
+            Some(Outcome::Failed)
+        );
+        let error = store
+            .messages(&sid)
+            .unwrap()
+            .into_iter()
+            .find_map(|message| match message {
+                Message::Assistant(assistant) => assistant.error,
+                _ => None,
+            })
+            .expect("provider failure recorded on an assistant message");
+        assert_eq!(error.name, "ProviderError");
+    }
 
     #[tokio::test]
     async fn text_only_run_succeeds() {
-        let (_dir, mut store, sid) = session();
+        let (_dir, store, sid) = session();
         let client = Client::with_transport(
             oc_provider::Endpoint {
                 protocol: oc_provider::Protocol::OpenAI,
@@ -424,7 +759,7 @@ mod tests {
             Arc::new(Scripted::new(vec![openai_text("all done")])),
         );
         let registry = Registry::builtin(std::path::Path::new("/tmp"));
-        let out = prompt(&mut store, &registry, &client, &sid, model(), "fix it", &opts())
+        let out = prompt(&store, &registry, &client, &sid, model(), "fix it", &opts())
             .await
             .unwrap();
         assert_eq!(out.outcome, Outcome::Succeeded);
@@ -440,7 +775,7 @@ mod tests {
 
     #[tokio::test]
     async fn tool_call_settles_then_text_arrives() {
-        let (dir, mut store, sid) = session();
+        let (dir, store, sid) = session();
         let scripted = Arc::new(Scripted::new(vec![
             openai_text("done: created the file"),
             openai_tool_call("call_1", "write", r#"{"path":"note.txt","content":"hi"}"#),
@@ -454,9 +789,17 @@ mod tests {
             scripted.clone(),
         );
         let registry = Registry::builtin(dir.path());
-        let out = prompt(&mut store, &registry, &client, &sid, model(), "write note.txt", &opts())
-            .await
-            .unwrap();
+        let out = prompt(
+            &store,
+            &registry,
+            &client,
+            &sid,
+            model(),
+            "write note.txt",
+            &opts(),
+        )
+        .await
+        .unwrap();
         assert_eq!(out.outcome, Outcome::Succeeded);
         assert_eq!(out.text.as_deref(), Some("done: created the file"));
 
@@ -503,7 +846,7 @@ mod tests {
 
     #[tokio::test]
     async fn max_steps_gate_pins_tool_choice_and_gates_text() {
-        let (_dir, mut store, sid) = session();
+        let (_dir, store, sid) = session();
         let scripted = Arc::new(Scripted::new(vec![openai_text("summary of work")]));
         let client = Client::with_transport(
             oc_provider::Endpoint {
@@ -514,8 +857,13 @@ mod tests {
             scripted.clone(),
         );
         let registry = Registry::builtin(std::path::Path::new("/tmp"));
-        let o = RunOptions { max_steps: Some(0), ..opts() };
-        let out = prompt(&mut store, &registry, &client, &sid, model(), "go", &o).await.unwrap();
+        let o = RunOptions {
+            max_steps: Some(0),
+            ..opts()
+        };
+        let out = prompt(&store, &registry, &client, &sid, model(), "go", &o)
+            .await
+            .unwrap();
         assert_eq!(out.outcome, Outcome::Succeeded);
         let requests = scripted.requests();
         let body = &requests[0];
@@ -527,17 +875,22 @@ mod tests {
 
     #[tokio::test]
     async fn provider_failure_marks_session_failed() {
-        let (_dir, mut store, sid) = session();
+        let (_dir, store, sid) = session();
         let client = Client::with_transport(
             oc_provider::Endpoint {
                 protocol: oc_provider::Protocol::OpenAI,
                 base_url: "http://mock/v1".into(),
                 api_key: None,
             },
-            Arc::new(Scripted::failing(ProviderError::Http { status: 500, body: "boom".into() })),
+            Arc::new(Scripted::failing(ProviderError::Http {
+                status: 500,
+                body: "boom".into(),
+            })),
         );
         let registry = Registry::builtin(std::path::Path::new("/tmp"));
-        let out = prompt(&mut store, &registry, &client, &sid, model(), "go", &opts()).await.unwrap();
+        let out = prompt(&store, &registry, &client, &sid, model(), "go", &opts())
+            .await
+            .unwrap();
         assert_eq!(out.outcome, Outcome::Failed);
         let s = store.get_session(&sid).unwrap();
         assert_eq!(s.outcome, Some(Outcome::Failed));
@@ -557,7 +910,7 @@ mod tests {
 
     #[tokio::test]
     async fn abort_before_run_interrupts() {
-        let (_dir, mut store, sid) = session();
+        let (_dir, store, sid) = session();
         let client = Client::with_transport(
             oc_provider::Endpoint {
                 protocol: oc_provider::Protocol::OpenAI,
@@ -568,16 +921,37 @@ mod tests {
         );
         let registry = Registry::builtin(std::path::Path::new("/tmp"));
         let abort = Arc::new(AtomicBool::new(true));
-        let o = RunOptions { abort: abort.clone(), ..opts() };
-        let out = prompt(&mut store, &registry, &client, &sid, model(), "go", &o).await.unwrap();
+        let o = RunOptions {
+            abort: abort.clone(),
+            ..opts()
+        };
+        let out = prompt(&store, &registry, &client, &sid, model(), "go", &o)
+            .await
+            .unwrap();
         assert_eq!(out.outcome, Outcome::Interrupted);
         let _ = &client; // scripted transport was empty: any call would fail the test via script exhaustion
+    }
 
+    #[test]
+    fn build_default_permissions_ask_except_questions() {
+        let rules = default_build_permissions();
+        assert_eq!(
+            rules.decide("shell", "rm -rf /"),
+            oc_permission::Effect::Ask
+        );
+        assert_eq!(
+            rules.decide("read", "src/main.rs"),
+            oc_permission::Effect::Ask
+        );
+        assert_eq!(
+            rules.decide("question", "continue?"),
+            oc_permission::Effect::Allow
+        );
     }
 
     #[test]
     fn transcript_mapping_matches_upstream_roles() {
-        let mut store = Store::new();
+        let store = Store::new();
         let s = store
             .create_session(oc_store::CreateInput {
                 title: None,
@@ -588,9 +962,13 @@ mod tests {
                 project_id: "global".into(),
             })
             .unwrap();
-        store.append_message(&s.id, |id, t| user_message("do it".into(), vec![], id, t)).unwrap();
         store
-            .append_message(&s.id, |id, t| oc_store::synthetic_message("context update", id, t))
+            .append_message(&s.id, |id, t| user_message("do it".into(), vec![], id, t))
+            .unwrap();
+        store
+            .append_message(&s.id, |id, t| {
+                oc_store::synthetic_message("context update", id, t)
+            })
             .unwrap();
         store
             .append_message(&s.id, |id, t| {
@@ -606,14 +984,20 @@ mod tests {
                             content: vec![ToolContent::Text { text: "out".into() }],
                             metadata: None,
                         },
-                        time: AssistantToolTime { created: t, ran: Some(t), completed: Some(t) },
+                        time: AssistantToolTime {
+                            created: t,
+                            ran: Some(t),
+                            completed: Some(t),
+                        },
                     })];
                     a.finish = Some(FinishReason::ToolCalls);
                 }
                 m
             })
             .unwrap();
-        store.append_message(&s.id, |id, t| idle_message(Outcome::Succeeded, id, t)).unwrap();
+        store
+            .append_message(&s.id, |id, t| idle_message(Outcome::Succeeded, id, t))
+            .unwrap();
         let history = store.messages(&s.id).unwrap();
         let mapped = to_llm_messages(&history);
         let kinds: Vec<String> = mapped
@@ -627,15 +1011,19 @@ mod tests {
             })
             .collect();
         // synthetic → user; idle dropped; executed tool part → call + result
-        assert_eq!(kinds, ["user", "user", "assistant(1 calls)", "tool(call_9)"]);
+        assert_eq!(
+            kinds,
+            ["user", "user", "assistant(1 calls)", "tool(call_9)"]
+        );
     }
-
 }
 
+#[cfg(test)]
 fn opts() -> RunOptions {
     RunOptions::default()
 }
 
+#[cfg(test)]
 fn kind(m: &Message) -> &'static str {
     match m {
         Message::User(_) => "user",
@@ -666,11 +1054,15 @@ pub fn to_llm_messages(history: &[Message]) -> Vec<ChatMessage> {
         match m {
             Message::User(u) => {
                 if !u.text.is_empty() {
-                    out.push(ChatMessage::User { text: u.text.clone() });
+                    out.push(ChatMessage::User {
+                        text: u.text.clone(),
+                    });
                 }
             }
             Message::Synthetic(s) => {
-                out.push(ChatMessage::User { text: s.text.clone() });
+                out.push(ChatMessage::User {
+                    text: s.text.clone(),
+                });
             }
             Message::System(_) => {
                 // hoisted by the caller into the system prompt
@@ -715,7 +1107,10 @@ pub fn to_llm_messages(history: &[Message]) -> Vec<ChatMessage> {
                 if text_opt.is_none() && tool_calls.is_empty() {
                     continue;
                 }
-                out.push(ChatMessage::Assistant { text: text_opt, tool_calls });
+                out.push(ChatMessage::Assistant {
+                    text: text_opt,
+                    tool_calls,
+                });
                 // tool results for executed parts, in part order
                 for part in &a.content {
                     if let AssistantContent::Tool(tool) = part {
@@ -724,16 +1119,16 @@ pub fn to_llm_messages(history: &[Message]) -> Vec<ChatMessage> {
                         }
                         let content: Vec<ToolContent> = match &tool.state {
                             ToolState::Completed { content, .. } => content.clone(),
-                            ToolState::Error { content, error, .. } => content
-                                .clone()
-                                .unwrap_or_else(|| {
+                            ToolState::Error { content, error, .. } => {
+                                content.clone().unwrap_or_else(|| {
                                     vec![ToolContent::Text {
                                         text: error
                                             .message
                                             .clone()
                                             .unwrap_or_else(|| error.name.clone()),
                                     }]
-                                }),
+                                })
+                            }
                             _ => vec![],
                         };
                         out.push(ChatMessage::ToolResult {
@@ -751,26 +1146,50 @@ pub fn to_llm_messages(history: &[Message]) -> Vec<ChatMessage> {
 
 // ===== System prompt =====
 
-/// The model-facing system prompt: identity, tool guidance, and the
-/// worktree's AGENTS.md when present (the port of upstream's instruction
-/// discovery, root file only).
-pub fn system_prompt(model: &ModelRef) -> String {
-    let today = today_iso();
-    let mut s = format!(
-        "You are opencode, the open-source coding agent, running in the user's terminal.\n\
-         You are powered by the model {provider}/{model}.\n\
-         Today's date is {today}.\n",
-        provider = model.provider_id,
-        model = model.id,
-        today = today,
+/// The model-facing system prompt: the upstream harness text and tool
+/// guidance, the date and environment block, plus the worktree's AGENTS.md
+/// when present (upstream's instruction discovery, root file only).
+pub fn system_prompt(model: &ModelRef, worktree: &std::path::Path) -> String {
+    let mut s = String::from(
+        "You are an AI agent running in OpenCode, a coding agent harness. Help the user accomplish their goals using the tools you have available.\n\n\
+         # Harness\n\
+         - Responses are rendered as GitHub-flavored Markdown.\n\
+         - `<system-reminder>` blocks are harness instructions, not user-authored content. Read and follow them.\n\
+         - Prefer parallelizing independent tool calls.\n\
+         - Prefer dedicated tools over shell commands; fall back to the shell when a tool cannot do what you need.\n\
+         - Use the write tool to create files or completely replace their content; use edit for targeted changes.\n\
+         - Keep shell commands short and non-interactive.\n\n\
+         # Communication\n\
+         - Use clear file paths when referring to files.\n\
+         - Keep responses clear and concise, and avoid unnecessary technical jargon.\n\n\
+         # Working in codebases\n\
+         - Keep changes consistent with the structure, naming, style, and patterns of the surrounding code.\n\
+         - Treat unfamiliar files or changes as potential user work and investigate before deleting or overwriting them.\n",
     );
-    s.push_str(
-        "\nYou can read, write and edit files, run shell commands, search the\n\
-         workspace with glob and grep, and keep a task list with todowrite.\n\
-         Prefer reading a file before editing it; make edits with the edit\n\
-         tool's exact-match replace; keep shell commands short and non-interactive.\n\
-         Answer in plain text when you are done, saying what you changed.\n",
-    );
+    s.push_str(&format!(
+        "\nYou are powered by the model {}/{}.\nToday's date: {}.\n",
+        model.provider_id,
+        model.id,
+        today_iso(),
+    ));
+    let git = worktree.join(".git").exists();
+    s.push_str("\n<env>\n");
+    s.push_str(&format!("  Working directory: {}\n", worktree.display()));
+    s.push_str(&format!(
+        "  Workspace root folder: {}\n",
+        worktree.display()
+    ));
+    s.push_str(&format!(
+        "  Is directory a git repo: {}\n",
+        if git { "yes" } else { "no" }
+    ));
+    s.push_str(&format!("  Platform: {}\n", std::env::consts::OS));
+    s.push_str("</env>\n");
+    if let Some(instructions) = worktree_instructions(worktree) {
+        s.push_str("\n# Project instructions\n\n");
+        s.push_str(&instructions);
+        s.push('\n');
+    }
     s
 }
 
@@ -778,7 +1197,9 @@ pub fn system_prompt(model: &ModelRef) -> String {
 /// upstream loader feeds into the prompt verbatim.
 pub fn worktree_instructions(worktree: &std::path::Path) -> Option<String> {
     let path = worktree.join("AGENTS.md");
-    std::fs::read_to_string(path).ok().filter(|s| !s.trim().is_empty())
+    std::fs::read_to_string(path)
+        .ok()
+        .filter(|s| !s.trim().is_empty())
 }
 
 fn today_iso() -> String {
@@ -808,8 +1229,8 @@ fn civil_from_days(z: i64) -> String {
 
 /// Provider endpoint from the environment: `OC_PROVIDER` (`openai` |
 /// `anthropic`, default openai), `OC_BASE_URL` (protocol default when
-/// unset), and the key from `OC_API_KEY` or the provider's conventional
-/// variable (`OPENAI_API_KEY` / `ANTHROPIC_API_KEY`).
+/// unset), and the key from `OC_API_KEY`, `OC_API_KEY_FILE`, or the
+/// provider's conventional variable (`OPENAI_API_KEY` / `ANTHROPIC_API_KEY`).
 pub fn endpoint_from_env() -> oc_provider::Endpoint {
     let provider = std::env::var("OC_PROVIDER")
         .unwrap_or_default()
@@ -831,12 +1252,101 @@ pub fn endpoint_from_env() -> oc_provider::Endpoint {
         .ok()
         .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(|| default_base.to_string());
-    let api_key = std::env::var("OC_API_KEY")
+    let api_key = api_key_from_env(conventional_key);
+    oc_provider::Endpoint {
+        protocol,
+        base_url,
+        api_key,
+    }
+}
+
+/// The key from `OC_API_KEY`, else `OC_API_KEY_FILE` (trimmed), else the
+/// provider's conventional variable. The value is never logged.
+pub fn api_key_from_env(conventional_key: &str) -> Option<String> {
+    std::env::var("OC_API_KEY")
         .ok()
         .filter(|s| !s.trim().is_empty())
+        .or_else(|| {
+            std::env::var("OC_API_KEY_FILE")
+                .ok()
+                .filter(|s| !s.trim().is_empty())
+                .and_then(|path| std::fs::read_to_string(path).ok())
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+        })
         .or_else(|| std::env::var(conventional_key).ok())
-        .filter(|s| !s.trim().is_empty());
-    oc_provider::Endpoint { protocol, base_url, api_key }
+        .filter(|s| !s.trim().is_empty())
+}
+
+/// `OC_EXTRA_BODY`: a JSON object merged into the top level of each chat
+/// request body. Invalid JSON is ignored (with a warning, never the value).
+pub fn extra_body_from_env() -> Option<serde_json::Value> {
+    let raw = std::env::var("OC_EXTRA_BODY").ok()?;
+    if raw.trim().is_empty() {
+        return None;
+    }
+    match serde_json::from_str::<serde_json::Value>(&raw) {
+        Ok(value) if value.is_object() => Some(value),
+        _ => {
+            tracing::warn!("OC_EXTRA_BODY is not a JSON object; ignoring it");
+            None
+        }
+    }
+}
+
+/// A client for the configured endpoint, with `OC_EXTRA_BODY` applied.
+pub fn client_from_env() -> Client {
+    let client = Client::new(endpoint_from_env());
+    match extra_body_from_env() {
+        Some(extra) => client.with_extra_body(extra),
+        None => client,
+    }
+}
+
+/// `OC_PERMISSIONS`: an inline JSON ruleset (`[{"action":..,"resource":..,
+/// "effect":..}]`) or a path to a file holding one. Unset = allow-all (the
+/// server's historic headless default).
+pub fn permissions_from_env() -> oc_permission::Ruleset {
+    let raw = std::env::var("OC_PERMISSIONS").unwrap_or_default();
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return allow_all_permissions();
+    }
+    let json = if raw.starts_with('[') {
+        raw.to_string()
+    } else {
+        std::fs::read_to_string(raw).unwrap_or_default()
+    };
+    serde_json::from_str(&json).unwrap_or_else(|e| {
+        tracing::warn!("bad OC_PERMISSIONS ruleset ({e}); running with allow-all");
+        allow_all_permissions()
+    })
+}
+
+/// Upstream's build-agent defaults: its only granted action is `question`,
+/// and `Permission.evaluate` falls back to `ask` for everything else.
+pub fn default_build_permissions() -> oc_permission::Ruleset {
+    use oc_permission::{Effect, Rule, Ruleset};
+    Ruleset {
+        rules: vec![Rule {
+            action: "question".into(),
+            resource: "*".into(),
+            effect: Effect::Allow,
+        }],
+    }
+}
+
+/// Permissions for embedded mode: `OC_PERMISSIONS` when set, else the
+/// upstream build-agent default (every action asks).
+pub fn embedded_permissions_from_env() -> oc_permission::Ruleset {
+    let unset = std::env::var("OC_PERMISSIONS")
+        .map(|raw| raw.trim().is_empty())
+        .unwrap_or(true);
+    if unset {
+        default_build_permissions()
+    } else {
+        permissions_from_env()
+    }
 }
 
 /// Model ref from `OC_MODEL` (default `openai/gpt-4o-mini`; a local endpoint
@@ -864,7 +1374,6 @@ mod multi_agent_tests {
     use async_trait::async_trait;
     use oc_provider::{Endpoint, Protocol, ProviderError, Transport};
     use std::sync::Mutex;
-    use tokio::sync::RwLock;
 
     /// Same scripted transport as the runner tests, shared via Arc so the
     /// task tool's child turn pulls the next scripted response.
@@ -908,18 +1417,18 @@ mod multi_agent_tests {
     #[tokio::test]
     async fn task_tool_spawns_child_session_and_returns_its_answer() {
         let dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(RwLock::new(Store::open(dir.path()).unwrap()));
+        let store = Arc::new(Store::open(dir.path()).unwrap());
         let parent = {
-            let mut st = store.write().await;
-            st.create_session(oc_store::CreateInput {
-                title: Some("parent".into()),
-                parent_id: None,
-                agent: Some("build".into()),
-                model: None,
-                directory: dir.path().to_string_lossy().into_owned(),
-                project_id: "global".into(),
-            })
-            .unwrap()
+            store
+                .create_session(oc_store::CreateInput {
+                    title: Some("parent".into()),
+                    parent_id: None,
+                    agent: Some("build".into()),
+                    model: None,
+                    directory: dir.path().to_string_lossy().into_owned(),
+                    project_id: "global".into(),
+                })
+                .unwrap()
         };
         let scripted = Arc::new(Scripted2 {
             responses: Mutex::new(vec![
@@ -936,7 +1445,11 @@ mod multi_agent_tests {
             ]),
         });
         let client = Arc::new(Client::with_transport(
-            Endpoint { protocol: Protocol::OpenAI, base_url: "http://mock/v1".into(), api_key: None },
+            Endpoint {
+                protocol: Protocol::OpenAI,
+                base_url: "http://mock/v1".into(),
+                api_key: None,
+            },
             scripted,
         ));
         // child registry has NO task tool (delegation capped at one level)
@@ -952,7 +1465,7 @@ mod multi_agent_tests {
         let registry = Registry::builtin(dir.path()).with_tools(vec![Arc::new(task)]);
         let model = ModelRef::parse("openai/gpt-test").unwrap();
         let out = prompt(
-            &mut *store.write().await,
+            &store,
             &registry,
             &client,
             &parent.id,
@@ -967,18 +1480,17 @@ mod multi_agent_tests {
         assert_eq!(out.text.as_deref(), Some("parent wrapped: child finished"));
 
         // a child session exists under the parent with its own transcript
-        let st = store.read().await;
-        let children = st.list_sessions(&oc_schema::SessionListFilter {
+        let children = store.list_sessions(&oc_schema::SessionListFilter {
             parent_id: Some(Some(parent.id.clone())),
             ..Default::default()
         });
         assert_eq!(children.sessions.len(), 1, "exactly one child session");
         let child = &children.sessions[0];
         assert_eq!(child.title.as_deref(), Some("probe the repo"));
-        let child_msgs = st.messages(&child.id).unwrap();
+        let child_msgs = store.messages(&child.id).unwrap();
         let child_kinds: Vec<&str> = child_msgs.iter().map(kind).collect();
         assert_eq!(child_kinds, ["user", "assistant", "idle"]);
-        let parent_msgs = st.messages(&parent.id).unwrap();
+        let parent_msgs = store.messages(&parent.id).unwrap();
         let parent_kinds: Vec<&str> = parent_msgs.iter().map(kind).collect();
         assert_eq!(parent_kinds, ["user", "assistant", "assistant", "idle"]);
         // the parent's tool part carries the child's answer
@@ -988,7 +1500,9 @@ mod multi_agent_tests {
                     if let AssistantContent::Tool(t) = part {
                         match &t.state {
                             ToolState::Completed { content, .. } => {
-                                let oc_schema::ToolContent::Text { text } = &content[0] else { panic!() };
+                                let oc_schema::ToolContent::Text { text } = &content[0] else {
+                                    panic!()
+                                };
                                 assert!(text.contains("child finished"), "{text}");
                             }
                             other => panic!("expected completed, got {other:?}"),
@@ -1002,7 +1516,7 @@ mod multi_agent_tests {
     #[tokio::test]
     async fn permission_deny_settles_tool_part_as_error() {
         let dir = tempfile::tempdir().unwrap();
-        let mut store = Store::open(dir.path()).unwrap();
+        let store = Store::open(dir.path()).unwrap();
         let sid = store
             .create_session(oc_store::CreateInput {
                 title: None,
@@ -1021,7 +1535,11 @@ mod multi_agent_tests {
             ]),
         });
         let client = Client::with_transport(
-            Endpoint { protocol: Protocol::OpenAI, base_url: "http://mock/v1".into(), api_key: None },
+            Endpoint {
+                protocol: Protocol::OpenAI,
+                base_url: "http://mock/v1".into(),
+                api_key: None,
+            },
             scripted,
         );
         let registry = Registry::builtin(dir.path());
@@ -1032,10 +1550,21 @@ mod multi_agent_tests {
                 effect: oc_permission::Effect::Deny,
             }],
         };
-        let o = RunOptions { permissions, ..opts() };
-        let out = prompt(&mut store, &registry, &client, &sid, ModelRef::parse("openai/gpt-test").unwrap(), "go", &o)
-            .await
-            .unwrap();
+        let o = RunOptions {
+            permissions,
+            ..opts()
+        };
+        let out = prompt(
+            &store,
+            &registry,
+            &client,
+            &sid,
+            ModelRef::parse("openai/gpt-test").unwrap(),
+            "go",
+            &o,
+        )
+        .await
+        .unwrap();
         assert_eq!(out.outcome, Outcome::Succeeded);
         let msgs = store.messages(&sid).unwrap();
         for m in &msgs {
@@ -1046,8 +1575,12 @@ mod multi_agent_tests {
                         match &t.state {
                             ToolState::Error { error, content, .. } => {
                                 assert_eq!(error.name, "ToolError");
-                                let Some(vec) = content else { panic!("error text missing") };
-                                let oc_schema::ToolContent::Text { text } = &vec[0] else { panic!() };
+                                let Some(vec) = content else {
+                                    panic!("error text missing")
+                                };
+                                let oc_schema::ToolContent::Text { text } = &vec[0] else {
+                                    panic!()
+                                };
                                 assert!(text.contains("permission denied"), "{text}");
                             }
                             other => panic!("expected error state, got {other:?}"),

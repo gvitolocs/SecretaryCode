@@ -12,7 +12,6 @@ use oc_provider::Client;
 use oc_schema::{ModelRef, ToolDef};
 use oc_store::Store;
 use oc_tools::{Registry, Tool, ToolContext, ToolError, ToolOutput};
-use tokio::sync::RwLock;
 
 use crate::RunOptions;
 
@@ -20,7 +19,7 @@ pub const TASK_NAME: &str = "task";
 pub const TASK_DESCRIPTION: &str = "Delegate a task to a specialized subagent: it runs in its own session (recorded under this one) with its own context window, and its final answer comes back as this tool's result. Use it for self-contained work that would flood this conversation — an investigation, a bulk refactor, a long search — and prefer one subagent per independent task. Work on non-overlapping tasks, or briefly tell the user what you launched and end your response.";
 
 pub struct TaskTool {
-    store: Arc<RwLock<Store>>,
+    store: Arc<Store>,
     client: Arc<Client>,
     /// The registry the CHILD runs with — must not contain another task tool
     /// (the port caps delegation at one level).
@@ -33,14 +32,21 @@ pub struct TaskTool {
 impl TaskTool {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        store: Arc<RwLock<Store>>,
+        store: Arc<Store>,
         client: Arc<Client>,
         tools: Arc<Registry>,
         model: ModelRef,
         agent: String,
         max_steps: Option<u32>,
     ) -> Self {
-        Self { store, client, tools, model, agent, max_steps }
+        Self {
+            store,
+            client,
+            tools,
+            model,
+            agent,
+            max_steps,
+        }
     }
 }
 
@@ -63,7 +69,11 @@ impl Tool for TaskTool {
         }
     }
 
-    async fn execute(&self, input: &serde_json::Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
+    async fn execute(
+        &self,
+        input: &serde_json::Value,
+        ctx: &ToolContext,
+    ) -> Result<ToolOutput, ToolError> {
         let description = input
             .get("description")
             .and_then(|v| v.as_str())
@@ -84,27 +94,26 @@ impl Tool for TaskTool {
         }
 
         // child session under the caller, in the caller's worktree
-        let info = {
-            let mut store = self.store.write().await;
-            store
-                .create_session(oc_store::CreateInput {
-                    title: Some(description.to_string()),
-                    parent_id: Some(ctx.session_id.clone()),
-                    agent: Some(agent.clone()),
-                    model: Some(model.clone()),
-                    directory: ctx.worktree.to_string_lossy().into_owned(),
-                    project_id: "global".into(),
-                })
-                .map_err(|e| ToolError::Failed(e.to_string()))?
-        };
+        let info = self
+            .store
+            .create_session(oc_store::CreateInput {
+                title: Some(description.to_string()),
+                parent_id: Some(ctx.session_id.clone()),
+                agent: Some(agent.clone()),
+                model: Some(model.clone()),
+                directory: ctx.worktree.to_string_lossy().into_owned(),
+                project_id: "global".into(),
+            })
+            .map_err(|e| ToolError::Failed(e.to_string()))?;
         let opts = RunOptions {
             agent,
             max_steps: self.max_steps,
             abort: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            permissions: oc_permission::Ruleset::default(),
+            permissions: crate::allow_all_permissions(),
+            ..RunOptions::default()
         };
         let output = crate::prompt(
-            &mut *self.store.write().await,
+            &self.store,
             &self.tools,
             &self.client,
             &info.id,
@@ -116,7 +125,10 @@ impl Tool for TaskTool {
         .map_err(|e| ToolError::Failed(format!("subagent failed: {e}")))?;
 
         let text = output.text.clone().unwrap_or_else(|| {
-            format!("the subagent finished with outcome {:?} without writing a final answer", output.outcome)
+            format!(
+                "the subagent finished with outcome {:?} without writing a final answer",
+                output.outcome
+            )
         });
         let out = ToolOutput::text(format!(
             "{}\n\n[subagent session {} — {} in {} steps]",

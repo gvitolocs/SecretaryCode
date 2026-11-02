@@ -15,27 +15,30 @@ so.
 
 ## Status
 
-- `cargo test --workspace`: **81 passed, 0 failed** (schema 10, store 13 incl.
-  persistence roundtrip, bus 4, provider 30, tools 13, agent 6 incl. the
-  MAX_STEPS gate + abort + provider-failure paths, server 5)
-- Live smoke (2026-10-27, on-box): `oc-cli ask` against a scripted
-  OpenAI-compatible endpoint ran a real 2-step turn — the shell tool executed
-  (`printf ... > smoke.txt` in the session worktree), the transcript recorded
-  the tool part `completed` with its exact input, the session landed
-  `succeeded` with tokens accumulated, and the JSON persistence files exist.
-  See `bench/mock_llm.py`.
+- `cargo test --workspace`: **118 passed, 0 failed** (schema 13, store 14 incl.
+  SQLite + JSON persistence roundtrips, bus 4, provider 42 incl. SSE
+  streaming and `OC_EXTRA_BODY`, tools 14, permission 4, mcp 9, agent 11
+  incl. streamed tool calls, cut streams, MAX_STEPS, abort and subagent paths,
+  server 5, CLI 2 end-to-end embedded turns against in-process mock streams).
+- Static aarch64 build:
+  `cargo build -p oc-cli --no-default-features --profile juno-app
+  --target aarch64-unknown-linux-musl` produces a stripped, statically linked
+  ELF (`3.2M`) with no `libsqlite3-sys` in its dependency tree.
+- The CLI embedded test drives `oc-cli ask` end to end: env-only provider
+  config, in-process runner, streamed mock answer, session persisted under
+  `OC_DATA`, terminal outcome and usage in the summary.
 
 ## What v0.2 ports (the agent runtime)
 
 | Piece | Ported from (source of truth) |
 | --- | --- |
 | `oc-schema` messages | `packages/schema/src/session-message.ts` — full union (user / assistant with content parts / synthetic / system / agent-switched / model-switched / idle), `ToolState` running/completed/error, `Session.Error`, `LLM.FinishReason` |
-| `oc-tools` | `packages/core/src/tool/plugin/*.ts` — bash, read, write, edit, glob, grep, todowrite, webfetch; names + descriptions verbatim from the plugins |
-| `oc-provider` | `packages/ai/src/protocols/openai-chat.ts` + `anthropic-messages.ts` — non-streaming request/response both ways, tool calls, usage + finish-reason mapping |
-| `oc-agent` | `packages/core/src/session/runner/` — the step loop, per-step assistant messages, tool settlement (running → completed/error, in place), `MAX_STEPS_PROMPT` gate (verbatim) + `toolChoice: none`, transcript mapping per `to-llm-message.ts` (synthetic → user role, idle/agent-switched dropped, executed tool parts → tool results), AGENTS.md instruction loading |
-| `oc-store` v0.2 | session surface + JSON-file persistence under `OC_DATA` (`session/sessions.json` + `session/message/<id>.json`, atomic tmp+rename). Upstream persists through Effect/drizzle into SQLite — documented delta |
+| `oc-tools` | `packages/core/src/tool/plugin/*.ts` — `shell`, read, write, edit, glob, grep, todowrite, webfetch; names + descriptions adapted from the plugins (`shell` follows `tool/plugin/shell.ts` and `shell/select.ts`) |
+| `oc-provider` | `packages/ai/src/protocols/openai-chat.ts` + `anthropic-messages.ts` — request/response both ways, SSE streaming, tool calls, required finish reasons, usage mapping, `OC_EXTRA_BODY` |
+| `oc-agent` | `packages/core/src/session/runner/` — streamed step loop with text/reasoning/tool events, per-step assistant messages, tool settlement (running → completed/error, in place), permission ask/deny before execution, `MAX_STEPS_PROMPT` gate (verbatim) + `toolChoice: none`, transcript mapping per `to-llm-message.ts`, environment/date/AGENTS.md system prompt, subagent `task` tool |
+| `oc-store` v0.2 | session surface + JSON-file persistence under `OC_DATA` (`session/sessions.json` + `session/message/<id>.json`, atomic tmp+rename) and optional SQLite document rows (`sqlite` feature, off for the CLI binary) |
 | `oc-server` v0.2 | + `POST /api/session/:id/message` (full turn, returns transcript + outcome), `POST /api/session/:id/abort` |
-| `oc-cli` v0.2 | + `ask` (one-shot session), `run`, `abort` |
+| `oc-cli` v0.2 | server client (`new`/`list`/`get`/`ask`/`run`/`abort`/`synth`/`events`) plus embedded `--local` mode: `ask <text> [dir]` and a streaming `chat [dir]` REPL, with `OC_DATA`, permission prompts and SIGINT abort |
 
 ## Run
 
@@ -46,12 +49,14 @@ export OC_PROVIDER=openai OC_BASE_URL=https://api.openai.com/v1 OC_API_KEY=sk-..
 export OC_MODEL=openai/gpt-4o-mini OC_MAX_STEPS=32
 cargo run -p oc-server             # v2 API subset on 127.0.0.1:18212
 
-cargo run -p oc-cli new "title"    # create a session
+cargo run -p oc-cli new "title"    # create a session (server client)
 cargo run -p oc-cli list           # list sessions (newest first)
 cargo run -p oc-cli ask "create hello.py that prints hi"   # one-shot agent turn
 cargo run -p oc-cli run <id> "now make it take a name argument"
 cargo run -p oc-cli events         # SSE feed
-# env: OC_BIND, OC_BASE, plus the provider config above
+cargo run -p oc-cli -- --local chat    # embedded REPL, no server process
+# embedded ask: OC_BASE unset + OC_BASE_URL set, or pass --local
+# env: OC_BIND, OC_BASE, OC_DATA, OC_PERMISSIONS, OC_SHOW_THINKING, OC_VERBOSE
 ```
 
 Works with any OpenAI-compatible endpoint (Ollama, vLLM, LM Studio,
@@ -65,7 +70,7 @@ llama.cpp): `OC_BASE_URL=http://127.0.0.1:11434/v1 OC_MODEL=... `.
 | `oc-bus` | `packages/core/src/bus.ts` — fan-out event bus; v2 envelope `{"type","properties"}` over a tokio broadcast channel (lag = SSE backpressure) |
 | `oc-store` | `packages/core/src/session/` session surface: create/list/get/patch/remove/active/messages + outcome/idle bookkeeping; in-memory where upstream is SQL |
 | `oc-server` | `packages/protocol/src/groups/session.ts` route paths, verbatim: `GET/POST /api/session`, `GET/PATCH/DELETE /api/session/:id`, `GET /api/session/active`, `POST /api/session/:id/synthetic`, message listing, SSE `/event` |
-| `oc-cli` | the CLI/TUI's API calls, as a thin reqwest client |
+| `oc-cli` | the CLI/TUI's API calls as a thin reqwest client; embedded mode ports `cli/src/run/noninteractive.ts` plus the line REPL |
 
 ## Fidelity notes (verified in source)
 
@@ -107,11 +112,11 @@ Mixed session round (POST create → GET → GET list → POST synthetic;
 
 ## Not ported (v0.2 boundary)
 
-Streaming (SSE) provider transport (non-streaming complete calls only),
-provider retry ladder, compaction, hosted tools, subagent/task tool,
-patch/skill/MCP tools, permission gating (tools run with an implicit allow),
-pricing/cost (tokens accumulate, cost stays 0), TUI, plugins, the SQL
-persistence layer (JSON files instead — see oc-store header).
+Provider retry ladder, compaction, hosted tools, patch/skill tools, the MCP
+bridge in the CLI/server (the crate is tested standalone), pricing/cost
+(tokens accumulate, cost stays 0), TUI, plugins. The `task` subagent exists in
+`oc-agent` but is not registered by the CLI yet. SQLite is available behind
+`oc-store`'s `sqlite` feature (server on, CLI off).
 
 The prompt path is now the real one: user message → model → tool calls →
 executed against the workspace → settled into the transcript → next step →

@@ -2,7 +2,6 @@
 //! spawn/shutdown path. A scripted in-memory server drives the client over
 //! duplex pipes; a real python3 child covers the spawn path. No network.
 
-use async_trait::async_trait;
 use crate::{McpClient, McpServerConfig, McpTool};
 use oc_tools::{Registry, Tool, ToolContext};
 use std::path::Path;
@@ -10,7 +9,11 @@ use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 fn ctx(dir: &Path) -> ToolContext {
-    ToolContext { worktree: dir.to_path_buf(), session_id: "ses_t".into(), call_id: "call_t".into() }
+    ToolContext {
+        worktree: dir.to_path_buf(),
+        session_id: "ses_t".into(),
+        call_id: "call_t".into(),
+    }
 }
 
 const INIT_RESULT: &str = r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05","capabilities":{"tools":{}},"serverInfo":{"name":"t","version":"1"}}}"#;
@@ -19,7 +22,7 @@ const INIT_RESULT: &str = r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion"
 /// pops the next scripted response, substituting the request's id.
 async fn scripted(script: Vec<serde_json::Value>) -> McpClient {
     use tokio::io::duplex;
-    let (mut c_in, mut s_in) = duplex(64 * 1024);
+    let (c_in, s_in) = duplex(64 * 1024);
     let (mut s_out, c_out) = duplex(64 * 1024);
     // the handshake consumes the first answer automatically
     let mut queue = vec![serde_json::from_str::<serde_json::Value>(INIT_RESULT).unwrap()];
@@ -28,20 +31,22 @@ async fn scripted(script: Vec<serde_json::Value>) -> McpClient {
         let mut lines = BufReader::new(s_in).lines();
         while let Ok(Some(line)) = lines.next_line().await {
             eprintln!("[scripted] got: {line}");
-            let Ok(req) = serde_json::from_str::<serde_json::Value>(&line) else { continue };
+            let Ok(req) = serde_json::from_str::<serde_json::Value>(&line) else {
+                continue;
+            };
             if let Some(notif) = req.get("method").and_then(|m| m.as_str()) {
                 if notif.starts_with("notifications/") {
                     continue;
                 }
             }
-            let Some(mut resp) = (!queue.is_empty()).then(|| queue.remove(0)) else { continue };
+            let Some(mut resp) = (!queue.is_empty()).then(|| queue.remove(0)) else {
+                continue;
+            };
             if let Some(id) = req.get("id") {
                 resp["id"] = id.clone();
             }
             eprintln!("[scripted] responding: {resp}");
-            let _ = s_out
-                .write_all(format!("{resp}\n").as_bytes())
-                .await;
+            let _ = s_out.write_all(format!("{resp}\n").as_bytes()).await;
         }
     });
     let client = McpClient::over_io(Box::new(c_in), Box::new(c_out));
@@ -108,8 +113,14 @@ async fn server_error_result_maps_to_mcp_error() {
         "error": {"code": -32601, "message": "method not found"}
     }));
     let client = scripted(script).await;
-    let err = client.call_tool("t", serde_json::json!({})).await.unwrap_err();
-    assert!(matches!(&err, crate::McpError::Server { code: -32601, .. }), "{err}");
+    let err = client
+        .call_tool("t", serde_json::json!({}))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&err, crate::McpError::Server { code: -32601, .. }),
+        "{err}"
+    );
     client.shutdown().await.unwrap();
 }
 
@@ -118,21 +129,21 @@ async fn notifications_are_ignored_and_later_responses_still_route() {
     use tokio::io::{duplex, AsyncBufReadExt, AsyncWriteExt, BufReader};
     // bespoke server: pushes a stray notification BEFORE the tools/list
     // response — the client must ignore the notification and still route
-    let (mut c_in, mut s_in) = duplex(64 * 1024);
+    let (c_in, s_in) = duplex(64 * 1024);
     let (mut s_out, c_out) = duplex(64 * 1024);
     let init: serde_json::Value = serde_json::from_str(INIT_RESULT).unwrap();
     tokio::spawn(async move {
         let mut lines = BufReader::new(s_in).lines();
-        let mut first = true;
+        let first = true;
         while let Ok(Some(line)) = lines.next_line().await {
-            let Ok(req) = serde_json::from_str::<serde_json::Value>(&line) else { continue };
+            let Ok(req) = serde_json::from_str::<serde_json::Value>(&line) else {
+                continue;
+            };
             let Some(id) = req.get("id") else { continue };
             let _ = s_out
                 .write_all(
-                    format!(
-                        "{{\"jsonrpc\":\"2.0\",\"method\":\"notifications/tools_changed\"}}\n"
-                    )
-                    .as_bytes(),
+                    format!("{{\"jsonrpc\":\"2.0\",\"method\":\"notifications/tools_changed\"}}\n")
+                        .as_bytes(),
                 )
                 .await;
             let _ = &first;
@@ -153,7 +164,10 @@ async fn notifications_are_ignored_and_later_responses_still_route() {
     let client = McpClient::over_io(Box::new(c_in), Box::new(c_out));
     client.initialize("test").await.unwrap();
     let tools = client.list_tools().await.unwrap();
-    assert!(tools.is_empty(), "the notification must not route as a response");
+    assert!(
+        tools.is_empty(),
+        "the notification must not route as a response"
+    );
     client.shutdown().await.unwrap();
 }
 
@@ -179,7 +193,10 @@ async fn bridge_exposes_tools_in_registry_with_namespacing() {
     })];
     let registry = Registry::builtin(dir.path()).with_tools(tools);
     let defs = registry.defs();
-    let mcp_def = defs.iter().find(|d| d.name.starts_with("mcp__")).expect("mcp tool registered");
+    let mcp_def = defs
+        .iter()
+        .find(|d| d.name.starts_with("mcp__"))
+        .expect("mcp tool registered");
     assert_eq!(mcp_def.name, "mcp__db__query");
     assert_eq!(mcp_def.description, "Runs a query.");
 
@@ -208,7 +225,9 @@ async fn bridge_exposes_tools_in_registry_with_namespacing() {
         .execute(&serde_json::json!({"sql": "select 1"}), &ctx(dir.path()))
         .await
         .unwrap();
-    let oc_schema::ToolContent::Text { text } = &out.content[0] else { panic!("not text") };
+    let oc_schema::ToolContent::Text { text } = &out.content[0] else {
+        panic!("not text")
+    };
     assert_eq!(text, "query result");
     assert_eq!(out.metadata.unwrap()["server"], "db");
 }
@@ -220,21 +239,30 @@ async fn bridge_maps_is_error_to_tool_error() {
     ]).await);
     let bridge = McpTool {
         server: "db".into(),
-        info: crate::McpToolInfo { name: "boom".into(), description: None, input_schema: serde_json::json!({"type":"object"}) },
+        info: crate::McpToolInfo {
+            name: "boom".into(),
+            description: None,
+            input_schema: serde_json::json!({"type":"object"}),
+        },
         client: fresh,
     };
     let err = bridge
         .execute(&serde_json::json!({}), &ctx(Path::new("/tmp")))
         .await
         .unwrap_err();
-    assert!(matches!(err, oc_tools::ToolError::Failed(ref m) if m == "boom"), "{err}");
+    assert!(
+        matches!(err, oc_tools::ToolError::Failed(ref m) if m == "boom"),
+        "{err}"
+    );
 }
 
 #[tokio::test]
 async fn spawn_and_shutdown_with_real_child() {
     // a real python3 MCP server: newline JSON-RPC answering initialize and
     // tools/list (available on the box; skipped quietly if python3 is not)
-    let Some(python) = which_python3() else { return };
+    let Some(python) = which_python3() else {
+        return;
+    };
     let cfg = McpServerConfig {
         name: "py".into(),
         command: python,
@@ -278,29 +306,17 @@ fn _unused(t: &dyn Tool) -> &dyn Tool {
     t
 }
 
-/// A transport-shaped placeholder so the async_trait import stays used when
-/// the test module grows.
-#[allow(dead_code)]
-struct _TraitAnchor;
-#[async_trait]
-impl Tool for _TraitAnchor {
-    fn def(&self) -> oc_schema::ToolDef {
-        oc_schema::ToolDef { name: "x".into(), description: String::new(), parameters: serde_json::json!({"type":"object"}) }
-    }
-    async fn execute(&self, _i: &serde_json::Value, _c: &ToolContext) -> Result<oc_tools::ToolOutput, oc_tools::ToolError> {
-        unimplemented!()
-    }
-}
-
 #[tokio::test]
 async fn duplex_probe() {
-    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, duplex};
-    let (mut c_in, mut s_in) = duplex(64 * 1024);
-    let (mut s_out, mut c_out) = duplex(64 * 1024);
+    use tokio::io::{duplex, AsyncBufReadExt, AsyncWriteExt, BufReader};
+    let (mut c_in, s_in) = duplex(64 * 1024);
+    let (mut s_out, c_out) = duplex(64 * 1024);
     tokio::spawn(async move {
         let mut lines = BufReader::new(s_in).lines();
         while let Ok(Some(l)) = lines.next_line().await {
-            let _ = (&mut s_out).write_all(format!("echo:{l}\n").as_bytes()).await;
+            let _ = (&mut s_out)
+                .write_all(format!("echo:{l}\n").as_bytes())
+                .await;
         }
     });
     c_in.write_all(b"ping\n").await.unwrap();

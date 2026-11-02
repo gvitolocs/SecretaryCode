@@ -16,9 +16,8 @@
 //!   non-streaming parse always leaves `None`.
 //! - OpenAI usage is honored on the top-level `usage` field and, like
 //!   upstream, on `choices[0].usage` (Moonshot-style compatible providers).
-//! - An OpenAI stream that ends without `[DONE]` or a `finish_reason` still
-//!   produces a response; the missing reason maps to `FinishReason::Unknown`
-//!   (upstream raises an `AIError`).
+//! - An OpenAI stream that ends without a `finish_reason` is a provider
+//!   failure, like a dropped stream (upstream raises an `AIError`).
 //! - Anthropic usage is right-biased merged per field (non-zero wins) across
 //!   `message_start` and `message_delta`, mirroring upstream `mergeUsage`.
 //! - Anthropic `signature_delta` deltas and `compaction_delta` are ignored
@@ -258,7 +257,9 @@ impl OpenAiStreamState {
                 Ok(LlmToolCall { id, name, arguments })
             })
             .collect::<Result<Vec<_>, ProviderError>>()?;
-        let (finish, raw_finish) = self.finish.unwrap_or((FinishReason::Unknown, None));
+        let (finish, raw_finish) = self
+            .finish
+            .ok_or_else(|| ProviderError::Malformed("stream ended without a finish_reason".into()))?;
         Ok(LlmResponse {
             text: collapse(self.text),
             reasoning: collapse(self.reasoning),
@@ -437,7 +438,9 @@ impl AnthropicStreamState {
                 arguments: if pending.arguments.is_empty() { "{}".to_owned() } else { pending.arguments },
             })
             .collect();
-        let (finish, raw_finish) = self.finish.unwrap_or((FinishReason::Unknown, None));
+        let (finish, raw_finish) = self
+            .finish
+            .ok_or_else(|| ProviderError::Malformed("stream ended without a stop_reason".into()))?;
         Ok(LlmResponse {
             text: join_blocks(self.text_blocks),
             reasoning: join_blocks(self.thinking_blocks),

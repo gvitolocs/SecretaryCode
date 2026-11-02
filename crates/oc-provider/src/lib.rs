@@ -12,6 +12,10 @@
 //! `fromRequest`s); this port makes streaming opt-in and keeps the
 //! non-streaming path for transports that cannot stream.
 //!
+//! `Client::with_extra_body` merges a JSON object into the top level of every
+//! outgoing chat body (the `OC_EXTRA_BODY` knob for endpoints that need
+//! vendor fields such as `chat_template_kwargs`).
+//!
 //! Documented deltas vs upstream (all upstream file references are
 //! `packages/ai/src/protocols/{openai-chat,anthropic-messages}.ts`):
 //! - Non-streaming: no `stream`, `stream_options`, `tool_stream`; no SSE
@@ -149,6 +153,7 @@ pub const STREAMING_UNSUPPORTED: &str = "streaming not supported by this transpo
 pub struct Client {
     endpoint: Endpoint,
     transport: Arc<dyn Transport>,
+    extra_body: Option<Value>,
 }
 
 // =============================================================================
@@ -163,7 +168,16 @@ impl Client {
 
     /// Client over a caller-supplied transport (tests, proxies).
     pub fn with_transport(endpoint: Endpoint, transport: Arc<dyn Transport>) -> Self {
-        Self { endpoint, transport }
+        Self { endpoint, transport, extra_body: None }
+    }
+
+    /// Merge `extra` into the top level of every request body. Non-object
+    /// values are ignored; object keys overwrite the generated body's keys.
+    pub fn with_extra_body(mut self, extra: Value) -> Self {
+        if extra.is_object() {
+            self.extra_body = Some(extra);
+        }
+        self
     }
 
     pub fn endpoint(&self) -> &Endpoint {
@@ -222,6 +236,12 @@ impl Client {
                 build_anthropic_request(model, req),
             ),
         };
+        if let Some(extra) = self.extra_body.as_ref().and_then(Value::as_object) {
+            let object = body.2.as_object_mut().expect("request body is an object");
+            for (key, value) in extra {
+                object.insert(key.clone(), value.clone());
+            }
+        }
         if streaming {
             let object = body.2.as_object_mut().expect("request body is an object");
             object.insert("stream".into(), json!(true));

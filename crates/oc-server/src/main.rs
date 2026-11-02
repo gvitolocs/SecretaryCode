@@ -28,25 +28,6 @@ use tokio::sync::RwLock;
 const DEFAULT_BIND: &str = "127.0.0.1:18212";
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// `OC_PERMISSIONS`: an inline JSON ruleset (`[{"action":..,"resource":..,
-/// "effect":..}]`) or a path to a file holding one. Unset = allow-all.
-fn permissions_from_env() -> oc_permission::Ruleset {
-    let raw = std::env::var("OC_PERMISSIONS").unwrap_or_default();
-    let raw = raw.trim();
-    if raw.is_empty() {
-        return oc_permission::Ruleset::default();
-    }
-    let json = if raw.starts_with('[') {
-        raw.to_string()
-    } else {
-        std::fs::read_to_string(raw).unwrap_or_default()
-    };
-    serde_json::from_str(&json).unwrap_or_else(|e| {
-        tracing::warn!("bad OC_PERMISSIONS ruleset ({e}); running with allow-all");
-        oc_permission::Ruleset::default()
-    })
-}
-
 #[derive(Clone)]
 struct AppState {
     store: Arc<RwLock<Store>>,
@@ -81,10 +62,10 @@ async fn main() {
         store: Arc::new(RwLock::new(store)),
         bus: Bus::default(),
         registry: Arc::new(Registry::builtin(std::path::Path::new(&worktree))),
-        client: Arc::new(Client::new(oc_agent::endpoint_from_env())),
+        client: Arc::new(oc_agent::client_from_env()),
         model: oc_agent::model_from_env(),
         max_steps: oc_agent::max_steps_from_env(),
-        permissions: permissions_from_env(),
+        permissions: oc_agent::permissions_from_env(),
         aborts: Arc::new(std::sync::Mutex::new(HashMap::new())),
     };
     let bind = std::env::var("OC_BIND").unwrap_or_else(|_| DEFAULT_BIND.into());
@@ -297,12 +278,13 @@ async fn session_prompt(
         max_steps: st.max_steps,
         abort,
         permissions: st.permissions.clone(),
+        ..RunOptions::default()
     };
     let registry = st.registry.clone();
     let client = st.client.clone();
     let output = {
-        let mut store = st.store.write().await;
-        oc_agent::prompt(&mut store, &registry, &client, &id, model, &body.text, &opts)
+        let store = st.store.write().await;
+        oc_agent::prompt(&store, &registry, &client, &id, model, &body.text, &opts)
             .await
             .map_err(|e| ApiError::Agent(e.to_string()))?
     };

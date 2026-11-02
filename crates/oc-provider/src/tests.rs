@@ -739,6 +739,25 @@ async fn client_empty_model_id_falls_back_to_request_model() {
     assert_eq!(transport.captured().body["model"], "fallback-model");
 }
 
+#[tokio::test]
+async fn extra_body_merges_at_the_top_level() {
+    let transport = MockTransport::ok(json!({
+        "choices": [ { "message": { "role": "assistant", "content": "ok" }, "finish_reason": "stop" } ]
+    }));
+    let client = Client::with_transport(openai_endpoint(), transport.clone()).with_extra_body(json!({
+        "chat_template_kwargs": { "enable_thinking": true },
+        "temperature": 1.0,
+        "model": "must-not-win"
+    }));
+    client.complete("gpt-5", &sample_request()).await.expect("completes");
+
+    let body = transport.captured().body;
+    assert_eq!(body["chat_template_kwargs"], json!({ "enable_thinking": true }));
+    assert_eq!(body["temperature"], 1.0);
+    assert_eq!(body["model"], "must-not-win", "extras win over generated keys");
+    assert_eq!(body["messages"][1]["content"], "hi");
+}
+
 // =============================================================================
 // Streaming: scripted byte-stream transport
 // =============================================================================
@@ -911,6 +930,7 @@ fn openai_stream_parser_reassembles_fragments_purely() {
         json!({ "choices": [ { "index": 0, "delta": { "tool_calls": [
             { "index": 0, "function": { "arguments": "}" } }
         ] } } ] }),
+        json!({ "choices": [ { "index": 0, "delta": {}, "finish_reason": "tool_calls" } ] }),
     ];
     for frame in &frames {
         parse_openai_sse_frame(frame, &mut state).expect("frame parses");
@@ -933,11 +953,8 @@ fn openai_stream_unknown_frames_are_ignored() {
             .expect("ok")
             .is_empty()
     );
-    assert_eq!(
-        state.finish().expect("finishes"),
-        parse_openai_response(&json!({ "choices": [ { "message": { "content": null } } ] })).expect("parses"),
-        "empty stream behaves like an empty non-streaming body (finish Unknown)"
-    );
+    let err = state.finish().expect_err("a stream without finish_reason is a provider failure");
+    assert!(matches!(err, ProviderError::Malformed(ref m) if m.contains("finish_reason")), "got {err:?}");
 }
 
 #[test]

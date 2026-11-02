@@ -12,8 +12,8 @@ use std::process::Stdio;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use oc_schema::{ToolContent, ToolDef};
-use oc_tools::{Registry, Tool, ToolContext, ToolError, ToolOutput};
+use oc_schema::ToolDef;
+use oc_tools::{Tool, ToolContext, ToolError, ToolOutput};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::sync::{oneshot, Mutex};
 
@@ -270,7 +270,7 @@ impl McpClient {
 
     /// Polite close: drop stdin (EOF ends most servers), wait briefly, kill
     /// on timeout.
-    pub async fn shutdown(mut self) -> Result<(), McpError> {
+    pub async fn shutdown(self) -> Result<(), McpError> {
         self.io.stdin.lock().await.shutdown().await.ok();
         if let Some(mut child) = self.shutdown.lock().await.take() {
             match tokio::time::timeout(std::time::Duration::from_secs(5), child.wait()).await {
