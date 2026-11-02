@@ -31,8 +31,11 @@ so.
   with `oc-tunnel` inside and no `libsqlite3-sys` in its dependency tree.
 - **On Juno** (LucinaOS on the Galaxy Book Go, real kernel, 2026-11-02): the
   forward to the gateway, and a scripted 7-step turn using `read`, `edit`, `shell`
-  under BusyBox, `glob`, `grep` without `rg`, and `write`. A turn with real Qwen
-  on the laptop is not proven yet.
+  under BusyBox, `glob`, `grep` without `rg`, and `write`. With real Qwen on the
+  laptop: `chat` ran a failing test, read the script, edited it and ran the test
+  again (PASS), 4 steps in 25 s; Ctrl+C stopped a turn; `oc-cli chat` used 3.4 MB
+  and the tunnel 3.1 MB (`VmRSS`). Reconnecting and compaction on the laptop are
+  not proven yet.
 
 ## What v0.2 ports (the agent runtime)
 
