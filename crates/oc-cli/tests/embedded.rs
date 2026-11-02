@@ -265,10 +265,11 @@ async fn ctrl_c_stops_a_running_command_with_its_children() {
 }
 
 #[tokio::test]
-async fn a_stream_that_ends_without_a_reason_fails_the_turn() {
+async fn a_stream_cut_short_is_requested_again() {
     let dir = tempfile::tempdir().unwrap();
+    // Cut short, then a good answer: the request goes out again, as upstream retries an incomplete stream.
     let cut = "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"half an ans\"}}]}\n\n".to_string();
-    let (url, server) = serve_steps(vec![cut]).await;
+    let (url, server) = serve_steps(vec![cut, text_step("whole answer")]).await;
     let out = tokio::process::Command::new(env!("CARGO_BIN_EXE_oc-cli"))
         .args(["ask", "go"])
         .arg(dir.path())
@@ -280,8 +281,10 @@ async fn a_stream_that_ends_without_a_reason_fails_the_turn() {
         .await
         .unwrap();
     server.abort();
-    assert_eq!(out.status.code(), Some(1), "{}", String::from_utf8_lossy(&out.stderr));
-    assert!(String::from_utf8_lossy(&out.stderr).contains("[failed]"));
+    let (stdout, stderr) = (String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    assert_eq!(out.status.code(), Some(0), "{stderr}");
+    assert!(stderr.contains("model request failed"), "{stderr}");
+    assert!(stdout.contains("whole answer"), "{stdout}");
 }
 
 fn usage_step(inner: String, prompt_tokens: u64) -> String {
@@ -349,4 +352,49 @@ async fn a_context_past_the_ceiling_is_summarized_and_the_turn_goes_on() {
     let next = requests[2].to_string();
     assert!(next.contains("conversation-checkpoint"), "{next}");
     assert!(next.contains("the checkpoint text"), "{next}");
+}
+
+#[tokio::test]
+async fn a_request_the_endpoint_refuses_fails_at_once_and_says_why() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let app = Router::new().route(
+        "/v1/chat/completions",
+        post(|| async { Response::builder().status(400).body(Body::from("bad model name")).unwrap() }),
+    );
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let started = std::time::Instant::now();
+    let out = tokio::process::Command::new(env!("CARGO_BIN_EXE_oc-cli"))
+        .args(["ask", "go"])
+        .arg(dir.path())
+        .env_remove("OC_BASE")
+        .env("OC_BASE_URL", format!("http://{addr}/v1"))
+        .env("OC_MODEL", "openai/gpt-test")
+        .env("OC_DATA", dir.path())
+        .output()
+        .await
+        .unwrap();
+    server.abort();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "{stderr}");
+    assert!(stderr.contains("bad model name"), "{stderr}");
+    assert!(started.elapsed() < std::time::Duration::from_secs(2));
+    // What it wrote can be read back: the next start opens the same store.
+    let mut again = tokio::process::Command::new(env!("CARGO_BIN_EXE_oc-cli"))
+        .args(["ask", "go"])
+        .arg(dir.path())
+        .env_remove("OC_BASE")
+        .env("OC_BASE_URL", "http://127.0.0.1:9/v1")
+        .env("OC_MODEL", "openai/gpt-test")
+        .env("OC_DATA", dir.path())
+        .env("OC_MAX_STEPS", "0")
+        .kill_on_drop(true)
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert!(again.try_wait().unwrap().is_none(), "the store must open: {:?}", again.try_wait());
 }

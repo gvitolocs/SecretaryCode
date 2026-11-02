@@ -384,9 +384,10 @@ pub enum FinishReason {
     Unknown,
 }
 
+/// On the wire there is one `time`, the assistant's own (`Session.Message.Assistant`): `base.time` follows it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(from = "AssistantWire", into = "AssistantWire")]
 pub struct AssistantMessage {
-    #[serde(flatten)]
     pub base: MessageBase,
     pub agent: String,
     pub model: ModelRef,
@@ -404,6 +405,62 @@ pub struct AssistantMessage {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<SessionErrorValue>,
     pub time: AssistantTime,
+}
+
+#[derive(Serialize, Deserialize)]
+struct AssistantWire {
+    id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    metadata: Option<serde_json::Value>,
+    agent: String,
+    model: ModelRef,
+    content: Vec<AssistantContent>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    finish: Option<FinishReason>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    raw_finish: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cost: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    tokens: Option<TokenUsage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    error: Option<SessionErrorValue>,
+    time: AssistantTime,
+}
+
+impl From<AssistantWire> for AssistantMessage {
+    fn from(w: AssistantWire) -> Self {
+        Self {
+            base: MessageBase { id: w.id, metadata: w.metadata, time: MessageTime { created: w.time.created } },
+            agent: w.agent,
+            model: w.model,
+            content: w.content,
+            finish: w.finish,
+            raw_finish: w.raw_finish,
+            cost: w.cost,
+            tokens: w.tokens,
+            error: w.error,
+            time: w.time,
+        }
+    }
+}
+
+impl From<AssistantMessage> for AssistantWire {
+    fn from(m: AssistantMessage) -> Self {
+        Self {
+            id: m.base.id,
+            metadata: m.base.metadata,
+            agent: m.agent,
+            model: m.model,
+            content: m.content,
+            finish: m.finish,
+            raw_finish: m.raw_finish,
+            cost: m.cost,
+            tokens: m.tokens,
+            error: m.error,
+            time: m.time,
+        }
+    }
 }
 
 /// A provider-neutral tool definition — port of `@opencode/ai`
@@ -547,6 +604,25 @@ mod tests {
         let json = serde_json::to_value(&switched).unwrap();
         assert_eq!(json["type"], "agent-switched");
         assert_eq!(json["previous"], "build");
+    }
+
+    #[test]
+    fn an_assistant_message_survives_a_round_trip_with_one_time() {
+        let m = Message::Assistant(AssistantMessage {
+            base: MessageBase { id: "msg_1".into(), metadata: None, time: MessageTime { created: 7 } },
+            agent: "build".into(),
+            model: ModelRef::parse("x/y").unwrap(),
+            content: Vec::new(),
+            finish: None,
+            raw_finish: None,
+            cost: None,
+            tokens: None,
+            error: None,
+            time: AssistantTime { created: 7, streamed: Some(8), completed: None },
+        });
+        let text = serde_json::to_string(&m).unwrap();
+        assert_eq!(text.matches("\"time\"").count(), 1, "{text}");
+        assert_eq!(serde_json::from_str::<Message>(&text).unwrap(), m);
     }
 
     #[test]

@@ -278,6 +278,10 @@ impl Renderer {
                 Compacted::Failed(error) => eprintln!("  compaction failed: {error}"),
                 Compacted::Interrupted => {}
             },
+            RunEvent::RetryScheduled { attempt, delay, error } => {
+                eprintln!("model request failed ({}); try {} in {} s", first_line(&error), attempt + 1, delay.as_secs())
+            }
+            RunEvent::ProviderFailed { error } => eprintln!("model request failed: {error}"),
         }
     }
 
@@ -383,6 +387,7 @@ async fn embedded_ask(args: &[String]) -> ! {
         observer: renderer.observer(),
         permission_ask: None,
         compaction: Settings::from_env(),
+        retries: &oc_agent::RETRY_SCHEDULE,
     };
     let registry = Registry::builtin(&dir);
     let client = oc_agent::client_from_env();
@@ -475,6 +480,7 @@ async fn embedded_chat(args: &[String]) -> ! {
             observer: renderer.observer(),
             permission_ask: Some(Arc::new(ask_on_terminal)),
             compaction: Settings::from_env(),
+            retries: &oc_agent::RETRY_SCHEDULE,
         };
         let started = Instant::now();
         let turn = oc_agent::prompt(

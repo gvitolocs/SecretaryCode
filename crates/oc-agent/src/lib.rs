@@ -61,6 +61,33 @@ pub enum RunEvent {
     CompactionFinished {
         result: compaction::Compacted,
     },
+    /// The provider failed; the same request goes out again after `delay`.
+    RetryScheduled {
+        attempt: usize,
+        delay: std::time::Duration,
+        error: String,
+    },
+    /// The provider failed for good and the turn ends as `failed`.
+    ProviderFailed {
+        error: String,
+    },
+}
+
+/// Upstream's `model-retry.ts` gaps, without jitter: 2 s, 4 s, 8 s, then 10 s seven times, about 84 s in all.
+pub const RETRY_SCHEDULE: [std::time::Duration; 10] = {
+    use std::time::Duration;
+    let ten = Duration::from_secs(10);
+    [Duration::from_secs(2), Duration::from_secs(4), Duration::from_secs(8), ten, ten, ten, ten, ten, ten, ten]
+};
+
+/// `isRetryable`: rate limits, provider-side failures, the network, and a stream cut short.
+fn is_retryable(e: &oc_provider::ProviderError) -> bool {
+    use oc_provider::ProviderError::*;
+    match e {
+        Http { status, .. } => *status == 429 || *status == 408 || *status >= 500,
+        Transport(_) => true,
+        Malformed(m) => m.contains("stream ended"),
+    }
 }
 
 /// Callback receiving [`RunEvent`]s in order; the default does nothing.
@@ -90,6 +117,8 @@ pub struct RunOptions {
     pub permission_ask: Option<PermissionAsk>,
     /// When the context is summarized to stay inside the model's window.
     pub compaction: compaction::Settings,
+    /// The gaps before a failed model request goes out again; empty stops at the first failure.
+    pub retries: &'static [std::time::Duration],
 }
 
 fn allow_all_permissions() -> oc_permission::Ruleset {
@@ -112,6 +141,7 @@ impl Default for RunOptions {
             observer: Arc::new(|_| {}),
             permission_ask: None,
             compaction: compaction::Settings::default(),
+            retries: &[],
         }
     }
 }
@@ -160,6 +190,7 @@ pub async fn run_turn(
     // What the provider last counted; a new turn starts from an estimate.
     let mut last_input: Option<u64> = None;
     let mut overflow_tried = false;
+    let mut retried = 0;
     let compact_now = |rejected: Option<u64>| {
         compact_and_report(store, client, &model, &system, session_id, opts, rejected)
     };
@@ -230,10 +261,19 @@ pub async fn run_turn(
                         _ => {}
                     }
                 }
+                if retried < opts.retries.len() && is_retryable(&e) {
+                    let delay = opts.retries[retried];
+                    retried += 1;
+                    (opts.observer)(RunEvent::RetryScheduled { attempt: retried, delay, error: e.to_string() });
+                    if abortable(&opts.abort, tokio::time::sleep(delay)).await.is_none() {
+                        break Outcome::Interrupted;
+                    }
+                    continue;
+                }
+                (opts.observer)(RunEvent::ProviderFailed { error: e.to_string() });
                 // A provider failure ends the run as `failed`: the failure is
                 // recorded on a terminal assistant message, the idle marker
-                // lands, and the session outcome flips (upstream's retry
-                // ladder lives in SessionRunnerRetry; the port stops).
+                // lands, and the session outcome flips.
                 record_provider_failure(store, session_id, &opts.agent, &model, &e.to_string())?;
                 store.append_message(session_id, |id, t| idle_message(Outcome::Failed, id, t))?;
                 store.set_outcome(session_id, Outcome::Failed)?;
@@ -262,6 +302,7 @@ pub async fn run_turn(
             usage: resp.usage.clone(),
         });
         overflow_tried = false;
+        retried = 0;
         if let Some(u) = &resp.usage {
             last_input = Some((u.input + u.cache_read + u.cache_write) as u64);
         }
