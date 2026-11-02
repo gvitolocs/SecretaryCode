@@ -7,7 +7,7 @@ Rust migration of **OpenCode** (the open-source coding agent), forked from
 open-source base; this workspace ports its core surface to Rust.
 
 **Source of truth:** the fork's TypeScript source at
-`/home/nez/Projects/opencode-fork` (Bun/TypeScript monorepo: `packages/core`
+`/home/nez/Projects/AI/opencode-fork` (Bun/TypeScript monorepo: `packages/core`
 = 428 ts files, `packages/schema`, `packages/protocol`, `packages/server`).
 Every type, field name, ID scheme and route below was read out of that
 source — not invented. Where the port stops short, the fidelity matrix says
@@ -15,18 +15,24 @@ so.
 
 ## Status
 
-- `cargo test --workspace`: **118 passed, 0 failed** (schema 13, store 14 incl.
-  SQLite + JSON persistence roundtrips, bus 4, provider 42 incl. SSE
-  streaming and `OC_EXTRA_BODY`, tools 14, permission 4, mcp 9, agent 11
-  incl. streamed tool calls, cut streams, MAX_STEPS, abort and subagent paths,
-  server 5, CLI 2 end-to-end embedded turns against in-process mock streams).
+- `cargo test --workspace`: **139 passed, 0 failed**. The CLI's 8 run whole
+  turns against in-process mock streams: tool calls split across deltas,
+  reasoning kept out of the text, `edit` + `shell`, Ctrl+C killing a running
+  command's process group, a stream cut short and retried, a refused request
+  failing at once with its reason, compaction, and `chat` (session across
+  turns, `y/N` before acting, `/new`, `/exit`).
+- **Against real Qwen** (2026-11-02, nezopt, Qwen 3.8 27B through the gateway,
+  thinking medium): `oc-cli ask` fixed two real bugs in a scratch crate in 21 s:
+  read the code, one `edit`, `cargo test` (2 passed), 4 steps, 11,070 tokens in,
+  615 out.
 - Static aarch64 build:
   `cargo build -p oc-cli --no-default-features --profile juno-app
-  --target aarch64-unknown-linux-musl` produces a stripped, statically linked
-  ELF (`3.2M`) with no `libsqlite3-sys` in its dependency tree.
-- The CLI embedded test drives `oc-cli ask` end to end: env-only provider
-  config, in-process runner, streamed mock answer, session persisted under
-  `OC_DATA`, terminal outcome and usage in the summary.
+  --target aarch64-unknown-linux-musl` makes one stripped static file of 4.5 MB,
+  with `oc-tunnel` inside and no `libsqlite3-sys` in its dependency tree.
+- **On Juno** (LucinaOS on the Galaxy Book Go, real kernel, 2026-11-02): the
+  forward to the gateway, and a scripted 7-step turn using `read`, `edit`, `shell`
+  under BusyBox, `glob`, `grep` without `rg`, and `write`. A turn with real Qwen
+  on the laptop is not proven yet.
 
 ## What v0.2 ports (the agent runtime)
 
@@ -56,7 +62,25 @@ cargo run -p oc-cli run <id> "now make it take a name argument"
 cargo run -p oc-cli events         # SSE feed
 cargo run -p oc-cli -- --local chat    # embedded REPL, no server process
 # embedded ask: OC_BASE unset + OC_BASE_URL set, or pass --local
-# env: OC_BIND, OC_BASE, OC_DATA, OC_PERMISSIONS, OC_SHOW_THINKING, OC_VERBOSE
+# env: OC_BIND, OC_BASE, OC_DATA, OC_PERMISSIONS, OC_SHOW_THINKING, OC_VERBOSE,
+#      OC_API_KEY_FILE, OC_EXTRA_BODY, OC_CONTEXT_WINDOW, OC_COMPACT_BUFFER, OC_COMPACT_KEEP
+```
+
+Embedded permissions follow upstream's fallback: anything no rule allows asks.
+`chat` asks `y/N`; `ask` refuses, unless `OC_PERMISSIONS` allows it.
+
+## The model on another machine
+
+`oc-tunnel` (also `oc-cli tunnel`) is `ssh -NT -L` for a machine with no ssh
+client: russh on ring, ed25519, the server's key always pinned. A session comes
+up when a connection needs it and again after a drop; routes are tried in order.
+
+```bash
+oc-cli tunnel keygen ~/.config/oc/tunnel_key    # prints only the public line
+# on the server, for that key:
+#   restrict,port-forwarding,permitopen="127.0.0.1:11436",from="192.168.178.0/24",command="/usr/sbin/nologin" ssh-ed25519 AAAA...
+oc-cli tunnel run --key ~/.config/oc/tunnel_key --known-host 'ssh-ed25519 AAAA...' --route user@server &
+OC_BASE_URL=http://127.0.0.1:11436/v1 oc-cli chat
 ```
 
 Works with any OpenAI-compatible endpoint (Ollama, vLLM, LM Studio,
@@ -70,6 +94,7 @@ llama.cpp): `OC_BASE_URL=http://127.0.0.1:11434/v1 OC_MODEL=... `.
 | `oc-bus` | `packages/core/src/bus.ts` — fan-out event bus; v2 envelope `{"type","properties"}` over a tokio broadcast channel (lag = SSE backpressure) |
 | `oc-store` | `packages/core/src/session/` session surface: create/list/get/patch/remove/active/messages + outcome/idle bookkeeping; in-memory where upstream is SQL |
 | `oc-server` | `packages/protocol/src/groups/session.ts` route paths, verbatim: `GET/POST /api/session`, `GET/PATCH/DELETE /api/session/:id`, `GET /api/session/active`, `POST /api/session/:id/synthetic`, message listing, SSE `/event` |
+| `oc-tunnel` | no upstream: OpenSSH's `-L` behaviour (`ExitOnForwardFailure`, `ServerAliveInterval=30`, `ServerAliveCountMax=3`) on russh |
 | `oc-cli` | the CLI/TUI's API calls as a thin reqwest client; embedded mode ports `cli/src/run/noninteractive.ts` plus the line REPL |
 
 ## Fidelity notes (verified in source)
@@ -112,11 +137,12 @@ Mixed session round (POST create → GET → GET list → POST synthetic;
 
 ## Not ported (v0.2 boundary)
 
-Provider retry ladder, compaction, hosted tools, patch/skill tools, the MCP
-bridge in the CLI/server (the crate is tested standalone), pricing/cost
-(tokens accumulate, cost stays 0), TUI, plugins. The `task` subagent exists in
-`oc-agent` but is not registered by the CLI yet. SQLite is available behind
-`oc-store`'s `sqlite` feature (server on, CLI off).
+Hosted tools, patch/skill tools, the MCP bridge in the CLI/server (the crate is
+tested standalone), pricing/cost (tokens accumulate, cost stays 0), the full-screen
+TUI (`chat` is a line REPL), plugins, background and native compaction. The `task`
+subagent exists in `oc-agent` but is not registered by the CLI yet. SQLite is
+behind `oc-store`'s `sqlite` feature (server on, CLI off). The retry ladder is used
+by the CLI; `oc-server` still stops at the first failure.
 
 The prompt path is now the real one: user message → model → tool calls →
 executed against the workspace → settled into the transcript → next step →
