@@ -163,7 +163,7 @@
     "runner_seconds": 2.8,
     "independent_test": "PASS",
     "interactive_edit_and_shell_approval": true,
-    "binary_bytes": 4537600
+    "binary_bytes": 4537664
   },
   "workspace_tests_passed": 153
 }
