@@ -1181,6 +1181,34 @@ async fn streaming_falls_back_to_complete_without_post_stream() {
     assert!(events.lock().expect("event lock").is_empty(), "no events are emitted on the fallback path");
 }
 
+#[test]
+fn whole_response_reasoning_is_read_like_the_stream() {
+    let got = parse_openai_response(&json!({"choices":[{"message":{"role":"assistant",
+        "content":null,"reasoning_content":"thinking"},"finish_reason":"length"}]}))
+    .unwrap();
+    assert_eq!(got.reasoning.as_deref(), Some("thinking"));
+    assert_eq!(got.finish, FinishReason::Length);
+}
+
+#[test]
+fn reasoning_only_assistant_turn_is_sent_with_empty_content() {
+    let req = ChatRequest {
+        model: "m".into(),
+        system: None,
+        messages: vec![
+            ChatMessage::User { text: "go".into() },
+            ChatMessage::Assistant { reasoning: Some("plan".into()), text: None, tool_calls: vec![] },
+            ChatMessage::Assistant { reasoning: None, text: None, tool_calls: vec![] },
+        ],
+        tools: vec![],
+        tool_choice: ToolChoice::Auto,
+    };
+    let body = build_openai_request("m", &req);
+    let messages = body["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), 2, "a fully empty turn is still dropped");
+    assert_eq!(messages[1], json!({"role":"assistant","reasoning_content":"plan","content":""}));
+}
+
 #[tokio::test]
 async fn stream_diagnostics_expose_sizes_and_numeric_timings_without_content_or_headers() {
     let mut chunks = sse_chunks(&[

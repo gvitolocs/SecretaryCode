@@ -305,6 +305,9 @@ impl Renderer {
                 )
             }
             RunEvent::ProviderFailed { error } => eprintln!("model request failed: {error}"),
+            RunEvent::OutputLimitReached => {
+                eprintln!("the response hit the output token limit; continuing")
+            }
         }
     }
 

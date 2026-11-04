@@ -326,6 +326,7 @@ async fn session_prompt(
                 RunEvent::ProviderFailed { error } => {
                     serde_json::json!({"type": "provider-failed", "error": error})
                 }
+                RunEvent::OutputLimitReached => serde_json::json!({"type": "output-limit"}),
                 RunEvent::CompactionStarted => serde_json::json!({"type": "compaction-started"}),
                 RunEvent::CompactionFinished { result } => {
                     serde_json::json!({"type": "compaction-finished", "result": format!("{result:?}")})

@@ -32,7 +32,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let request = ChatRequest {
         model: model.id.clone(),
         system: Some(oc_agent::system_prompt(&model, worktree)),
-        messages: oc_agent::to_llm_messages_for_model(&prefix, replay.then_some(&model)),
+        messages: oc_agent::to_llm_messages_with(&prefix, replay),
         tools: oc_tools::Registry::builtin(worktree).defs(),
         tool_choice: ToolChoice::Auto,
     };

@@ -76,6 +76,8 @@ pub enum RunEvent {
     ProviderFailed {
         error: String,
     },
+    /// The response stopped on its output token limit; the turn continues.
+    OutputLimitReached,
 }
 
 /// Upstream's `model-retry.ts` gaps, without jitter: 2 s, 4 s, 8 s, then 10 s seven times, about 84 s in all.
@@ -141,7 +143,8 @@ pub struct RunOptions {
     pub compaction: compaction::Settings,
     /// The gaps before a failed model request goes out again; empty stops at the first failure.
     pub retries: &'static [std::time::Duration],
-    /// Replay readable reasoning only to the same producing model, on compatible OpenAI endpoints.
+    /// Send earlier readable reasoning back as `reasoning_content` (upstream
+    /// to-llm-message.ts + openai-chat.ts); on by default, OC_REASONING_REPLAY=off stops it.
     pub replay_reasoning: bool,
 }
 
@@ -166,7 +169,7 @@ impl Default for RunOptions {
             permission_ask: None,
             compaction: compaction::Settings::default(),
             retries: &[],
-            replay_reasoning: false,
+            replay_reasoning: true,
         }
     }
 }
@@ -284,7 +287,7 @@ async fn run_turn_inner(
         }
         let history = store.messages(session_id)?;
         let mut messages =
-            to_llm_messages_for_model(&history, opts.replay_reasoning.then_some(&model));
+            to_llm_messages_with(&history, opts.replay_reasoning);
         if limit_reached {
             // runner/llm.ts: the gate appends the gate text as an assistant
             // message to the REQUEST and pins toolChoice none, keeping tool
@@ -421,22 +424,7 @@ async fn run_turn_inner(
             }
         };
         completed_steps += 1;
-        if resp.finish == oc_schema::FinishReason::Length {
-            let error = "Model reached its output token limit (finish_reason=length). The response is incomplete; no tools from this response were executed. Increase max_tokens in OC_EXTRA_BODY or split the task before retrying.";
-            record_output_limit(store, session_id, &opts.agent, &model, &resp, error)?;
-            fold_usage(store, session_id, &resp)?;
-            (opts.observer)(RunEvent::ProviderFailed {
-                error: error.into(),
-            });
-            store.append_message(session_id, |id, t| idle_message(Outcome::Failed, id, t))?;
-            store.set_outcome(session_id, Outcome::Failed)?;
-            return Ok(RunOutput {
-                outcome: Outcome::Failed,
-                steps: completed_steps,
-                text: resp.text,
-            });
-        }
-        settle_step(
+        let assistant_id = settle_step(
             store,
             registry,
             session_id,
@@ -461,6 +449,33 @@ async fn run_turn_inner(
         }
         last_text = resp.text.clone();
         let has_calls = !resp.tool_calls.is_empty();
+        if resp.finish == oc_schema::FinishReason::Length && !opts.abort.load(Ordering::Relaxed) {
+            // runner/llm.ts `OutputLimit`: a truncated response is not an
+            // answer. Three truncated assistant messages in a row (two
+            // continuations) fail the turn; otherwise the loop goes on, with
+            // the synthetic nudge when no tool result will follow.
+            if output_limit_exhausted(&store.messages(session_id)?) {
+                fail_output_limit(store, session_id, &assistant_id)?;
+                (opts.observer)(RunEvent::ProviderFailed {
+                    error: OUTPUT_LIMIT_EXHAUSTED.into(),
+                });
+                store.append_message(session_id, |id, t| idle_message(Outcome::Failed, id, t))?;
+                store.set_outcome(session_id, Outcome::Failed)?;
+                return Ok(RunOutput {
+                    outcome: Outcome::Failed,
+                    steps: completed_steps,
+                    text: last_text,
+                });
+            }
+            (opts.observer)(RunEvent::OutputLimitReached);
+            if !has_calls {
+                store.append_message(session_id, |id, t| {
+                    oc_store::synthetic_message(CONTINUE_AFTER_OUTPUT_LIMIT, id, t)
+                })?;
+            }
+            step += 1;
+            continue;
+        }
         if !has_calls || limit_reached || opts.abort.load(Ordering::Relaxed) {
             break if opts.abort.load(Ordering::Relaxed) {
                 Outcome::Interrupted
@@ -553,7 +568,7 @@ async fn settle_step(
     observer: &Observer,
     abort: &AtomicBool,
     trace: &trace::TurnTrace,
-) -> Result<(), AgentError> {
+) -> Result<String, AgentError> {
     let now = now_ms();
     let mut content: Vec<AssistantContent> = Vec::new();
     if let Some(r) = &resp.reasoning {
@@ -569,32 +584,80 @@ async fn settle_step(
         }));
     }
     let mut tool_inputs: Vec<(String, serde_json::Value)> = Vec::new();
-    for call in &resp.tool_calls {
-        let input: serde_json::Value =
-            serde_json::from_str(&call.arguments).unwrap_or(serde_json::Value::Null);
+    let truncated = resp.finish == oc_schema::FinishReason::Length;
+    let mut runnable = Vec::new();
+    for (n, call) in resp.tool_calls.iter().enumerate() {
+        let parsed = if call.arguments.trim().is_empty() {
+            Some(serde_json::json!({}))
+        } else {
+            serde_json::from_str::<serde_json::Value>(&call.arguments)
+                .ok()
+                .filter(serde_json::Value::is_object)
+        };
+        // publish-llm-event.ts INPUT_FAILURES: input that is not a JSON
+        // object never runs. Under `length` the last call is the one the
+        // limit cut, so it never runs even if its arguments parse: servers
+        // can close partial JSON when they stop (a tightening of upstream).
+        let failure = match (&parsed, truncated && n + 1 == resp.tool_calls.len()) {
+            (_, true) => Some(INPUT_CUT_BY_LENGTH),
+            (None, false) => Some(INPUT_NOT_JSON),
+            (Some(_), false) => None,
+        };
+        let state = match failure {
+            None => ToolState::Running {
+                input: parsed.clone().unwrap_or_default(),
+                metadata: None,
+            },
+            // The replayed input is `{}` (chat templates iterate it as a
+            // map); the raw excerpt stays in metadata, never on the wire.
+            Some(message) => ToolState::Error {
+                input: serde_json::json!({}),
+                error: session_error("ToolInputError", message),
+                content: Some(vec![ToolContent::Text {
+                    text: message.into(),
+                }]),
+                metadata: Some(serde_json::json!({
+                    "input_excerpt": excerpt(&call.arguments, INPUT_EXCERPT_LIMIT),
+                    "input_length": call.arguments.len(),
+                })),
+            },
+        };
         content.push(AssistantContent::Tool(AssistantTool {
             id: call.id.clone(),
             name: call.name.clone(),
-            executed: None,
+            // A refused input is settled: its error result goes back.
+            executed: failure.map(|_| true),
             native: None,
-            state: ToolState::Running {
-                input: input.clone(),
-                metadata: None,
-            },
+            state,
             time: AssistantToolTime {
                 created: now,
                 ran: None,
-                completed: None,
+                completed: failure.map(|_| now),
             },
         }));
-        tool_inputs.push((call.id.clone(), input));
+        if failure.is_none() {
+            runnable.push(n);
+            tool_inputs.push((call.id.clone(), parsed.unwrap_or_default()));
+        } else if let Some(message) = failure {
+            observer(RunEvent::ToolCallFinished {
+                name: call.name.clone(),
+                ok: false,
+                preview: message.into(),
+            });
+        }
     }
     let stored = store.append_message(session_id, |id, t| {
-        assistant_message(agent, model.clone(), content, id, t)
+        let mut message = assistant_message(agent, model.clone(), content, id, t);
+        if let Message::Assistant(a) = &mut message {
+            a.finish = Some(resp.finish.clone());
+            a.raw_finish = resp.raw_finish.clone();
+        }
+        message
     })?;
     let assistant_id = message_id_of(&stored).to_string();
 
-    for (call, (call_id, input)) in resp.tool_calls.iter().zip(tool_inputs.iter()) {
+    let calls = runnable.iter().map(|&n| &resp.tool_calls[n]);
+    for (call, (call_id, input)) in calls.zip(tool_inputs.iter()) {
         let ran = now_ms();
         let ctx = ToolContext {
             worktree: worktree_of(store, session_id),
@@ -677,6 +740,52 @@ async fn settle_step(
         };
         store.replace_message(session_id, msg)?;
     }
+    Ok(assistant_id)
+}
+
+// runner/llm.ts and publish-llm-event.ts texts, verbatim.
+const CONTINUE_AFTER_OUTPUT_LIMIT: &str = "Your last response hit the output token limit (stop reason: length). Do not apologize, recap, or repeat yourself. Break the remaining work into smaller pieces.";
+const OUTPUT_LIMIT_EXHAUSTED: &str =
+    "Response still truncated after two output token limit continuations";
+const INPUT_NOT_JSON: &str = "The tool input could not be parsed as JSON, so the call was not executed. Reissue the call with valid JSON arguments.";
+const INPUT_CUT_BY_LENGTH: &str = "The tool call was not executed because the output token limit (stop reason: length) was reached before you could complete the arguments. Break large payloads into smaller tool calls and reissue the call with complete arguments.";
+const INPUT_EXCERPT_LIMIT: usize = 2048;
+
+fn excerpt(text: &str, limit: usize) -> &str {
+    let mut end = text.len().min(limit);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    &text[..end]
+}
+
+/// llm.ts: the last three user/assistant messages (the current response
+/// included; synthetic nudges do not count) are all assistant messages that
+/// finished on `length`.
+fn output_limit_exhausted(history: &[Message]) -> bool {
+    let recent: Vec<_> = history
+        .iter()
+        .rev()
+        .filter(|m| matches!(m, Message::User(_) | Message::Assistant(_)))
+        .take(3)
+        .collect();
+    recent.len() == 3
+        && recent.iter().all(|m| {
+            matches!(m, Message::Assistant(a) if a.finish == Some(oc_schema::FinishReason::Length))
+        })
+}
+
+/// StepFailedError `output-limit`: the error lands on the step's message.
+fn fail_output_limit(store: &Store, session_id: &str, assistant_id: &str) -> Result<(), AgentError> {
+    let mut msg = store
+        .messages(session_id)?
+        .into_iter()
+        .find(|m| message_id_of(m) == assistant_id)
+        .ok_or_else(|| AgentError::ToolPartMissing(assistant_id.to_string()))?;
+    if let Message::Assistant(a) = &mut msg {
+        a.error = Some(session_error("OutputLimitError", OUTPUT_LIMIT_EXHAUSTED));
+    }
+    store.replace_message(session_id, msg)?;
     Ok(())
 }
 
@@ -706,42 +815,6 @@ fn fold_usage(store: &Store, session_id: &str, resp: &LlmResponse) -> Result<(),
         // documented delta. Token totals still accumulate.
         store.add_usage(session_id, 0.0, usage)?;
     }
-    Ok(())
-}
-
-/// Preserve partial text for inspection, but never replay or execute truncated calls.
-fn record_output_limit(
-    store: &Store,
-    session_id: &str,
-    agent: &str,
-    model: &ModelRef,
-    response: &LlmResponse,
-    error: &str,
-) -> Result<(), AgentError> {
-    let mut content = Vec::new();
-    if let Some(text) = &response.reasoning {
-        content.push(AssistantContent::Reasoning(oc_schema::AssistantReasoning {
-            text: text.clone(),
-        }));
-    }
-    if let Some(text) = &response.text {
-        content.push(AssistantContent::Text(oc_schema::AssistantText {
-            text: text.clone(),
-        }));
-    }
-    store.append_message(session_id, |id, time| {
-        let mut message = assistant_message(agent, model.clone(), content, id, time);
-        if let Message::Assistant(a) = &mut message {
-            a.error = Some(session_error("OutputLimitError", error));
-            a.finish = Some(oc_schema::FinishReason::Length);
-            a.time.completed = Some(now_ms());
-            if !response.tool_calls.is_empty() {
-                a.base.metadata =
-                    Some(serde_json::json!({"truncated_tool_calls":response.tool_calls}));
-            }
-        }
-        message
-    })?;
     Ok(())
 }
 
@@ -966,10 +1039,8 @@ mod tests {
         )
     }
 
-    #[test]
-    fn reasoning_replay_is_opt_in_and_bound_to_the_producing_model() {
-        let model = model();
-        let history = vec![assistant_message(
+    fn reasoning_fixture(model: &ModelRef, error: bool) -> Message {
+        let mut message = assistant_message(
             "build",
             model.clone(),
             vec![
@@ -982,108 +1053,295 @@ mod tests {
             ],
             "msg_fixture".into(),
             1,
-        )];
-        let wire = |messages| {
-            oc_provider::build_openai_request(
-                &model.id,
-                &ChatRequest {
-                    model: model.id.clone(),
-                    system: None,
-                    messages,
-                    tools: vec![],
-                    tool_choice: ToolChoice::Auto,
-                },
-            )
-        };
-        assert!(wire(to_llm_messages(&history))["messages"][0]
-            .get("reasoning_content")
-            .is_none());
-        assert_eq!(
-            wire(to_llm_messages_for_model(&history, Some(&model)))["messages"][0]
-                ["reasoning_content"],
-            "retained plan"
         );
-        for other in [
-            ModelRef::parse("openai/other-model").unwrap(),
-            ModelRef::parse("other/gpt-test").unwrap(),
-        ] {
-            assert!(
-                wire(to_llm_messages_for_model(&history, Some(&other)))["messages"][0]
-                    .get("reasoning_content")
-                    .is_none()
-            );
+        if let (Message::Assistant(a), true) = (&mut message, error) {
+            a.error = Some(session_error("ProviderError", "boom"));
         }
+        message
     }
 
-    #[tokio::test]
-    async fn output_limit_fails_preserves_diagnostics_and_never_executes_partial_tools() {
-        let (dir, store, id) = session();
-        let mut response = openai_tool_call(
-            "partial",
-            "write",
-            r#"{"path":"should-not-exist","content":"incomplete"}"#,
-        );
-        response["choices"][0]["finish_reason"] = serde_json::json!("length");
-        response["choices"][0]["message"]["content"] = serde_json::json!("partial answer");
-        let transport = Arc::new(Scripted::new(vec![response]));
-        let client = Client::with_transport(
+    fn wire(messages: Vec<ChatMessage>) -> serde_json::Value {
+        oc_provider::build_openai_request(
+            "gpt-test",
+            &ChatRequest {
+                model: "gpt-test".into(),
+                system: None,
+                messages,
+                tools: vec![],
+                tool_choice: ToolChoice::Auto,
+            },
+        )
+    }
+
+    fn mock(transport: Arc<dyn oc_provider::Transport>) -> Client {
+        Client::with_transport(
             oc_provider::Endpoint {
                 protocol: oc_provider::Protocol::OpenAI,
                 base_url: "http://mock/v1".into(),
                 api_key: None,
             },
-            transport.clone(),
-        );
+            transport,
+        )
+    }
+
+    #[test]
+    fn reasoning_is_replayed_by_default_to_any_model_and_can_be_switched_off() {
+        // to-llm-message.ts keeps readable reasoning after a model switch too;
+        // openai-chat.ts lowers it to `reasoning_content`.
+        for producer in [model(), ModelRef::parse("other/other-model").unwrap()] {
+            let history = vec![reasoning_fixture(&producer, false)];
+            assert!(RunOptions::default().replay_reasoning);
+            let on = wire(to_llm_messages(&history));
+            assert_eq!(on["messages"][0]["reasoning_content"], "retained plan");
+            assert_eq!(on["messages"][0]["content"], "ready");
+            let off = wire(to_llm_messages_with(&history, false));
+            assert!(off["messages"][0].get("reasoning_content").is_none());
+            assert_eq!(off["messages"][0]["content"], "ready");
+        }
+    }
+
+    #[test]
+    fn reasoning_of_a_failed_message_goes_back_as_text_not_reasoning() {
+        let history = vec![reasoning_fixture(&model(), true)];
+        let body = wire(to_llm_messages(&history));
+        assert!(body["messages"][0].get("reasoning_content").is_none());
+        assert_eq!(body["messages"][0]["content"], "retained plan\n\nready");
+    }
+
+    #[test]
+    fn a_reasoning_only_turn_is_kept_with_empty_content() {
+        let history = vec![assistant_message(
+            "build",
+            model(),
+            vec![AssistantContent::Reasoning(oc_schema::AssistantReasoning {
+                text: "half a plan".into(),
+            })],
+            "msg_r".into(),
+            1,
+        )];
+        let body = wire(to_llm_messages(&history));
+        assert_eq!(body["messages"][0]["reasoning_content"], "half a plan");
+        assert_eq!(body["messages"][0]["content"], "");
+        assert!(wire(to_llm_messages_with(&history, false))["messages"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+    }
+
+    fn length(mut response: serde_json::Value) -> serde_json::Value {
+        response["choices"][0]["finish_reason"] = serde_json::json!("length");
+        response
+    }
+
+    fn openai_reasoning_only(reasoning: &str) -> serde_json::Value {
+        serde_json::json!({
+            "choices": [{"message": {"role": "assistant", "content": null, "reasoning_content": reasoning},
+                "finish_reason": "length"}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 8192}
+        })
+    }
+
+    #[tokio::test]
+    async fn output_limit_three_times_in_a_row_fails_the_turn_instead_of_succeeding() {
+        // The reported bug: Qwen spent the whole budget thinking, made no
+        // edit, and the turn said "succeeded".
+        let (dir, store, id) = session();
+        let transport = Arc::new(Scripted::new(vec![
+            openai_reasoning_only("third"),
+            openai_reasoning_only("second"),
+            openai_reasoning_only("first"),
+        ]));
+        let (observer, events) = event_recorder();
         let out = prompt(
             &store,
             &Registry::builtin(dir.path()),
-            &client,
+            &mock(transport.clone()),
             &id,
             model(),
-            "write a file",
-            &opts(),
+            "fix the bug",
+            &RunOptions { observer, ..opts() },
         )
         .await
         .unwrap();
         assert_eq!(out.outcome, Outcome::Failed);
-        assert_eq!(out.steps, 1);
-        assert!(!dir.path().join("should-not-exist").exists());
-        assert_eq!(
-            store.get_session(&id).unwrap().outcome,
-            Some(Outcome::Failed)
-        );
-        assert_eq!(
-            transport.requests().len(),
-            1,
-            "do not retry incomplete actions automatically"
-        );
+        assert_eq!(store.get_session(&id).unwrap().outcome, Some(Outcome::Failed));
+        let requests = transport.requests();
+        assert_eq!(requests.len(), 3, "two continuations, then stop");
+        // Each continuation carries the nudge and the truncated reasoning.
+        let second = requests[1]["messages"].as_array().unwrap();
+        assert_eq!(second[second.len() - 2]["reasoning_content"], "first");
+        assert_eq!(second.last().unwrap()["role"], "user");
+        assert_eq!(second.last().unwrap()["content"], CONTINUE_AFTER_OUTPUT_LIMIT);
         let history = store.messages(&id).unwrap();
-        let assistant = history
+        let last = history
             .iter()
+            .rev()
             .find_map(|m| match m {
                 Message::Assistant(a) => Some(a),
                 _ => None,
             })
             .unwrap();
-        assert_eq!(assistant.error.as_ref().unwrap().name, "OutputLimitError");
+        assert_eq!(last.finish, Some(FinishReason::Length));
+        let error = last.error.as_ref().unwrap();
+        assert_eq!(error.name, "OutputLimitError");
+        assert_eq!(error.message.as_deref(), Some(OUTPUT_LIMIT_EXHAUSTED));
+        let events = events.lock().unwrap();
         assert_eq!(
-            assistant.base.metadata.as_ref().unwrap()["truncated_tool_calls"][0]["name"],
-            "write"
+            events
+                .iter()
+                .filter(|e| matches!(e, RunEvent::OutputLimitReached))
+                .count(),
+            2
         );
-        let wire = oc_provider::build_openai_request(
-            "gpt-test",
-            &ChatRequest {
-                model: "gpt-test".into(),
-                system: None,
-                messages: to_llm_messages(&history),
-                tools: vec![],
-                tool_choice: ToolChoice::Auto,
-            },
+        assert!(events.iter().any(
+            |e| matches!(e, RunEvent::ProviderFailed { error } if error == OUTPUT_LIMIT_EXHAUSTED)
+        ));
+        assert!(matches!(history.last(), Some(Message::Idle(i)) if i.outcome == Outcome::Failed));
+    }
+
+    #[tokio::test]
+    async fn output_limit_without_tools_continues_and_a_later_answer_succeeds() {
+        let (dir, store, id) = session();
+        let transport = Arc::new(Scripted::new(vec![
+            openai_text("done"),
+            length(openai_text("half an answ")),
+        ]));
+        let out = prompt(
+            &store,
+            &Registry::builtin(dir.path()),
+            &mock(transport.clone()),
+            &id,
+            model(),
+            "explain",
+            &opts(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(out.outcome, Outcome::Succeeded);
+        assert_eq!(out.text.as_deref(), Some("done"));
+        let requests = transport.requests();
+        assert_eq!(requests.len(), 2);
+        let sent = requests[1]["messages"].as_array().unwrap();
+        assert_eq!(sent.last().unwrap()["content"], CONTINUE_AFTER_OUTPUT_LIMIT);
+        let kinds: Vec<_> = store.messages(&id).unwrap().iter().map(kind).collect();
+        assert_eq!(kinds, ["user", "assistant", "synthetic", "assistant", "idle"]);
+    }
+
+    #[tokio::test]
+    async fn a_tool_call_cut_by_the_output_limit_never_runs_even_when_it_parses() {
+        // The last call of a `length` response is the one the limit cut.
+        // Servers can close partial JSON, so parsing is not proof it is whole.
+        let (dir, store, id) = session();
+        let mut cut = openai_tool_call(
+            "call_whole",
+            "write",
+            r#"{"path":"first.txt","content":"complete"}"#,
         );
+        cut["choices"][0]["message"]["tool_calls"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({"id": "call_cut", "type": "function",
+                "function": {"name": "write", "arguments": r#"{"path":"second.txt","content":"trunc"}"#}}));
+        let transport = Arc::new(Scripted::new(vec![openai_text("ok"), length(cut)]));
+        let out = prompt(
+            &store,
+            &Registry::builtin(dir.path()),
+            &mock(transport.clone()),
+            &id,
+            model(),
+            "write two files",
+            &opts(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(out.outcome, Outcome::Succeeded);
+        assert!(dir.path().join("first.txt").exists(), "earlier whole calls run, as upstream");
+        assert!(!dir.path().join("second.txt").exists(), "the cut call never runs");
+        let requests = transport.requests();
+        assert_eq!(requests.len(), 2, "tool results continue the loop without a nudge");
+        let sent = requests[1]["messages"].as_array().unwrap();
+        let cut_result = sent
+            .iter()
+            .find(|m| m["role"] == "tool" && m["tool_call_id"] == "call_cut")
+            .unwrap();
+        assert_eq!(cut_result["content"], INPUT_CUT_BY_LENGTH);
         assert!(
-            !wire.to_string().contains("should-not-exist"),
-            "truncated calls must not reenter future model requests"
+            !requests[1].to_string().contains("second.txt"),
+            "cut arguments never reenter a request"
         );
+        assert!(!sent.iter().any(|m| m["content"] == CONTINUE_AFTER_OUTPUT_LIMIT));
+    }
+
+    #[tokio::test]
+    async fn a_cut_off_call_with_broken_json_never_runs() {
+        let (dir, store, id) = session();
+        let cut = length(openai_tool_call(
+            "call_cut",
+            "write",
+            r#"{"path":"partial.txt","content":"def f("#,
+        ));
+        let transport = Arc::new(Scripted::new(vec![openai_text("ok"), cut]));
+        prompt(
+            &store,
+            &Registry::builtin(dir.path()),
+            &mock(transport.clone()),
+            &id,
+            model(),
+            "write",
+            &opts(),
+        )
+        .await
+        .unwrap();
+        assert!(!dir.path().join("partial.txt").exists());
+        let history = store.messages(&id).unwrap();
+        let tool = history
+            .iter()
+            .find_map(|m| match m {
+                Message::Assistant(a) => a.content.iter().find_map(|c| match c {
+                    AssistantContent::Tool(t) => Some(t.clone()),
+                    _ => None,
+                }),
+                _ => None,
+            })
+            .unwrap();
+        match &tool.state {
+            ToolState::Error { input, metadata, .. } => {
+                assert_eq!(input, &serde_json::json!({}));
+                assert_eq!(metadata.as_ref().unwrap()["input_length"], 39);
+            }
+            other => panic!("expected a refused input, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn malformed_tool_arguments_never_run_on_a_normal_finish() {
+        // Before: unparseable arguments ran the tool with `null` input.
+        let (dir, store, id) = session();
+        let transport = Arc::new(Scripted::new(vec![
+            openai_text("ok"),
+            openai_tool_call("call_bad", "shell", r#"{"command": "touch ran.txt""#),
+        ]));
+        prompt(
+            &store,
+            &Registry::builtin(dir.path()),
+            &mock(transport.clone()),
+            &id,
+            model(),
+            "run it",
+            &opts(),
+        )
+        .await
+        .unwrap();
+        assert!(!dir.path().join("ran.txt").exists());
+        let sent = transport.requests()[1]["messages"].clone();
+        let result = sent
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["role"] == "tool")
+            .unwrap()
+            .clone();
+        assert_eq!(result["content"], INPUT_NOT_JSON);
     }
 
     #[tokio::test]
@@ -1527,14 +1785,15 @@ fn kind(m: &Message) -> &'static str {
 /// - assistant → assistant text + its tool calls; executed parts additionally
 ///   emit tool-result messages right after (upstream's `results` path)
 /// - agent-switched / idle / model-switched → dropped
+/// - readable reasoning → `reasoning` on the assistant turn, for any model
+///   (upstream lets the destination adapter take it after a switch); on a
+///   message that ended in an error it goes back as text, as upstream does
 pub fn to_llm_messages(history: &[Message]) -> Vec<ChatMessage> {
-    to_llm_messages_for_model(history, None)
+    to_llm_messages_with(history, true)
 }
 
-pub fn to_llm_messages_for_model(
-    history: &[Message],
-    replay_model: Option<&ModelRef>,
-) -> Vec<ChatMessage> {
+/// [`to_llm_messages`], with reasoning replay switched off when `replay_reasoning` is false.
+pub fn to_llm_messages_with(history: &[Message], replay_reasoning: bool) -> Vec<ChatMessage> {
     let mut out = Vec::new();
     for m in history {
         match m {
@@ -1568,11 +1827,21 @@ pub fn to_llm_messages_for_model(
                                 text.push_str(&t.text);
                             }
                         }
-                        AssistantContent::Reasoning(r) => {
-                            if replay_model == Some(&a.model) {
+                        AssistantContent::Reasoning(r) if replay_reasoning => {
+                            if a.error.is_some() {
+                                // to-llm-message.ts: reasoning of a failed
+                                // message is not replayable as reasoning.
+                                if !r.text.is_empty() {
+                                    if !text.is_empty() {
+                                        text.push_str("\n\n");
+                                    }
+                                    text.push_str(&r.text);
+                                }
+                            } else {
                                 reasoning.push_str(&r.text);
                             }
                         }
+                        AssistantContent::Reasoning(_) => {}
                         AssistantContent::Tool(tool) => {
                             let input = match &tool.state {
                                 ToolState::Running { input, .. }
@@ -1589,7 +1858,7 @@ pub fn to_llm_messages_for_model(
                     }
                 }
                 let text_opt = if text.is_empty() { None } else { Some(text) };
-                if text_opt.is_none() && tool_calls.is_empty() {
+                if text_opt.is_none() && tool_calls.is_empty() && reasoning.is_empty() {
                     continue;
                 }
                 out.push(ChatMessage::Assistant {
@@ -2106,7 +2375,8 @@ mod multi_agent_tests {
     }
 }
 
-/// Explicit opt-in while benchmarking provider-specific reasoning replay.
+/// Reasoning replay is on unless OC_REASONING_REPLAY is `0`, `false`, `no` or `off`.
 pub fn reasoning_replay_from_env() -> bool {
-    std::env::var("OC_REASONING_REPLAY").is_ok_and(|s| matches!(s.trim(), "1" | "true" | "yes"))
+    !std::env::var("OC_REASONING_REPLAY")
+        .is_ok_and(|s| matches!(s.trim(), "0" | "false" | "no" | "off"))
 }

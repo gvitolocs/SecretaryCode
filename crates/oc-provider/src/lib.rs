@@ -456,20 +456,28 @@ pub fn build_openai_request(model: &str, req: &ChatRequest) -> Value {
             ChatMessage::User { text } => messages.push(json!({ "role": "user", "content": text })),
             ChatMessage::Assistant { text, reasoning, tool_calls } => {
                 // Drop fully empty assistant turns (upstream skips blank
-                // assistant messages); keep the turn when it carries calls.
+                // assistant messages); keep the turn when it carries calls or
+                // readable reasoning (upstream's "meaningful" parts).
                 let text = non_empty(text);
-                if text.is_none() && tool_calls.is_empty() {
+                let reasoning = non_empty(reasoning);
+                if text.is_none() && tool_calls.is_empty() && reasoning.is_none() {
                     continue;
                 }
                 let mut entry = Map::new();
                 entry.insert("role".into(), json!("assistant"));
-                if let Some(reasoning) = non_empty(reasoning) {
+                if let Some(reasoning) = reasoning {
+                    // protocols/openai-chat.ts lowers readable reasoning parts
+                    // to `reasoning_content`; llama.cpp hands it to the chat
+                    // template, which decides which turns keep it.
                     entry.insert("reasoning_content".into(), json!(reasoning));
                 }
                 if let Some(text) = text {
                     // Verbatim text; `content` is omitted when None + calls
                     // are present (upstream sends `content: null`).
                     entry.insert("content".into(), json!(text));
+                } else if tool_calls.is_empty() {
+                    // Reasoning only: upstream sends `content: ""`.
+                    entry.insert("content".into(), json!(""));
                 }
                 if !tool_calls.is_empty() {
                     entry.insert(
@@ -592,7 +600,15 @@ pub fn parse_openai_response(v: &Value) -> Result<LlmResponse, ProviderError> {
         Some(u) => Some(openai_usage(u)),
     };
 
-    Ok(LlmResponse { text, reasoning: None, tool_calls, finish, raw_finish, usage })
+    // The same reasoning fields the streaming parse reads (openai-chat.ts
+    // decodes them on whole responses too).
+    let reasoning = ["reasoning_content", "reasoning", "reasoning_text"]
+        .iter()
+        .find_map(|field| message.get(*field).and_then(Value::as_str))
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned);
+
+    Ok(LlmResponse { text, reasoning, tool_calls, finish, raw_finish, usage })
 }
 
 /// OpenAI `finish_reason` → union mapping (shared by the non-streaming and

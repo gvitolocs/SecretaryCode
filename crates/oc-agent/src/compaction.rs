@@ -148,8 +148,33 @@ fn message_text(m: &Message, level: u8) -> Option<String> {
     }
 }
 
+/// Readable reasoning goes back to the model, so it counts towards the size
+/// (compaction.ts estimates reasoning parts) though the summary leaves it out.
+fn reasoning_tokens(m: &Message) -> u64 {
+    match m {
+        Message::Assistant(a) => a
+            .content
+            .iter()
+            .map(|part| match part {
+                AssistantContent::Reasoning(r) => estimate(&r.text),
+                _ => 0,
+            })
+            .sum(),
+        _ => 0,
+    }
+}
+
+fn message_tokens(m: &Message) -> Option<u64> {
+    let reasoning = reasoning_tokens(m);
+    match message_text(m, 0) {
+        Some(t) => Some(estimate(&t) + reasoning),
+        None if reasoning > 0 => Some(reasoning),
+        None => None,
+    }
+}
+
 fn history_tokens(history: &[Message]) -> u64 {
-    history.iter().filter_map(|m| message_text(m, 0)).map(|t| estimate(&t)).sum()
+    history.iter().filter_map(message_tokens).sum()
 }
 
 /// The estimated size of what would be sent, for a turn's first request.
@@ -162,7 +187,7 @@ fn split(history: &[Message], keep: u64, max_tail: u64) -> Option<usize> {
     let entries: Vec<(usize, u64, bool)> = history
         .iter()
         .enumerate()
-        .filter_map(|(i, m)| message_text(m, 0).map(|t| (i, estimate(&t), matches!(m, Message::User(_)))))
+        .filter_map(|(i, m)| message_tokens(m).map(|size| (i, size, matches!(m, Message::User(_)))))
         .collect();
     if entries.is_empty() {
         return None;
@@ -303,6 +328,24 @@ mod tests {
     fn assistant(i: u32, chars: usize) -> Message {
         let content = vec![AssistantContent::Text(oc_schema::AssistantText { text: "a".repeat(chars) })];
         assistant_message("build", ModelRef::parse("openai/x").unwrap(), content, format!("msg_{i:04}"), u64::from(i))
+    }
+
+    #[test]
+    fn replayed_reasoning_counts_towards_the_size_but_stays_out_of_the_summary() {
+        let content = vec![
+            AssistantContent::Reasoning(oc_schema::AssistantReasoning { text: "r".repeat(40_000) }),
+            AssistantContent::Text(oc_schema::AssistantText { text: "short".into() }),
+        ];
+        let thinking = assistant_message("build", ModelRef::parse("openai/x").unwrap(), content, "msg_0002".into(), 2);
+        let h = vec![user(1, 400), thinking, user(3, 400), assistant(4, 400)];
+        assert!(estimate_context("", &h) >= 10_000, "reasoning is sent back, so it takes room");
+        // The thinking exchange is too big to keep verbatim under a 5k allowance.
+        assert_eq!(split(&h, 5_000, 100_000), Some(2));
+        assert!(!transcript(&h, 100_000).contains("rrrr"), "summaries leave reasoning out");
+        // A reasoning-only message still has a size.
+        let only = vec![AssistantContent::Reasoning(oc_schema::AssistantReasoning { text: "r".repeat(400) })];
+        let only = assistant_message("build", ModelRef::parse("openai/x").unwrap(), only, "msg_0005".into(), 5);
+        assert_eq!(history_tokens(&[only]), 100);
     }
 
     #[test]
