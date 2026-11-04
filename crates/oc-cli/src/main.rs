@@ -234,13 +234,21 @@ impl Renderer {
         })
     }
 
-    fn observer(self: &Arc<Self>) -> Observer {
+    fn observer(self: &Arc<Self>, session: &str) -> Observer {
         let renderer = self.clone();
-        Arc::new(move |event| renderer.render(event))
+        oc_agent::traced_observer(Arc::new(move |event| renderer.render(event)), session)
     }
 
     fn render(&self, event: RunEvent) {
         match event {
+            RunEvent::Trace { record } => {
+                if self.verbose && record["event"] == "request.finish" {
+                    eprintln!("[step {} attempt {}] model {:.3}s, first delta {}ms, input {}, cache {}, output {}, reasoning {} bytes",
+                        record["step"], record["attempt"], record["elapsed_ms"].as_f64().unwrap_or(0.0) / 1000.0,
+                        record["stream"]["first_delta_ms"], record["usage"]["input"], record["usage"]["cache_read"],
+                        record["usage"]["output"], record["stream"]["reasoning_bytes"]);
+                }
+            }
             RunEvent::TextDelta { delta } => {
                 print!("{delta}");
                 let _ = std::io::stdout().flush();
@@ -399,10 +407,11 @@ async fn embedded_ask(args: &[String]) -> i32 {
         max_steps: oc_agent::max_steps_from_env(),
         abort: abort.clone(),
         permissions: oc_agent::embedded_permissions_from_env(),
-        observer: renderer.observer(),
+        observer: renderer.observer(&session),
         permission_ask: None,
         compaction: Settings::from_env(),
         retries: &oc_agent::RETRY_SCHEDULE,
+        replay_reasoning: oc_agent::reasoning_replay_from_env(),
     };
     let registry = Registry::builtin(&dir);
     let client = Arc::new(oc_agent::client_from_env());
@@ -499,10 +508,11 @@ async fn embedded_chat(args: &[String]) -> i32 {
             max_steps: oc_agent::max_steps_from_env(),
             abort: abort.clone(),
             permissions: permissions.clone(),
-            observer: renderer.observer(),
+            observer: renderer.observer(&session),
             permission_ask: Some(Arc::new(ask_on_terminal)),
             compaction: Settings::from_env(),
             retries: &oc_agent::RETRY_SCHEDULE,
+            replay_reasoning: oc_agent::reasoning_replay_from_env(),
         };
         let turn_registry = oc_agent::with_task_tool(
             &registry,

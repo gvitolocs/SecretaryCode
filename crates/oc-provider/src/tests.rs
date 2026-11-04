@@ -56,7 +56,7 @@ fn openai_full_body() {
         messages: vec![
             ChatMessage::User { text: "list files".into() },
             ChatMessage::Assistant {
-                text: Some("checking".into()),
+                reasoning: None, text: Some("checking".into()),
                 tool_calls: vec![call("call_1", "bash", r#"{"cmd":"ls"}"#)],
             },
             ChatMessage::ToolResult {
@@ -114,7 +114,7 @@ fn openai_assistant_without_text_omits_content() {
         system: None,
         messages: vec![
             ChatMessage::User { text: "go".into() },
-            ChatMessage::Assistant { text: None, tool_calls: vec![call("c1", "bash", "{}")] },
+            ChatMessage::Assistant { reasoning: None, text: None, tool_calls: vec![call("c1", "bash", "{}")] },
         ],
         tools: vec![],
         tool_choice: ToolChoice::Auto,
@@ -317,7 +317,7 @@ fn anthropic_full_body() {
         messages: vec![
             ChatMessage::User { text: "list files".into() },
             ChatMessage::Assistant {
-                text: Some("checking".into()),
+                reasoning: None, text: Some("checking".into()),
                 tool_calls: vec![call("toolu_1", "bash", r#"{"cmd":"ls"}"#)],
             },
             ChatMessage::ToolResult {
@@ -380,7 +380,7 @@ fn anthropic_invalid_arguments_become_empty_object() {
             ChatMessage::User { text: "go".into() },
             // Both spellings the model might emit: garbage and a non-object.
             ChatMessage::Assistant {
-                text: None,
+                reasoning: None, text: None,
                 tool_calls: vec![call("t1", "bash", "not json at all"), call("t2", "bash", "[1,2]")],
             },
         ],
@@ -811,7 +811,17 @@ fn done_chunk() -> Result<Bytes, ProviderError> {
 fn recorder() -> (OnEvent, Arc<Mutex<Vec<StreamEvent>>>) {
     let events: Arc<Mutex<Vec<StreamEvent>>> = Arc::new(Mutex::new(Vec::new()));
     let sink = events.clone();
-    (Arc::new(move |event| sink.lock().expect("event lock").push(event)), events)
+    (
+        Arc::new(move |event| {
+            if !matches!(
+                event,
+                StreamEvent::RequestPrepared { .. } | StreamEvent::ResponseStarted
+            ) {
+                sink.lock().expect("event lock").push(event);
+            }
+        }),
+        events,
+    )
 }
 
 #[tokio::test]
@@ -1169,4 +1179,41 @@ async fn streaming_falls_back_to_complete_without_post_stream() {
     assert_eq!(got.text.as_deref(), Some("plain"));
     assert_eq!(got.finish, FinishReason::Stop);
     assert!(events.lock().expect("event lock").is_empty(), "no events are emitted on the fallback path");
+}
+
+#[tokio::test]
+async fn stream_diagnostics_expose_sizes_and_numeric_timings_without_content_or_headers() {
+    let mut chunks = sse_chunks(&[
+        json!({"choices":[{"index":0,"delta":{"content":"private output"},"finish_reason":"stop"}]}),
+        json!({"choices":[],"timings":{"prompt_n":42,"prompt_ms":7.5,"predicted_ms":10.0,
+            "secret":"never-log-me","unexpected_count":123}}),
+    ]);
+    chunks.push(done_chunk());
+    let client = Client::with_transport(openai_endpoint(), ScriptedStream::new(chunks));
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let sink = events.clone();
+    let observer = Arc::new(move |event| sink.lock().unwrap().push(event));
+    client
+        .complete_streaming("gpt-test", &sample_request(), observer)
+        .await
+        .unwrap();
+    let events = events.lock().unwrap();
+    let StreamEvent::RequestPrepared { metadata } = &events[0] else {
+        panic!("request metadata missing")
+    };
+    assert!(metadata["body_bytes"].as_u64().unwrap() > 0);
+    assert!(matches!(events[1], StreamEvent::ResponseStarted));
+    let timings = events
+        .iter()
+        .find_map(|e| match e {
+            StreamEvent::ProviderTimings { timings } => Some(timings),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(
+        timings,
+        &json!({"prompt_n":42,"prompt_ms":7.5,"predicted_ms":10.0})
+    );
+    assert!(!metadata.to_string().contains("Authorization"));
+    assert!(!metadata.to_string().contains("private output"));
 }

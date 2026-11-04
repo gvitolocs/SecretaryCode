@@ -139,6 +139,7 @@ def main():
     args.output.mkdir(parents=True, exist_ok=True)
     lock = threading.Lock()
     records = []
+    active_run = {"label": None}
     settings = {"model":"qwen3.8:27b-q4-72k", "temperature":0.2, "top_p":0.95,
                 "seed":42, "max_tokens":8192, "reasoning_effort":"medium",
                 "chat_template_kwargs":{"enable_thinking":True,"reasoning_effort":"medium"}}
@@ -152,7 +153,7 @@ def main():
             body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             label = self.path.split("/")[1]
             body.update(settings)
-            entry = {"harness":label,"started":time.time(),"settings":settings,
+            entry = {"harness":label,"run_label":active_run["label"],"started":time.time(),"settings":settings,
                      "messages":len(body.get("messages",[])),
                      "tools":[t.get("function",{}).get("name") for t in body.get("tools",[])],
                      "user_prompt_sha256":hashlib.sha256(PROMPT.encode()).hexdigest()}
@@ -164,11 +165,13 @@ def main():
                 conn.request("POST","/v1/chat/completions",json.dumps(body),headers)
                 response=conn.getresponse()
                 entry["status"]=response.status
+                entry["response_headers_ms"]=(time.monotonic()-started)*1000
                 self.send_response(response.status)
                 self.send_header("Content-Type",response.getheader("Content-Type","application/json"))
                 self.end_headers()
                 buf=b""
                 while chunk:=response.read1(16384):
+                    entry.setdefault("first_bytes_ms",(time.monotonic()-started)*1000)
                     self.wfile.write(chunk); self.wfile.flush()
                     buf+=chunk
                     while b"\n" in buf:
@@ -176,6 +179,15 @@ def main():
                         if line.startswith(b"data: {"):
                             packet=json.loads(line[6:])
                             if packet.get("usage"): entry["usage"]=packet["usage"]
+                            if packet.get("timings"):
+                                entry["provider_timings"]={k:v for k,v in packet["timings"].items() if isinstance(v,(int,float))}
+                            for choice in packet.get("choices",[]):
+                                delta=choice.get("delta",{})
+                                for key,metric in [("reasoning_content","reasoning_bytes"),("content","text_bytes")]:
+                                    if isinstance(delta.get(key),str) and delta[key]:
+                                        entry[metric]=entry.get(metric,0)+len(delta[key].encode())
+                                        entry.setdefault("first_delta_ms",(time.monotonic()-started)*1000)
+
             except Exception as exc:
                 entry["error"]=str(exc)
             finally:
@@ -192,6 +204,7 @@ def main():
         for n in range(args.rounds):
             for harness in ([h for h in (["dsh","rust"] if n%2==0 else ["rust","dsh"]) if h in args.harnesses]):
                 label=f"{n+1}-{harness}"
+                active_run["label"]=label
                 work=args.output/label
                 work.mkdir()
                 for name,text in {"README.md":README,"timesheet.py":SOURCE,"test_timesheet.py":TESTS}.items():

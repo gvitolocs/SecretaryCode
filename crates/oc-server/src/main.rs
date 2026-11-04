@@ -298,6 +298,9 @@ async fn session_prompt(
         let session_id = id.clone();
         Arc::new(move |event| {
             let progress = match event {
+                RunEvent::Trace { record } => {
+                    serde_json::json!({"type": "trace", "record": record})
+                }
                 RunEvent::TextDelta { delta } => {
                     serde_json::json!({"type": "text", "delta": delta})
                 }
@@ -335,6 +338,7 @@ async fn session_prompt(
             .ok();
         }) as oc_agent::Observer
     };
+    let observer = oc_agent::traced_observer(observer, &id);
     let opts = RunOptions {
         agent: "build".into(),
         max_steps: st.max_steps,
@@ -343,6 +347,7 @@ async fn session_prompt(
         observer,
         compaction: oc_agent::compaction::Settings::from_env(),
         retries: &oc_agent::RETRY_SCHEDULE,
+        replay_reasoning: oc_agent::reasoning_replay_from_env(),
         ..RunOptions::default()
     };
     let registry = oc_agent::with_task_tool(
@@ -598,10 +603,16 @@ mod tests {
                 .unwrap()
         };
         let running = tokio::spawn(app.clone().oneshot(prompt()));
-        let progress = tokio::time::timeout(std::time::Duration::from_secs(3), events.recv())
-            .await
-            .unwrap()
-            .unwrap();
+        let progress = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            loop {
+                let event = events.recv().await.unwrap();
+                if event.properties["progress"]["type"] == "text" {
+                    break event;
+                }
+            }
+        })
+        .await
+        .unwrap();
         assert_eq!(progress.kind, "session.progress");
         assert!(
             !running.is_finished(),

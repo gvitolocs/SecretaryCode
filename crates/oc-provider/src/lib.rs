@@ -89,7 +89,7 @@ pub struct Endpoint {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ChatMessage {
     User { text: String },
-    Assistant { text: Option<String>, tool_calls: Vec<LlmToolCall> },
+    Assistant { text: Option<String>, reasoning: Option<String>, tool_calls: Vec<LlmToolCall> },
     ToolResult { call_id: String, name: String, content: Vec<ToolContent> },
 }
 
@@ -201,7 +201,7 @@ impl Client {
     ///
     /// If the transport does not implement `post_stream` (it returns the
     /// [`STREAMING_UNSUPPORTED`] error), this falls back to `complete` and no
-    /// events are emitted. `Finished` marks the protocol's terminal SSE
+    /// content events are emitted (request metadata is still reported). `Finished` marks the protocol's terminal SSE
     /// event (`data: [DONE]` for OpenAI, `message_stop` for Anthropic); a
     /// stream that ends without it still produces a response.
     pub async fn complete_streaming(
@@ -211,8 +211,66 @@ impl Client {
         on_event: OnEvent,
     ) -> Result<LlmResponse, ProviderError> {
         let (url, headers, body) = self.prepare(model_id, req, true);
+        let messages = body.get("messages").and_then(Value::as_array);
+        let generation: Map<String, Value> = [
+            "temperature",
+            "top_p",
+            "top_k",
+            "min_p",
+            "presence_penalty",
+            "frequency_penalty",
+            "seed",
+            "max_tokens",
+            "max_completion_tokens",
+            "reasoning_effort",
+        ]
+        .iter()
+        .filter_map(|key| {
+            body.get(*key)
+                .filter(|v| {
+                    v.is_number()
+                        || matches!(
+                            v.as_str(),
+                            Some("none" | "off" | "low" | "medium" | "high" | "max")
+                        )
+                })
+                .map(|v| ((*key).into(), v.clone()))
+        })
+        .collect();
+        let template: Map<String, Value> =
+            ["enable_thinking", "preserve_thinking", "reasoning_effort"]
+                .iter()
+                .filter_map(|key| {
+                    body.get("chat_template_kwargs")
+                        .and_then(|v| v.get(*key))
+                        .filter(|v| {
+                            v.is_boolean()
+                                || matches!(
+                                    v.as_str(),
+                                    Some("none" | "off" | "low" | "medium" | "high" | "max")
+                                )
+                        })
+                        .map(|v| ((*key).into(), v.clone()))
+                })
+                .collect();
+        on_event(StreamEvent::RequestPrepared {
+            metadata: json!({
+                "model": body.get("model"),
+                "protocol": match self.endpoint.protocol { Protocol::OpenAI => "openai-chat", Protocol::Anthropic => "anthropic-messages" },
+                "generation": generation,
+                "chat_template_kwargs": template,
+                "tool_names": req.tools.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(),
+                "body_bytes": serde_json::to_vec(&body).map(|v| v.len()).unwrap_or(0),
+                "messages": messages.map(|v| v.len()),
+                "tool_schema_bytes": body.get("tools").map(|v| v.to_string().len()).unwrap_or(0),
+                "system_bytes": req.system.as_ref().map(|v| v.len()).unwrap_or(0),
+            }),
+        });
         match self.transport.post_stream(&url, headers, body).await {
-            Ok(stream) => streaming::drive_sse(stream, self.endpoint.protocol, on_event).await,
+            Ok(stream) => {
+                on_event(StreamEvent::ResponseStarted);
+                streaming::drive_sse(stream, self.endpoint.protocol, on_event).await
+            }
             Err(ProviderError::Transport(message)) if message == STREAMING_UNSUPPORTED => {
                 self.complete(model_id, req).await
             }
@@ -396,7 +454,7 @@ pub fn build_openai_request(model: &str, req: &ChatRequest) -> Value {
     for message in &req.messages {
         match message {
             ChatMessage::User { text } => messages.push(json!({ "role": "user", "content": text })),
-            ChatMessage::Assistant { text, tool_calls } => {
+            ChatMessage::Assistant { text, reasoning, tool_calls } => {
                 // Drop fully empty assistant turns (upstream skips blank
                 // assistant messages); keep the turn when it carries calls.
                 let text = non_empty(text);
@@ -405,6 +463,9 @@ pub fn build_openai_request(model: &str, req: &ChatRequest) -> Value {
                 }
                 let mut entry = Map::new();
                 entry.insert("role".into(), json!("assistant"));
+                if let Some(reasoning) = non_empty(reasoning) {
+                    entry.insert("reasoning_content".into(), json!(reasoning));
+                }
                 if let Some(text) = text {
                     // Verbatim text; `content` is omitted when None + calls
                     // are present (upstream sends `content: null`).
@@ -607,7 +668,7 @@ pub fn build_anthropic_request(model: &str, req: &ChatRequest) -> Value {
                 flush_results(&mut messages, &mut pending_results);
                 messages.push(json!({ "role": "user", "content": [ { "type": "text", "text": text } ] }));
             }
-            ChatMessage::Assistant { text, tool_calls } => {
+            ChatMessage::Assistant { text, tool_calls, .. } => {
                 flush_results(&mut messages, &mut pending_results);
                 let mut blocks = Vec::new();
                 if let Some(text) = non_empty(text) {

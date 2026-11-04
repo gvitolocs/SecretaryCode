@@ -5,6 +5,7 @@
 
 pub mod compaction;
 pub mod task;
+mod trace;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -39,6 +40,10 @@ const ABORT_POLL: std::time::Duration = std::time::Duration::from_millis(100);
 /// Streaming progress of one runner turn, delivered to the caller's observer.
 #[derive(Debug, Clone, PartialEq)]
 pub enum RunEvent {
+    /// Versioned diagnostic metadata: no prompts, reasoning text or tool arguments.
+    Trace {
+        record: serde_json::Value,
+    },
     ReasoningDelta {
         delta: String,
     },
@@ -104,6 +109,12 @@ fn is_retryable(e: &oc_provider::ProviderError) -> bool {
 /// Callback receiving [`RunEvent`]s in order; the default does nothing.
 pub type Observer = Arc<dyn Fn(RunEvent) + Send + Sync>;
 
+/// Persist timing metadata to OC_TRACE, or OC_DATA/trace/<session>.jsonl.
+/// OC_TRACE=off disables it. Model content and credentials are not logged.
+pub fn traced_observer(observer: Observer, session: &str) -> Observer {
+    trace::file_observer(observer, session)
+}
+
 /// Terminal approval for a rule that resolves to `ask`. Returning `false`
 /// refuses the action, and the refusal goes back to the model.
 pub type PermissionAsk = Arc<dyn Fn(&str, &str) -> bool + Send + Sync>;
@@ -130,6 +141,8 @@ pub struct RunOptions {
     pub compaction: compaction::Settings,
     /// The gaps before a failed model request goes out again; empty stops at the first failure.
     pub retries: &'static [std::time::Duration],
+    /// Replay readable reasoning only to the same producing model, on compatible OpenAI endpoints.
+    pub replay_reasoning: bool,
 }
 
 fn allow_all_permissions() -> oc_permission::Ruleset {
@@ -153,6 +166,7 @@ impl Default for RunOptions {
             permission_ask: None,
             compaction: compaction::Settings::default(),
             retries: &[],
+            replay_reasoning: false,
         }
     }
 }
@@ -212,6 +226,28 @@ pub async fn run_turn(
     model: ModelRef,
     opts: &RunOptions,
 ) -> Result<RunOutput, AgentError> {
+    let trace = trace::TurnTrace::new(session_id, opts.observer.clone());
+    trace.emit(
+        "turn.start",
+        serde_json::json!({"model": model, "replay_reasoning": opts.replay_reasoning}),
+    );
+    let result = run_turn_inner(store, registry, client, session_id, model, opts, &trace).await;
+    trace.emit("turn.finish", match &result {
+        Ok(out) => serde_json::json!({"outcome": out.outcome, "steps": out.steps, "elapsed_ms": trace.elapsed_ms()}),
+        Err(_) => serde_json::json!({"outcome": "error", "elapsed_ms": trace.elapsed_ms()}),
+    });
+    result
+}
+
+async fn run_turn_inner(
+    store: &Store,
+    registry: &Registry,
+    client: &Client,
+    session_id: &str,
+    model: ModelRef,
+    opts: &RunOptions,
+    trace: &trace::TurnTrace,
+) -> Result<RunOutput, AgentError> {
     if store.get_session(session_id).is_err() {
         return Err(AgentError::NotFound(session_id.to_string()));
     }
@@ -225,7 +261,9 @@ pub async fn run_turn(
     let mut overflow_tried = false;
     let mut retried = 0;
     let compact_now = |rejected: Option<u64>| {
-        compact_and_report(store, client, &model, &system, session_id, opts, rejected)
+        compact_and_report(
+            store, client, &model, &system, session_id, opts, rejected, trace,
+        )
     };
     let outcome = loop {
         if opts.abort.load(Ordering::Relaxed) {
@@ -245,12 +283,14 @@ pub async fn run_turn(
             }
         }
         let history = store.messages(session_id)?;
-        let mut messages = to_llm_messages(&history);
+        let mut messages =
+            to_llm_messages_for_model(&history, opts.replay_reasoning.then_some(&model));
         if limit_reached {
             // runner/llm.ts: the gate appends the gate text as an assistant
             // message to the REQUEST and pins toolChoice none, keeping tool
             // definitions so the provider's cached prefix survives.
             messages.push(ChatMessage::Assistant {
+                reasoning: None,
                 text: Some(MAX_STEPS_PROMPT.into()),
                 tool_calls: Vec::new(),
             });
@@ -266,21 +306,71 @@ pub async fn run_turn(
                 ToolChoice::Auto
             },
         };
+        let request_id = trace.request_id(step + 1, retried + 1);
+        trace.emit(
+            "request.start",
+            serde_json::json!({"request_id": request_id, "step": step + 1,
+            "attempt": retried + 1, "messages": req.messages.len(), "tools": req.tools.len(),
+            "replayed_reasoning_bytes": req.messages.iter().map(|m| match m {
+                ChatMessage::Assistant { reasoning: Some(s), .. } => s.len(), _ => 0,
+            }).sum::<usize>()}),
+        );
+        let request_started = std::time::Instant::now();
+        let metrics = Arc::new(std::sync::Mutex::new(trace::StreamMetrics::default()));
         let forward = {
             let observer = opts.observer.clone();
-            Arc::new(move |event: StreamEvent| match event {
-                StreamEvent::Text { delta } => observer(RunEvent::TextDelta { delta }),
-                StreamEvent::Reasoning { delta } => observer(RunEvent::ReasoningDelta { delta }),
-                _ => {}
+            let metrics = metrics.clone();
+            Arc::new(move |event: StreamEvent| {
+                metrics
+                    .lock()
+                    .unwrap()
+                    .observe(&event, trace::ms(request_started.elapsed()));
+                match event {
+                    StreamEvent::Text { delta } => observer(RunEvent::TextDelta { delta }),
+                    StreamEvent::Reasoning { delta } => {
+                        observer(RunEvent::ReasoningDelta { delta })
+                    }
+                    _ => {}
+                }
             }) as OnEvent
         };
-        // Dropping the stream on an abort closes the connection, so the
-        // endpoint stops generating and its slot is free again.
-        let streamed = abortable(
+        let response = abortable(
             &opts.abort,
             client.complete_streaming(&model.id, &req, forward),
-        );
-        let resp = match streamed.await {
+        )
+        .await;
+        if let Some(Ok(r)) = &response {
+            let mut m = metrics.lock().unwrap();
+            m.reasoning_bytes = r.reasoning.as_ref().map(|s| s.len()).unwrap_or(0);
+            m.text_bytes = r.text.as_ref().map(|s| s.len()).unwrap_or(0);
+            m.tool_argument_bytes = r.tool_calls.iter().map(|c| c.arguments.len()).sum();
+        }
+        let (status, usage, calls, finish_reason) = match &response {
+            None => ("interrupted", None, Vec::new(), None),
+            Some(Err(_)) => ("error", None, Vec::new(), None),
+            Some(Ok(r)) => (
+                if r.finish == oc_schema::FinishReason::Length {
+                    "output_limit"
+                } else {
+                    "ok"
+                },
+                r.usage.clone(),
+                r.tool_calls.iter().map(|c| c.name.clone()).collect(),
+                Some(r.finish.clone()),
+            ),
+        };
+        let error_kind = match &response {
+            Some(Err(oc_provider::ProviderError::Http { status, .. })) => {
+                Some(format!("http_{status}"))
+            }
+            Some(Err(oc_provider::ProviderError::Transport(_))) => Some("transport".into()),
+            Some(Err(oc_provider::ProviderError::Malformed(_))) => Some("malformed".into()),
+            _ => None,
+        };
+        trace.emit("request.finish", serde_json::json!({"request_id": request_id, "error_kind": error_kind, "step": step + 1,
+            "attempt": retried + 1, "status": status, "elapsed_ms": trace::ms(request_started.elapsed()),
+            "stream": metrics.lock().unwrap().json(), "usage": usage, "tool_calls": calls, "finish_reason": finish_reason}));
+        let resp = match response {
             None => break Outcome::Interrupted,
             Some(Ok(r)) => r,
             Some(Err(e)) => {
@@ -300,6 +390,7 @@ pub async fn run_turn(
                 if retried < opts.retries.len() && is_retryable(&e) {
                     let delay = opts.retries[retried];
                     retried += 1;
+                    trace.emit("retry.scheduled", serde_json::json!({"request_id": request_id, "attempt": retried, "delay_ms": trace::ms(delay)}));
                     (opts.observer)(RunEvent::RetryScheduled {
                         attempt: retried,
                         delay,
@@ -330,6 +421,21 @@ pub async fn run_turn(
             }
         };
         completed_steps += 1;
+        if resp.finish == oc_schema::FinishReason::Length {
+            let error = "Model reached its output token limit (finish_reason=length). The response is incomplete; no tools from this response were executed. Increase max_tokens in OC_EXTRA_BODY or split the task before retrying.";
+            record_output_limit(store, session_id, &opts.agent, &model, &resp, error)?;
+            fold_usage(store, session_id, &resp)?;
+            (opts.observer)(RunEvent::ProviderFailed {
+                error: error.into(),
+            });
+            store.append_message(session_id, |id, t| idle_message(Outcome::Failed, id, t))?;
+            store.set_outcome(session_id, Outcome::Failed)?;
+            return Ok(RunOutput {
+                outcome: Outcome::Failed,
+                steps: completed_steps,
+                text: resp.text,
+            });
+        }
         settle_step(
             store,
             registry,
@@ -341,6 +447,7 @@ pub async fn run_turn(
             opts.permission_ask.as_ref(),
             &opts.observer,
             &opts.abort,
+            trace,
         )
         .await?;
         fold_usage(store, session_id, &resp)?;
@@ -380,7 +487,10 @@ async fn compact_and_report(
     session_id: &str,
     opts: &RunOptions,
     rejected: Option<u64>,
+    trace: &trace::TurnTrace,
 ) -> Result<compaction::Compacted, AgentError> {
+    let started = std::time::Instant::now();
+    trace.emit("compaction.start", serde_json::json!({}));
     (opts.observer)(RunEvent::CompactionStarted);
     let result = compaction::compact(
         store,
@@ -392,7 +502,20 @@ async fn compact_and_report(
         rejected,
         &opts.abort,
     )
-    .await?;
+    .await;
+    let status = match &result {
+        Ok(compaction::Compacted::Done { before, after }) => {
+            serde_json::json!({"status":"done","before":before,"after":after})
+        }
+        Ok(compaction::Compacted::Nothing) => serde_json::json!({"status":"nothing"}),
+        Ok(compaction::Compacted::Interrupted) => serde_json::json!({"status":"interrupted"}),
+        _ => serde_json::json!({"status":"failed"}),
+    };
+    trace.emit(
+        "compaction.finish",
+        serde_json::json!({"elapsed_ms": trace::ms(started.elapsed()), "result": status}),
+    );
+    let result = result?;
     (opts.observer)(RunEvent::CompactionFinished {
         result: result.clone(),
     });
@@ -429,6 +552,7 @@ async fn settle_step(
     permission_ask: Option<&PermissionAsk>,
     observer: &Observer,
     abort: &AtomicBool,
+    trace: &trace::TurnTrace,
 ) -> Result<(), AgentError> {
     let now = now_ms();
     let mut content: Vec<AssistantContent> = Vec::new();
@@ -490,16 +614,20 @@ async fn settle_step(
             name: call.name.clone(),
             input: input.clone(),
         });
-        let executed =
-            match opts_permissions_check(permissions, &call.name, &resource, permission_ask) {
-                // Dropping a shell call kills its process group.
-                Ok(()) => abortable(abort, registry.execute(&call.name, input, &ctx))
-                    .await
-                    .unwrap_or_else(|| {
-                        Err(oc_tools::ToolError::Failed("aborted by the user".into()))
-                    }),
-                Err(reason) => Err(oc_tools::ToolError::Failed(reason)),
-            };
+        let tool_started = std::time::Instant::now();
+        trace.emit(
+            "tool.start",
+            serde_json::json!({"call_id": call_id, "name": call.name}),
+        );
+        let decision = opts_permissions_check(permissions, &call.name, &resource, permission_ask);
+        let permission_ms = trace::ms(tool_started.elapsed());
+        let executed = match decision {
+            // Dropping a shell call kills its process group.
+            Ok(()) => abortable(abort, registry.execute(&call.name, input, &ctx))
+                .await
+                .unwrap_or_else(|| Err(oc_tools::ToolError::Failed("aborted by the user".into()))),
+            Err(reason) => Err(oc_tools::ToolError::Failed(reason)),
+        };
         let (ok, preview) = match &executed {
             Ok(out) => (true, tool_output_preview(out)),
             Err(error) => (false, error.to_string()),
@@ -509,6 +637,9 @@ async fn settle_step(
             ok,
             preview,
         });
+        trace.emit("tool.finish", serde_json::json!({"call_id": call_id, "name": call.name, "ok": ok,
+            "elapsed_ms": trace::ms(tool_started.elapsed()), "permission_ms": permission_ms,
+            "exit": executed.as_ref().ok().and_then(|out| out.metadata.as_ref()).and_then(|m| m.get("exit"))}));
         let completed = now_ms();
 
         let history = store.messages(session_id)?;
@@ -575,6 +706,42 @@ fn fold_usage(store: &Store, session_id: &str, resp: &LlmResponse) -> Result<(),
         // documented delta. Token totals still accumulate.
         store.add_usage(session_id, 0.0, usage)?;
     }
+    Ok(())
+}
+
+/// Preserve partial text for inspection, but never replay or execute truncated calls.
+fn record_output_limit(
+    store: &Store,
+    session_id: &str,
+    agent: &str,
+    model: &ModelRef,
+    response: &LlmResponse,
+    error: &str,
+) -> Result<(), AgentError> {
+    let mut content = Vec::new();
+    if let Some(text) = &response.reasoning {
+        content.push(AssistantContent::Reasoning(oc_schema::AssistantReasoning {
+            text: text.clone(),
+        }));
+    }
+    if let Some(text) = &response.text {
+        content.push(AssistantContent::Text(oc_schema::AssistantText {
+            text: text.clone(),
+        }));
+    }
+    store.append_message(session_id, |id, time| {
+        let mut message = assistant_message(agent, model.clone(), content, id, time);
+        if let Message::Assistant(a) = &mut message {
+            a.error = Some(session_error("OutputLimitError", error));
+            a.finish = Some(oc_schema::FinishReason::Length);
+            a.time.completed = Some(now_ms());
+            if !response.tool_calls.is_empty() {
+                a.base.metadata =
+                    Some(serde_json::json!({"truncated_tool_calls":response.tool_calls}));
+            }
+        }
+        message
+    })?;
     Ok(())
 }
 
@@ -735,6 +902,7 @@ mod tests {
     }
 
     struct ScriptedStreaming {
+        requests: std::sync::Mutex<Vec<serde_json::Value>>,
         responses:
             std::sync::Mutex<std::collections::VecDeque<Vec<Result<bytes::Bytes, ProviderError>>>>,
     }
@@ -742,6 +910,7 @@ mod tests {
     impl ScriptedStreaming {
         fn new(responses: Vec<Vec<Result<bytes::Bytes, ProviderError>>>) -> Arc<Self> {
             Arc::new(Self {
+                requests: std::sync::Mutex::new(Vec::new()),
                 responses: std::sync::Mutex::new(responses.into()),
             })
         }
@@ -764,8 +933,9 @@ mod tests {
             &self,
             _url: &str,
             _headers: Vec<(String, String)>,
-            _body: serde_json::Value,
+            body: serde_json::Value,
         ) -> Result<oc_provider::ByteStream, ProviderError> {
+            self.requests.lock().unwrap().push(body);
             let chunks = self
                 .responses
                 .lock()
@@ -796,6 +966,126 @@ mod tests {
         )
     }
 
+    #[test]
+    fn reasoning_replay_is_opt_in_and_bound_to_the_producing_model() {
+        let model = model();
+        let history = vec![assistant_message(
+            "build",
+            model.clone(),
+            vec![
+                AssistantContent::Reasoning(oc_schema::AssistantReasoning {
+                    text: "retained plan".into(),
+                }),
+                AssistantContent::Text(oc_schema::AssistantText {
+                    text: "ready".into(),
+                }),
+            ],
+            "msg_fixture".into(),
+            1,
+        )];
+        let wire = |messages| {
+            oc_provider::build_openai_request(
+                &model.id,
+                &ChatRequest {
+                    model: model.id.clone(),
+                    system: None,
+                    messages,
+                    tools: vec![],
+                    tool_choice: ToolChoice::Auto,
+                },
+            )
+        };
+        assert!(wire(to_llm_messages(&history))["messages"][0]
+            .get("reasoning_content")
+            .is_none());
+        assert_eq!(
+            wire(to_llm_messages_for_model(&history, Some(&model)))["messages"][0]
+                ["reasoning_content"],
+            "retained plan"
+        );
+        for other in [
+            ModelRef::parse("openai/other-model").unwrap(),
+            ModelRef::parse("other/gpt-test").unwrap(),
+        ] {
+            assert!(
+                wire(to_llm_messages_for_model(&history, Some(&other)))["messages"][0]
+                    .get("reasoning_content")
+                    .is_none()
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn output_limit_fails_preserves_diagnostics_and_never_executes_partial_tools() {
+        let (dir, store, id) = session();
+        let mut response = openai_tool_call(
+            "partial",
+            "write",
+            r#"{"path":"should-not-exist","content":"incomplete"}"#,
+        );
+        response["choices"][0]["finish_reason"] = serde_json::json!("length");
+        response["choices"][0]["message"]["content"] = serde_json::json!("partial answer");
+        let transport = Arc::new(Scripted::new(vec![response]));
+        let client = Client::with_transport(
+            oc_provider::Endpoint {
+                protocol: oc_provider::Protocol::OpenAI,
+                base_url: "http://mock/v1".into(),
+                api_key: None,
+            },
+            transport.clone(),
+        );
+        let out = prompt(
+            &store,
+            &Registry::builtin(dir.path()),
+            &client,
+            &id,
+            model(),
+            "write a file",
+            &opts(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(out.outcome, Outcome::Failed);
+        assert_eq!(out.steps, 1);
+        assert!(!dir.path().join("should-not-exist").exists());
+        assert_eq!(
+            store.get_session(&id).unwrap().outcome,
+            Some(Outcome::Failed)
+        );
+        assert_eq!(
+            transport.requests().len(),
+            1,
+            "do not retry incomplete actions automatically"
+        );
+        let history = store.messages(&id).unwrap();
+        let assistant = history
+            .iter()
+            .find_map(|m| match m {
+                Message::Assistant(a) => Some(a),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(assistant.error.as_ref().unwrap().name, "OutputLimitError");
+        assert_eq!(
+            assistant.base.metadata.as_ref().unwrap()["truncated_tool_calls"][0]["name"],
+            "write"
+        );
+        let wire = oc_provider::build_openai_request(
+            "gpt-test",
+            &ChatRequest {
+                model: "gpt-test".into(),
+                system: None,
+                messages: to_llm_messages(&history),
+                tools: vec![],
+                tool_choice: ToolChoice::Auto,
+            },
+        );
+        assert!(
+            !wire.to_string().contains("should-not-exist"),
+            "truncated calls must not reenter future model requests"
+        );
+    }
+
     #[tokio::test]
     async fn streamed_tool_call_reasoning_and_observer_events() {
         let (dir, store, sid) = session();
@@ -821,13 +1111,14 @@ mod tests {
             serde_json::json!({ "choices": [ { "index": 0, "delta": {} } ], "usage": { "prompt_tokens": 12, "completion_tokens": 2 } }),
         ]);
         second.push(done());
+        let transport = ScriptedStreaming::new(vec![first, second]);
         let client = Client::with_transport(
             oc_provider::Endpoint {
                 protocol: oc_provider::Protocol::OpenAI,
                 base_url: "http://mock/v1".into(),
                 api_key: None,
             },
-            ScriptedStreaming::new(vec![first, second]),
+            transport.clone(),
         );
         let registry = Registry::builtin(dir.path());
         let (observer, events) = event_recorder();
@@ -838,7 +1129,11 @@ mod tests {
             &sid,
             model(),
             "write it",
-            &RunOptions { observer, ..opts() },
+            &RunOptions {
+                observer,
+                replay_reasoning: true,
+                ..opts()
+            },
         )
         .await
         .unwrap();
@@ -869,6 +1164,31 @@ mod tests {
             .filter(|event| matches!(event, RunEvent::StepFinished { .. }))
             .count();
         assert_eq!(finished, 2, "one step-finished event per provider step");
+        let requests = transport.requests.lock().unwrap();
+        assert_eq!(requests[1]["messages"][2]["reasoning_content"], "plan");
+        let trace: Vec<_> = events
+            .iter()
+            .filter_map(|e| match e {
+                RunEvent::Trace { record } => Some(record),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(trace.first().unwrap()["event"], "turn.start");
+        assert_eq!(trace.last().unwrap()["event"], "turn.finish");
+        let finished: Vec<_> = trace
+            .iter()
+            .filter(|r| r["event"] == "request.finish")
+            .collect();
+        assert_eq!(finished.len(), 2);
+        assert_eq!(finished[0]["stream"]["reasoning_bytes"], 4);
+        assert_eq!(finished[1]["stream"]["text_bytes"], 4);
+        assert!(
+            finished[0]["elapsed_ms"].as_f64().unwrap()
+                >= finished[0]["stream"]["first_delta_ms"].as_f64().unwrap()
+        );
+        let tool = trace.iter().find(|r| r["event"] == "tool.finish").unwrap();
+        assert_eq!(tool["name"], "write");
+        assert!(tool["elapsed_ms"].as_f64().unwrap() >= tool["permission_ms"].as_f64().unwrap());
     }
 
     #[tokio::test]
@@ -1208,6 +1528,13 @@ fn kind(m: &Message) -> &'static str {
 ///   emit tool-result messages right after (upstream's `results` path)
 /// - agent-switched / idle / model-switched → dropped
 pub fn to_llm_messages(history: &[Message]) -> Vec<ChatMessage> {
+    to_llm_messages_for_model(history, None)
+}
+
+pub fn to_llm_messages_for_model(
+    history: &[Message],
+    replay_model: Option<&ModelRef>,
+) -> Vec<ChatMessage> {
     let mut out = Vec::new();
     for m in history {
         match m {
@@ -1229,6 +1556,7 @@ pub fn to_llm_messages(history: &[Message]) -> Vec<ChatMessage> {
             Message::AgentSwitched(_) | Message::ModelSwitched(_) | Message::Idle(_) => {}
             Message::Assistant(a) => {
                 let mut text = String::new();
+                let mut reasoning = String::new();
                 let mut tool_calls = Vec::new();
                 for part in &a.content {
                     match part {
@@ -1241,11 +1569,9 @@ pub fn to_llm_messages(history: &[Message]) -> Vec<ChatMessage> {
                             }
                         }
                         AssistantContent::Reasoning(r) => {
-                            // upstream replays readable reasoning with
-                            // provider-bound metadata only for the producing
-                            // model; the port has no metadata replay, so
-                            // reasoning is dropped — documented delta
-                            let _ = r;
+                            if replay_model == Some(&a.model) {
+                                reasoning.push_str(&r.text);
+                            }
                         }
                         AssistantContent::Tool(tool) => {
                             let input = match &tool.state {
@@ -1267,6 +1593,11 @@ pub fn to_llm_messages(history: &[Message]) -> Vec<ChatMessage> {
                     continue;
                 }
                 out.push(ChatMessage::Assistant {
+                    reasoning: if reasoning.is_empty() {
+                        None
+                    } else {
+                        Some(reasoning)
+                    },
                     text: text_opt,
                     tool_calls,
                 });
@@ -1773,4 +2104,9 @@ mod multi_agent_tests {
             }
         }
     }
+}
+
+/// Explicit opt-in while benchmarking provider-specific reasoning replay.
+pub fn reasoning_replay_from_env() -> bool {
+    std::env::var("OC_REASONING_REPLAY").is_ok_and(|s| matches!(s.trim(), "1" | "true" | "yes"))
 }

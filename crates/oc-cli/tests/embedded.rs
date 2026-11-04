@@ -56,6 +56,30 @@ async fn ask_runs_the_turn_in_process_against_a_mock_stream() {
     assert!(stderr.contains("[succeeded]"), "{stderr}");
     assert!(stderr.contains("tokens in 3/out 2"), "{stderr}");
     assert!(data.path().join("session/sessions.json").is_file());
+    let logs: Vec<_> = std::fs::read_dir(data.path().join("trace"))
+        .unwrap()
+        .collect();
+    assert_eq!(logs.len(), 1);
+    let path = logs[0].as_ref().unwrap().path();
+    let trace = std::fs::read_to_string(&path).unwrap();
+    let rows: Vec<serde_json::Value> = trace
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(rows.first().unwrap()["event"], "turn.start");
+    assert_eq!(rows.last().unwrap()["event"], "turn.finish");
+    assert!(rows
+        .iter()
+        .any(|r| r["event"] == "request.finish" && r["usage"]["output"] == 2.0));
+    assert!(
+        !trace.contains("hello from mock"),
+        "trace records metrics, not response content"
+    );
+    use std::os::unix::fs::PermissionsExt;
+    assert_eq!(
+        std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
 }
 
 #[tokio::test]
@@ -101,6 +125,56 @@ async fn mistral_uses_its_key_and_default_model_with_openai_chat_transport() {
     );
     assert!(String::from_utf8_lossy(&out.stdout).contains("hello from mock"));
     assert!(!String::from_utf8_lossy(&out.stderr).contains("fixture-mistral-key"));
+}
+
+#[tokio::test]
+async fn trace_can_be_disabled_or_redirected_and_io_errors_do_not_stop_the_agent() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            Router::new().route("/v1/chat/completions", post(completion)),
+        )
+        .await
+        .unwrap();
+    });
+    for mode in ["off", "file", "directory"] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("explicit.jsonl");
+        let setting = match mode {
+            "off" => "off".to_string(),
+            "file" => path.to_string_lossy().into_owned(),
+            _ => dir.path().to_string_lossy().into_owned(),
+        };
+        let out = tokio::process::Command::new(env!("CARGO_BIN_EXE_oc-cli"))
+            .args(["ask", "say hello"])
+            .current_dir(dir.path())
+            .env_remove("OC_BASE")
+            .env_remove("OC_EXTRA_BODY")
+            .env("OC_BASE_URL", format!("http://{addr}/v1"))
+            .env("OC_MODEL", "openai/gpt-test")
+            .env("OC_DATA", dir.path())
+            .env("OC_TRACE", setting)
+            .output()
+            .await
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{mode}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(String::from_utf8_lossy(&out.stdout).contains("hello from mock"));
+        assert_eq!(path.is_file(), mode == "file");
+        assert!(
+            !dir.path().join("trace").exists(),
+            "explicit trace settings override the default"
+        );
+        if mode == "directory" {
+            assert!(String::from_utf8_lossy(&out.stderr).contains("cannot open diagnostic trace"));
+        }
+    }
+    server.abort();
 }
 
 async fn tool_call_stream() -> Response {

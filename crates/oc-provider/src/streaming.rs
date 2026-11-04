@@ -45,6 +45,9 @@ pub enum StreamEvent {
     Reasoning { delta: String },
     ToolCallStarted { index: usize, id: String, name: String },
     ToolCallDelta { index: usize, arguments_delta: String },
+    RequestPrepared { metadata: Value },
+    ResponseStarted,
+    ProviderTimings { timings: Value },
     Finished, // terminal SSE event received
 }
 
@@ -158,6 +161,31 @@ pub struct OpenAiStreamState {
 /// produced in order. Unknown chunk shapes are ignored.
 pub fn parse_openai_sse_frame(chunk: &Value, state: &mut OpenAiStreamState) -> Result<Vec<StreamEvent>, ProviderError> {
     let mut events = Vec::new();
+    if let Some(raw) = chunk.get("timings").and_then(Value::as_object) {
+        let safe: serde_json::Map<String, Value> = [
+            "prompt_n",
+            "prompt_ms",
+            "prompt_per_second",
+            "predicted_n",
+            "predicted_ms",
+            "predicted_per_second",
+            "cache_n",
+        ]
+        .iter()
+        .filter_map(|key| {
+            raw.get(*key)
+                .filter(|v| v.is_number())
+                .map(|v| ((*key).into(), v.clone()))
+        })
+        .collect();
+        if !safe.is_empty() {
+            events.push(StreamEvent::ProviderTimings {
+                timings: Value::Object(safe),
+            });
+        }
+    }
+
+
 
     // Trailing usage chunk (with `stream_options.include_usage`), plus the
     // Moonshot-style `choices[0].usage` fallback.

@@ -274,7 +274,7 @@ pub(crate) async fn compact(
             summary = Some(text);
             break;
         }
-        messages.push(ChatMessage::Assistant { text: Some(text), tool_calls: Vec::new() });
+        messages.push(ChatMessage::Assistant { reasoning: None, text: Some(text), tool_calls: Vec::new() });
         messages.push(ChatMessage::User { text: NUDGE.into() });
     }
     let Some(summary) = summary else {
