@@ -27,9 +27,16 @@ pub struct TaskTool {
     model: ModelRef,
     agent: String,
     max_steps: Option<u32>,
+    options: RunOptions,
 }
 
 impl TaskTool {
+    /// Child executions inherit the caller's permissions, cancellation and model settings.
+    pub fn with_options(mut self, options: &RunOptions) -> Self {
+        self.options = options.clone();
+        self
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         store: Arc<Store>,
@@ -46,6 +53,7 @@ impl TaskTool {
             model,
             agent,
             max_steps,
+            options: RunOptions::default(),
         }
     }
 }
@@ -108,9 +116,7 @@ impl Tool for TaskTool {
         let opts = RunOptions {
             agent,
             max_steps: self.max_steps,
-            abort: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            permissions: crate::allow_all_permissions(),
-            ..RunOptions::default()
+            ..self.options.clone()
         };
         let output = crate::prompt(
             &self.store,
@@ -149,5 +155,159 @@ impl Tool for TaskTool {
             "steps": output.steps,
         }));
         Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use oc_provider::{Endpoint, Protocol, ProviderError, Transport};
+    use oc_schema::{AssistantContent, Message, Outcome, ToolState};
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Mutex,
+    };
+
+    struct Scripted(Mutex<std::collections::VecDeque<serde_json::Value>>);
+
+    #[async_trait]
+    impl Transport for Scripted {
+        async fn post_json(
+            &self,
+            _url: &str,
+            _headers: Vec<(String, String)>,
+            _body: serde_json::Value,
+        ) -> Result<serde_json::Value, ProviderError> {
+            self.0
+                .lock()
+                .unwrap()
+                .pop_front()
+                .ok_or_else(|| ProviderError::Malformed("unexpected provider request".into()))
+        }
+    }
+
+    fn setup(
+        options: &RunOptions,
+        responses: Vec<serde_json::Value>,
+    ) -> (
+        tempfile::TempDir,
+        Arc<Store>,
+        TaskTool,
+        ToolContext,
+        Arc<Scripted>,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store::open(dir.path()).unwrap());
+        let parent = store
+            .create_session(oc_store::CreateInput {
+                title: None,
+                parent_id: None,
+                agent: None,
+                model: None,
+                directory: dir.path().to_string_lossy().into_owned(),
+                project_id: "global".into(),
+            })
+            .unwrap();
+        let transport = Arc::new(Scripted(Mutex::new(responses.into())));
+        let client = Arc::new(Client::with_transport(
+            Endpoint {
+                protocol: Protocol::OpenAI,
+                base_url: "http://mock/v1".into(),
+                api_key: None,
+            },
+            transport.clone(),
+        ));
+        let tool = TaskTool::new(
+            store.clone(),
+            client,
+            Arc::new(Registry::builtin(dir.path())),
+            ModelRef::parse("openai/test").unwrap(),
+            "build".into(),
+            None,
+        )
+        .with_options(options);
+        let ctx = ToolContext {
+            worktree: dir.path().to_path_buf(),
+            session_id: parent.id,
+            call_id: "task-test".into(),
+        };
+        (dir, store, tool, ctx, transport)
+    }
+
+    #[tokio::test]
+    async fn parent_abort_interrupts_child_before_provider_request() {
+        let options = RunOptions {
+            abort: Arc::new(AtomicBool::new(true)),
+            ..RunOptions::default()
+        };
+        let (_dir, _store, tool, ctx, _transport) = setup(&options, vec![]);
+        let out = tool
+            .execute(
+                &serde_json::json!({"description":"cancelled child","prompt":"do nothing"}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        let meta = out.metadata.unwrap();
+        assert_eq!(
+            serde_json::from_value::<Outcome>(meta["outcome"].clone()).unwrap(),
+            Outcome::Interrupted
+        );
+        assert_eq!(meta["steps"], 0);
+        assert!(options.abort.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn parent_denied_write_preserves_file_and_records_child_tool_error() {
+        let options = RunOptions {
+            permissions: oc_permission::Ruleset {
+                rules: vec![oc_permission::Rule {
+                    action: "write".into(),
+                    resource: "*".into(),
+                    effect: oc_permission::Effect::Deny,
+                }],
+            },
+            ..RunOptions::default()
+        };
+        let responses = vec![
+            serde_json::json!({"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[{
+                "id":"write1","type":"function","function":{"name":"write","arguments":
+                r#"{"path":"guard.txt","content":"changed"}"#}}]},"finish_reason":"tool_calls"}]}),
+            serde_json::json!({"choices":[{"message":{"role":"assistant","content":"write refused"},"finish_reason":"stop"}]}),
+        ];
+        let (dir, store, tool, ctx, transport) = setup(&options, responses);
+        let guard = dir.path().join("guard.txt");
+        std::fs::write(&guard, "original").unwrap();
+        let out = tool
+            .execute(
+                &serde_json::json!({"description":"denied write","prompt":"overwrite guard.txt"}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert_eq!(std::fs::read_to_string(guard).unwrap(), "original");
+        assert!(
+            transport.0.lock().unwrap().is_empty(),
+            "both scripted model responses must be consumed"
+        );
+        let meta = out.metadata.unwrap();
+        let sid = meta["sessionID"].as_str().unwrap();
+        let mut denied = false;
+        for message in store.messages(sid).unwrap() {
+            if let Message::Assistant(message) = message {
+                for part in message.content {
+                    if let AssistantContent::Tool(part) = part {
+                        if let ToolState::Error {
+                            content: Some(content),
+                            ..
+                        } = part.state
+                        {
+                            denied |= content.iter().any(|c| matches!(c, oc_schema::ToolContent::Text { text } if text.contains("permission denied")));
+                        }
+                    }
+                }
+            }
+        }
+        assert!(denied, "child transcript must record the denied write");
     }
 }

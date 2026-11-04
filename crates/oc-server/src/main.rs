@@ -17,20 +17,21 @@ use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use oc_agent::RunOptions;
+use oc_agent::{RunEvent, RunOptions};
 use oc_bus::{Bus, EventEnvelope};
 use oc_provider::Client;
-use oc_schema::{Message, MessageBase, MessageTime, ModelRef, Order, SessionListFilter, SyntheticMessage};
+use oc_schema::{
+    Message, MessageBase, MessageTime, ModelRef, Order, SessionListFilter, SyntheticMessage,
+};
 use oc_store::{CreateInput, Store, StoreError};
 use oc_tools::Registry;
-use tokio::sync::RwLock;
 
 const DEFAULT_BIND: &str = "127.0.0.1:18212";
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Clone)]
 struct AppState {
-    store: Arc<RwLock<Store>>,
+    store: Arc<Store>,
     bus: Bus,
     registry: Arc<Registry>,
     client: Arc<Client>,
@@ -49,7 +50,9 @@ async fn main() {
                 .unwrap_or_else(|_| "oc_server=info".into()),
         )
         .init();
-    let data_dir = std::env::var("OC_DATA").ok().filter(|s| !s.trim().is_empty());
+    let data_dir = std::env::var("OC_DATA")
+        .ok()
+        .filter(|s| !s.trim().is_empty());
     let store = match &data_dir {
         Some(dir) => Store::open(std::path::Path::new(dir)).expect("open data dir"),
         None => Store::new(),
@@ -59,7 +62,7 @@ async fn main() {
         .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(|| "/tmp".into());
     let state = AppState {
-        store: Arc::new(RwLock::new(store)),
+        store: Arc::new(store),
         bus: Bus::default(),
         registry: Arc::new(Registry::builtin(std::path::Path::new(&worktree))),
         client: Arc::new(oc_agent::client_from_env()),
@@ -99,7 +102,10 @@ fn router(state: AppState) -> Router {
             get(session_messages).post(session_prompt),
         )
         .route("/api/session/{sessionID}/abort", post(session_abort))
-        .route("/api/session/{sessionID}/synthetic", post(session_synthetic))
+        .route(
+            "/api/session/{sessionID}/synthetic",
+            post(session_synthetic),
+        )
         .route("/event", get(event_feed))
         .with_state(state)
 }
@@ -140,7 +146,7 @@ async fn session_list(
     State(st): State<AppState>,
     Query(q): Query<ListQuery>,
 ) -> Json<serde_json::Value> {
-    let store = st.store.read().await;
+    let store = st.store;
     let page = store.list_sessions(&parse_filter(q));
     Json(serde_json::json!({ "data": page.sessions }))
 }
@@ -178,8 +184,6 @@ async fn session_create(
 ) -> Result<Response, ApiError> {
     let info = st
         .store
-        .write()
-        .await
         .create_session(CreateInput {
             title: body.title,
             parent_id: body.parent_id,
@@ -190,14 +194,18 @@ async fn session_create(
         })
         .map_err(ApiError::from)?;
     publish_session(&st, &info).ok();
-    Ok((StatusCode::CREATED, Json(serde_json::json!({ "info": info }))).into_response())
+    Ok((
+        StatusCode::CREATED,
+        Json(serde_json::json!({ "info": info })),
+    )
+        .into_response())
 }
 
 async fn session_get(
     State(st): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let info = st.store.read().await.get_session(&id).map_err(ApiError::from)?;
+    let info = st.store.get_session(&id).map_err(ApiError::from)?;
     Ok(Json(serde_json::json!({ "info": info })))
 }
 
@@ -216,8 +224,6 @@ async fn session_update(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let info = st
         .store
-        .write()
-        .await
         .update_session(&id, body.title, body.archived)
         .map_err(ApiError::from)?;
     publish_session(&st, &info).ok();
@@ -228,15 +234,18 @@ async fn session_remove(
     State(st): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let info = st.store.write().await.remove_session(&id).map_err(ApiError::from)?;
+    let info = st.store.remove_session(&id).map_err(ApiError::from)?;
     st.bus
-        .publish(EventEnvelope::new("session.removed", serde_json::json!({ "info": info })))
+        .publish(EventEnvelope::new(
+            "session.removed",
+            serde_json::json!({ "info": info }),
+        ))
         .ok();
     Ok(Json(serde_json::json!({ "info": info })))
 }
 
 async fn session_active(State(st): State<AppState>) -> Json<serde_json::Value> {
-    let active = st.store.read().await.active_sessions();
+    let active = st.store.active_sessions();
     Json(serde_json::json!({ "data": active }))
 }
 
@@ -244,7 +253,7 @@ async fn session_messages(
     State(st): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let msgs = st.store.read().await.messages(&id).map_err(ApiError::from)?;
+    let msgs = st.store.messages(&id).map_err(ApiError::from)?;
     Ok(Json(serde_json::json!({ "data": msgs })))
 }
 
@@ -257,8 +266,8 @@ struct PromptBody {
 
 /// `session.prompt` — append the user message and run the full agent turn
 /// (provider steps + tool execution) synchronously; the SSE feed carries the
-/// transcript events as they land. The write lock is held for the whole turn
-/// (single-operator port; concurrent turns on one store serialize).
+/// progress events as they land. Store operations lock internally; network and
+/// tool execution never hold a process-wide store lock.
 async fn session_prompt(
     State(st): State<AppState>,
     Path(id): Path<String>,
@@ -272,29 +281,92 @@ async fn session_prompt(
         model.id = mid.clone();
     }
     let abort = Arc::new(AtomicBool::new(false));
-    st.aborts.lock().unwrap().insert(id.clone(), abort.clone());
+    st.store.get_session(&id).map_err(ApiError::from)?;
+    {
+        let mut active = st.aborts.lock().unwrap();
+        if active.contains_key(&id) {
+            return Ok((
+                StatusCode::CONFLICT,
+                Json(serde_json::json!({ "error": "session is already running" })),
+            )
+                .into_response());
+        }
+        active.insert(id.clone(), abort.clone());
+    }
+    let observer = {
+        let bus = st.bus.clone();
+        let session_id = id.clone();
+        Arc::new(move |event| {
+            let progress = match event {
+                RunEvent::TextDelta { delta } => {
+                    serde_json::json!({"type": "text", "delta": delta})
+                }
+                RunEvent::ReasoningDelta { delta } => {
+                    serde_json::json!({"type": "reasoning", "delta": delta})
+                }
+                RunEvent::ToolCallStarted { name, input } => {
+                    serde_json::json!({"type": "tool-started", "name": name, "input": input})
+                }
+                RunEvent::ToolCallFinished { name, ok, preview } => {
+                    serde_json::json!({"type": "tool-finished", "name": name, "ok": ok, "preview": preview})
+                }
+                RunEvent::StepFinished { usage } => {
+                    serde_json::json!({"type": "step-finished", "usage": usage})
+                }
+                RunEvent::RetryScheduled {
+                    attempt,
+                    delay,
+                    error,
+                } => {
+                    serde_json::json!({"type": "retry", "attempt": attempt, "delayMs": delay.as_millis(), "error": error})
+                }
+                RunEvent::ProviderFailed { error } => {
+                    serde_json::json!({"type": "provider-failed", "error": error})
+                }
+                RunEvent::CompactionStarted => serde_json::json!({"type": "compaction-started"}),
+                RunEvent::CompactionFinished { result } => {
+                    serde_json::json!({"type": "compaction-finished", "result": format!("{result:?}")})
+                }
+            };
+            bus.publish(EventEnvelope::new(
+                "session.progress",
+                serde_json::json!({"sessionID": session_id, "progress": progress}),
+            ))
+            .ok();
+        }) as oc_agent::Observer
+    };
     let opts = RunOptions {
         agent: "build".into(),
         max_steps: st.max_steps,
         abort,
         permissions: st.permissions.clone(),
+        observer,
+        compaction: oc_agent::compaction::Settings::from_env(),
+        retries: &oc_agent::RETRY_SCHEDULE,
         ..RunOptions::default()
     };
-    let registry = st.registry.clone();
+    let registry = oc_agent::with_task_tool(
+        &st.registry,
+        st.store.clone(),
+        st.client.clone(),
+        model.clone(),
+        &opts,
+    );
     let client = st.client.clone();
-    let output = {
-        let store = st.store.write().await;
-        oc_agent::prompt(&store, &registry, &client, &id, model, &body.text, &opts)
-            .await
-            .map_err(|e| ApiError::Agent(e.to_string()))?
-    };
-    let msgs = st.store.read().await.messages(&id).map_err(ApiError::from)?;
+    let result =
+        oc_agent::prompt(&st.store, &registry, &client, &id, model, &body.text, &opts).await;
+    st.aborts.lock().unwrap().remove(&id);
+    let output = result.map_err(|e| ApiError::Agent(e.to_string()))?;
+    let msgs = st.store.messages(&id).map_err(ApiError::from)?;
     for m in &msgs {
         st.bus
-            .publish(EventEnvelope::new("message.updated", serde_json::json!({ "message": m })))
+            .publish(EventEnvelope::new(
+                "message.updated",
+                serde_json::json!({ "message": m }),
+            ))
             .ok();
     }
-    let info = st.store.read().await.get_session(&id).map_err(ApiError::from)?;
+    let info = st.store.get_session(&id).map_err(ApiError::from)?;
     Ok((
         StatusCode::CREATED,
         Json(serde_json::json!({
@@ -312,7 +384,10 @@ async fn session_prompt(
 
 /// `session.abort` — fire the running turn's abort flag; the runner ends the
 /// turn as `interrupted` between steps.
-async fn session_abort(State(st): State<AppState>, Path(id): Path<String>) -> Json<serde_json::Value> {
+async fn session_abort(
+    State(st): State<AppState>,
+    Path(id): Path<String>,
+) -> Json<serde_json::Value> {
     let fired = st
         .aborts
         .lock()
@@ -342,24 +417,35 @@ async fn session_synthetic(
     }
     let msg = st
         .store
-        .write()
-        .await
         .append_message(&id, |mid, created| {
             Message::Synthetic(SyntheticMessage {
-                base: MessageBase { id: mid, metadata: None, time: MessageTime { created } },
+                base: MessageBase {
+                    id: mid,
+                    metadata: None,
+                    time: MessageTime { created },
+                },
                 text: body.text.clone(),
                 description: body.description.clone(),
             })
         })
         .map_err(ApiError::from)?;
     st.bus
-        .publish(EventEnvelope::new("message.updated", serde_json::json!({ "message": msg })))
+        .publish(EventEnvelope::new(
+            "message.updated",
+            serde_json::json!({ "message": msg }),
+        ))
         .ok();
-    Ok((StatusCode::CREATED, Json(serde_json::json!({ "message": msg }))).into_response())
+    Ok((
+        StatusCode::CREATED,
+        Json(serde_json::json!({ "message": msg })),
+    )
+        .into_response())
 }
 
 /// SSE event feed over the bus.
-async fn event_feed(State(st): State<AppState>) -> Sse<impl futures_util::Stream<Item = Result<SseEvent, std::convert::Infallible>>> {
+async fn event_feed(
+    State(st): State<AppState>,
+) -> Sse<impl futures_util::Stream<Item = Result<SseEvent, std::convert::Infallible>>> {
     let rx = st.bus.subscribe();
     let stream = futures_util::stream::unfold(rx, |mut rx| async move {
         loop {
@@ -369,9 +455,7 @@ async fn event_feed(State(st): State<AppState>) -> Sse<impl futures_util::Stream
                     let sse = SseEvent::default()
                         .event(kind)
                         .json_data(event)
-                        .unwrap_or_else(|_| {
-                            SseEvent::default().event("bus.error").data("{}")
-                        });
+                        .unwrap_or_else(|_| SseEvent::default().event("bus.error").data("{}"));
                     return Some((Ok(sse), rx));
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
@@ -382,7 +466,10 @@ async fn event_feed(State(st): State<AppState>) -> Sse<impl futures_util::Stream
     Sse::new(stream).keep_alive(KeepAlive::default())
 }
 
-fn publish_session(st: &AppState, info: &oc_schema::SessionInfo) -> Result<(), oc_bus::NoSubscribers> {
+fn publish_session(
+    st: &AppState,
+    info: &oc_schema::SessionInfo,
+) -> Result<(), oc_bus::NoSubscribers> {
     st.bus.publish(EventEnvelope::new(
         "session.updated",
         serde_json::json!({ "info": info }),
@@ -424,7 +511,7 @@ mod tests {
 
     fn test_state() -> AppState {
         AppState {
-            store: Arc::new(RwLock::new(Store::new())),
+            store: Arc::new(Store::new()),
             bus: Bus::default(),
             registry: Arc::new(Registry::builtin(std::path::Path::new("/tmp"))),
             client: Arc::new(Client::new(oc_provider::Endpoint {
@@ -440,17 +527,117 @@ mod tests {
     }
 
     async fn json_body(res: axum::response::Response) -> serde_json::Value {
-        let bytes = axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap();
+        let bytes = axum::body::to_bytes(res.into_body(), 1 << 20)
+            .await
+            .unwrap();
         serde_json::from_slice(&bytes).unwrap()
     }
 
     #[tokio::test]
     async fn health_ok() {
         let res = router(test_state())
-            .oneshot(Request::builder().uri("/health").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn streaming_turn_keeps_reads_live_rejects_duplicates_and_releases_abort() {
+        async fn slow_completion() -> Response {
+            let first =
+                "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"working\"}}]}\n\n";
+            let stream = futures_util::stream::once(async move { Ok::<_, std::io::Error>(first) })
+                .chain(futures_util::stream::pending());
+            Response::builder()
+                .header("content-type", "text/event-stream")
+                .body(Body::from_stream(stream))
+                .unwrap()
+        }
+        use futures_util::StreamExt;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let provider = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                Router::new().route("/v1/chat/completions", post(slow_completion)),
+            )
+            .await
+            .unwrap();
+        });
+        let mut state = test_state();
+        state.client = Arc::new(Client::new(oc_provider::Endpoint {
+            protocol: oc_provider::Protocol::OpenAI,
+            base_url: format!("http://{addr}/v1"),
+            api_key: None,
+        }));
+        let info = state
+            .store
+            .create_session(CreateInput {
+                title: None,
+                parent_id: None,
+                agent: None,
+                model: None,
+                directory: "/tmp".into(),
+                project_id: "global".into(),
+            })
+            .unwrap();
+        let mut events = state.bus.subscribe();
+        let app = router(state.clone());
+        let prompt = || {
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/session/{}/message", info.id))
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"text":"work"}"#))
+                .unwrap()
+        };
+        let running = tokio::spawn(app.clone().oneshot(prompt()));
+        let progress = tokio::time::timeout(std::time::Duration::from_secs(3), events.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(progress.kind, "session.progress");
+        assert!(
+            !running.is_finished(),
+            "progress must arrive during generation"
+        );
+        let read = Request::builder()
+            .uri(format!("/api/session/{}", info.id))
+            .body(Body::empty())
+            .unwrap();
+        let response =
+            tokio::time::timeout(std::time::Duration::from_secs(1), app.clone().oneshot(read))
+                .await
+                .unwrap()
+                .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            app.clone().oneshot(prompt()).await.unwrap().status(),
+            StatusCode::CONFLICT
+        );
+        let abort = Request::builder()
+            .method("POST")
+            .uri(format!("/api/session/{}/abort", info.id))
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(app.oneshot(abort).await.unwrap().status(), StatusCode::OK);
+        let response = tokio::time::timeout(std::time::Duration::from_secs(2), running)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            json_body(response).await["output"]["outcome"],
+            "interrupted"
+        );
+        assert!(state.aborts.lock().unwrap().is_empty());
+        provider.abort();
     }
 
     #[tokio::test]
@@ -488,7 +675,12 @@ mod tests {
         assert_eq!(res.status(), StatusCode::OK);
 
         let res = app
-            .oneshot(Request::builder().uri("/api/session").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/api/session")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         let v = json_body(res).await;
@@ -584,7 +776,12 @@ mod tests {
         assert_eq!(v["data"].as_array().unwrap().len(), 1);
 
         let res = app
-            .oneshot(Request::builder().uri("/api/session/active").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/api/session/active")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         let v = json_body(res).await;
@@ -606,7 +803,10 @@ mod tests {
             )
             .await
             .unwrap();
-        let id = json_body(res).await["info"]["id"].as_str().unwrap().to_string();
+        let id = json_body(res).await["info"]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
 
         let res = app
             .clone()

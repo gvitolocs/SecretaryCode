@@ -4,7 +4,7 @@
 //! material, with the port's inline-truncation behaviour stated explicitly.
 //!
 //! Documented deltas: permission checks live in `oc-agent` before the tool
-//! runs, no background-shell mode, no
+//! runs, background jobs have process-local registry lifetime, no
 //! large-output-to-file spooling (output is truncated inline), webfetch
 //! strips HTML with a regex (upstream converts to markdown), grep shells to
 //! `rg` when present with a regex-walk fallback.
@@ -13,6 +13,8 @@ use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
+
+mod jobs;
 
 use async_trait::async_trait;
 use oc_schema::{ToolContent, ToolDef};
@@ -58,6 +60,7 @@ pub trait Tool: Send + Sync {
     ) -> Result<ToolOutput, ToolError>;
 }
 
+#[derive(Clone)]
 pub struct Registry {
     tools: Vec<Arc<dyn Tool>>,
 }
@@ -66,9 +69,14 @@ impl Registry {
     /// All builtins, in registration order.
     pub fn builtin(_worktree: &Path) -> Self {
         let shell = select_shell(std::env::var("PATH").ok().as_deref());
+        let jobs = Arc::new(jobs::JobManager::default());
         Self {
             tools: vec![
-                Arc::new(BashTool { shell }),
+                Arc::new(BashTool {
+                    shell,
+                    jobs: jobs.clone(),
+                }),
+                Arc::new(jobs::JobTool { jobs }),
                 Arc::new(ReadTool),
                 Arc::new(WriteTool),
                 Arc::new(EditTool),
@@ -262,13 +270,31 @@ fn shell_description(shell: &Shell) -> String {
         "Prefer dedicated tools over shell commands when possible.".into(),
         "Large output is truncated to its head and tail; filter the command when you need a specific part.".into(),
         "Rely on automatic truncation unless filtering the output is more useful.".into(),
-        "Commands accept an optional timeout.".into(),
+        "Commands accept an optional timeout. Set background:true to return a job_id promptly, then use job status/output/list/cancel in the same session. Background jobs default to no timeout. Jobs and retained output are process-local, survive only while this registry is owned, and are killed when it is dropped. At most 128 jobs are retained per registry.".into(),
     ]
     .join(" ")
 }
 
 struct BashTool {
     shell: Shell,
+    jobs: Arc<jobs::JobManager>,
+}
+
+/// Shared spawn path preserves shell cwd, stdio and process-group semantics.
+fn spawn_shell(
+    shell: &Shell,
+    command: &str,
+    workdir: &Path,
+) -> Result<tokio::process::Child, ToolError> {
+    let mut cmd = tokio::process::Command::new(&shell.path);
+    cmd.arg("-c").arg(command).current_dir(workdir);
+    cmd.stdin(std::process::Stdio::null());
+    cmd.stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    cmd.kill_on_drop(true);
+    cmd.process_group(0);
+    cmd.spawn()
+        .map_err(|e| ToolError::Failed(format!("spawn failed: {e}")))
 }
 
 /// Kills the whole process group when the tool future is dropped or times out.
@@ -331,6 +357,7 @@ impl Tool for BashTool {
                 "type": "object",
                 "properties": {
                     "command": {"type": "string", "description": "Shell command string to execute"},
+                    "background": {"type": "boolean", "description": "Launch a session-scoped, process-local managed job and return its job_id immediately (default false). Use the job tool to collect or cancel it."},
                     "workdir": {"type": "string", "description": "Working directory to execute the command in. Defaults to the current working directory. When possible, avoid changing directories in the command and set the working directory here instead."},
                     "timeout": {"type": "number", "description": format!("Timeout in milliseconds. Set to 0 to disable the timeout. Defaults to {DEFAULT_TIMEOUT_MS} for foreground commands.")}
                 },
@@ -345,7 +372,9 @@ impl Tool for BashTool {
         ctx: &ToolContext,
     ) -> Result<ToolOutput, ToolError> {
         let command = req_str(input, "command")?;
-        let timeout = opt_u64(input, "timeout").unwrap_or(DEFAULT_TIMEOUT_MS);
+        let background = opt_bool(input, "background").unwrap_or(false);
+        let timeout =
+            opt_u64(input, "timeout").unwrap_or(if background { 0 } else { DEFAULT_TIMEOUT_MS });
         let workdir = match opt_str(input, "workdir") {
             Some(dir) => resolve(ctx, Some(&dir))?,
             None => ctx.worktree.clone(),
@@ -356,16 +385,12 @@ impl Tool for BashTool {
                 workdir.display()
             )));
         }
-        let mut cmd = tokio::process::Command::new(&self.shell.path);
-        cmd.arg("-c").arg(&command).current_dir(&workdir);
-        cmd.stdin(std::process::Stdio::null());
-        cmd.stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped());
-        cmd.kill_on_drop(true);
-        cmd.process_group(0);
-        let child = cmd
-            .spawn()
-            .map_err(|e| ToolError::Failed(format!("spawn failed: {e}")))?;
+        if background {
+            return self
+                .jobs
+                .launch(&self.shell, &command, &workdir, timeout, &ctx.session_id);
+        }
+        let child = spawn_shell(&self.shell, &command, &workdir)?;
         let mut kill = KillGroup(child.id().map(|pid| pid as i32));
         let wait = async {
             let out = child

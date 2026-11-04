@@ -1,0 +1,169 @@
+{
+  "date": "2026-11-04",
+  "mistral_smoke": [
+    {
+      "model": "mistral-small-latest",
+      "harness": "LucinaCode Rust",
+      "machine": "nezopt",
+      "elapsed_seconds": 4.42,
+      "agent_exit": 0,
+      "independent_test_exit": 0,
+      "test_file_unchanged": true,
+      "max_rss_kib": 7448,
+      "runner_summary": "[succeeded] 4 steps, tokens in 11987/out 243",
+      "binary_bytes": 5268560
+    },
+    {
+      "model": "mistral-small-latest",
+      "harness": "DSH",
+      "machine": "nezopt",
+      "elapsed_seconds": 4.971,
+      "dsh_exit": 0,
+      "independent_test_exit": 0,
+      "test_file_unchanged": true,
+      "reported_usage": {
+        "inputTokens": 6575,
+        "outputTokens": 296,
+        "totalTokens": 31511,
+        "cacheReadTokens": 24640
+      },
+      "input_tokens_including_cache": 31215,
+      "model_requests": 5,
+      "tool_calls": [
+        "read",
+        "read",
+        "edit",
+        "bash",
+        "read"
+      ]
+    },
+    {
+      "model": "mistral-small-latest",
+      "harness": "Mistral Vibe 3.0.4",
+      "machine": "nezopt",
+      "elapsed_seconds": 7.077,
+      "agent_exit": 0,
+      "independent_test_exit": 0,
+      "test_file_unchanged": true,
+      "max_rss_kib": 174868,
+      "usage": {
+        "input_tokens": 35049,
+        "output_tokens": 179,
+        "cached_input_tokens": 26400,
+        "total_tokens": 35228
+      },
+      "model_requests": 4,
+      "tool_calls": [
+        "file_system.read_file",
+        "file_system.read_file",
+        "file_system.edit",
+        "file_system.bash"
+      ]
+    },
+    {
+      "model": "mistral-small-latest",
+      "harness": "Goose 1.57.0 static musl x86_64",
+      "machine": "nezopt",
+      "elapsed_seconds": 6.273,
+      "agent_exit": 0,
+      "independent_test_exit": 0,
+      "test_file_unchanged": true,
+      "binary_bytes": 154202496
+    }
+  ],
+  "qwen_timesheet": [
+    {
+      "label": "1-rust",
+      "harness": "rust",
+      "exit": 0,
+      "elapsed_seconds": 229.944,
+      "baseline_passed": 7,
+      "checks": 25,
+      "passed": 25,
+      "details": {
+        "parse:0": true,
+        "parse: 15 ": true,
+        "parse:2:05": true,
+        "parse:000:59": true,
+        "parse: 1:00 ": true,
+        "parse:123:00": true,
+        "reject:": true,
+        "reject:-1": true,
+        "reject:+1": true,
+        "reject:1.5": true,
+        "reject:1:60": true,
+        "reject:1:5": true,
+        "reject:1:005": true,
+        "reject:1:00:00": true,
+        "reject:-1:00": true,
+        "reject:1 :00": true,
+        "reject:1: 00": true,
+        "reject:abc": true,
+        "reject:1_0": true,
+        "totals": true,
+        "sort": true,
+        "cli": true,
+        "bom": true,
+        "missing-header": true,
+        "bad-duration": true
+      },
+      "tests_exit": 0
+    },
+    {
+      "label": "1-dsh",
+      "harness": "dsh",
+      "exit": 0,
+      "elapsed_seconds": 164.418,
+      "baseline_passed": 7,
+      "checks": 25,
+      "passed": 25,
+      "details": {
+        "parse:0": true,
+        "parse: 15 ": true,
+        "parse:2:05": true,
+        "parse:000:59": true,
+        "parse: 1:00 ": true,
+        "parse:123:00": true,
+        "reject:": true,
+        "reject:-1": true,
+        "reject:+1": true,
+        "reject:1.5": true,
+        "reject:1:60": true,
+        "reject:1:5": true,
+        "reject:1:005": true,
+        "reject:1:00:00": true,
+        "reject:-1:00": true,
+        "reject:1 :00": true,
+        "reject:1: 00": true,
+        "reject:abc": true,
+        "reject:1_0": true,
+        "totals": true,
+        "sort": true,
+        "cli": true,
+        "bom": true,
+        "missing-header": true,
+        "bad-duration": true
+      },
+      "tests_exit": 0
+    }
+  ],
+  "caveats": [
+    "Single completed run per harness, not a leaderboard.",
+    "Mistral smoke and Qwen timesheet are different tasks.",
+    "Qwen tests sequential, one existing model instance.",
+    "Qwen Rust benchmark precedes final task-tool registration.",
+    "DSH setup failures and extra cancelled Rust repetition excluded.",
+    "Vibe and Goose tested on nezopt, not Juno.",
+    "Official Vibe ARM64 probe on Juno failed before startup: missing glibc ELF loader.",
+    "Existing Mistral credential reports API/FREE; Vibe allowance not verified."
+  ],
+  "juno_final": {
+    "harness": "LucinaCode Rust",
+    "model": "mistral-small-latest",
+    "runner_seconds": 2.8,
+    "independent_test": "PASS",
+    "interactive_edit_and_shell_approval": true,
+    "binary_bytes": 4537600
+  },
+  "workspace_tests_passed": 153
+}

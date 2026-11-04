@@ -58,6 +58,51 @@ async fn ask_runs_the_turn_in_process_against_a_mock_stream() {
     assert!(data.path().join("session/sessions.json").is_file());
 }
 
+#[tokio::test]
+async fn mistral_uses_its_key_and_default_model_with_openai_chat_transport() {
+    async fn mistral_completion(
+        headers: axum::http::HeaderMap,
+        axum::Json(body): axum::Json<serde_json::Value>,
+    ) -> Response {
+        assert_eq!(headers["authorization"], "Bearer fixture-mistral-key");
+        assert_eq!(body["model"], "mistral-small-latest");
+        completion().await
+    }
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            Router::new().route("/v1/chat/completions", post(mistral_completion)),
+        )
+        .await
+        .unwrap();
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let out = tokio::process::Command::new(env!("CARGO_BIN_EXE_oc-cli"))
+        .args(["ask", "say hello"])
+        .current_dir(dir.path())
+        .env_remove("OC_BASE")
+        .env_remove("OC_MODEL")
+        .env_remove("OC_API_KEY")
+        .env_remove("OC_API_KEY_FILE")
+        .env_remove("OC_EXTRA_BODY")
+        .env("OC_PROVIDER", "mistral")
+        .env("OC_BASE_URL", format!("http://{addr}/v1"))
+        .env("MISTRAL_API_KEY", "fixture-mistral-key")
+        .output()
+        .await
+        .unwrap();
+    server.abort();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(String::from_utf8_lossy(&out.stdout).contains("hello from mock"));
+    assert!(!String::from_utf8_lossy(&out.stderr).contains("fixture-mistral-key"));
+}
+
 async fn tool_call_stream() -> Response {
     let body = concat!(
         "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"shell\",\"arguments\":\"{\\\"command\\\":\\\"touch escaped.txt\\\"}\"}}]}}]}\n\n",
@@ -174,7 +219,12 @@ async fn serve_steps(bodies: Vec<String>) -> (String, tokio::task::JoinHandle<()
 fn call_step(name: &str, args: serde_json::Value) -> String {
     let args = args.to_string();
     let (head, tail) = args.split_at(args.len() / 2);
-    let delta = |d: serde_json::Value| format!("data: {}\n\n", serde_json::json!({"choices":[{"index":0,"delta":d}]}));
+    let delta = |d: serde_json::Value| {
+        format!(
+            "data: {}\n\n",
+            serde_json::json!({"choices":[{"index":0,"delta":d}]})
+        )
+    };
     [
         delta(serde_json::json!({"reasoning_content":"let me see"})),
         delta(serde_json::json!({"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":name,"arguments":head}}]})),
@@ -199,8 +249,14 @@ async fn ask_edits_a_file_and_runs_a_command_in_its_directory() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("a.txt"), "the bug\n").unwrap();
     let (url, server) = serve_steps(vec![
-        call_step("edit", serde_json::json!({"path":"a.txt","oldString":"bug","newString":"fix"})),
-        call_step("shell", serde_json::json!({"command":"cat a.txt > seen.txt"})),
+        call_step(
+            "edit",
+            serde_json::json!({"path":"a.txt","oldString":"bug","newString":"fix"}),
+        ),
+        call_step(
+            "shell",
+            serde_json::json!({"command":"cat a.txt > seen.txt"}),
+        ),
         text_step("done"),
     ])
     .await;
@@ -216,11 +272,20 @@ async fn ask_edits_a_file_and_runs_a_command_in_its_directory() {
         .await
         .unwrap();
     server.abort();
-    let (stdout, stderr) = (String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    let (stdout, stderr) = (
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
     assert!(out.status.success(), "{stdout}\n{stderr}");
-    assert_eq!(std::fs::read_to_string(dir.path().join("seen.txt")).unwrap(), "the fix\n");
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("seen.txt")).unwrap(),
+        "the fix\n"
+    );
     assert!(stdout.contains("done"), "{stdout}");
-    assert!(!stdout.contains("let me see"), "reasoning stays out of the text: {stdout}");
+    assert!(
+        !stdout.contains("let me see"),
+        "reasoning stays out of the text: {stdout}"
+    );
     assert!(stderr.contains("thinking"), "{stderr}");
     assert!(stderr.contains("> shell: cat a.txt"), "{stderr}");
 }
@@ -229,7 +294,10 @@ async fn ask_edits_a_file_and_runs_a_command_in_its_directory() {
 async fn ctrl_c_stops_a_running_command_with_its_children() {
     let dir = tempfile::tempdir().unwrap();
     let (url, server) = serve_steps(vec![
-        call_step("shell", serde_json::json!({"command":"echo $$ > pid; sleep 30; touch finished"})),
+        call_step(
+            "shell",
+            serde_json::json!({"command":"echo $$ > pid; sleep 30; touch finished"}),
+        ),
         text_step("not reached"),
     ])
     .await;
@@ -251,16 +319,31 @@ async fn ctrl_c_stops_a_running_command_with_its_children() {
         }
         tokio::time::sleep(std::time::Duration::from_millis(25)).await;
     }
-    let shell_pid = std::fs::read_to_string(&pid_file).unwrap().trim().to_string();
+    let shell_pid = std::fs::read_to_string(&pid_file)
+        .unwrap()
+        .trim()
+        .to_string();
     let oc_pid = child.id().unwrap().to_string();
     let started = std::time::Instant::now();
-    tokio::process::Command::new("kill").args(["-INT", &oc_pid]).status().await.unwrap();
+    tokio::process::Command::new("kill")
+        .args(["-INT", &oc_pid])
+        .status()
+        .await
+        .unwrap();
     let out = child.wait_with_output().await.unwrap();
     server.abort();
-    assert_eq!(out.status.code(), Some(130), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(
+        out.status.code(),
+        Some(130),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     assert!(started.elapsed() < std::time::Duration::from_secs(5));
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    assert!(!std::path::Path::new(&format!("/proc/{shell_pid}")).exists(), "the command's shell must be gone");
+    assert!(
+        !std::path::Path::new(&format!("/proc/{shell_pid}")).exists(),
+        "the command's shell must be gone"
+    );
     assert!(!dir.path().join("finished").exists());
 }
 
@@ -268,7 +351,8 @@ async fn ctrl_c_stops_a_running_command_with_its_children() {
 async fn a_stream_cut_short_is_requested_again() {
     let dir = tempfile::tempdir().unwrap();
     // Cut short, then a good answer: the request goes out again, as upstream retries an incomplete stream.
-    let cut = "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"half an ans\"}}]}\n\n".to_string();
+    let cut = "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"half an ans\"}}]}\n\n"
+        .to_string();
     let (url, server) = serve_steps(vec![cut, text_step("whole answer")]).await;
     let out = tokio::process::Command::new(env!("CARGO_BIN_EXE_oc-cli"))
         .args(["ask", "go"])
@@ -281,7 +365,10 @@ async fn a_stream_cut_short_is_requested_again() {
         .await
         .unwrap();
     server.abort();
-    let (stdout, stderr) = (String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    let (stdout, stderr) = (
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
     assert_eq!(out.status.code(), Some(0), "{stderr}");
     assert!(stderr.contains("model request failed"), "{stderr}");
     assert!(stdout.contains("whole answer"), "{stdout}");
@@ -304,7 +391,10 @@ async fn a_context_past_the_ceiling_is_summarized_and_the_turn_goes_on() {
     let seen = requests.clone();
     // Step 1 reports a prompt near the window, so the next request is the summary; then the turn goes on.
     let bodies = Arc::new(vec![
-        usage_step(call_step("shell", serde_json::json!({"command":"true"})), 90_000),
+        usage_step(
+            call_step("shell", serde_json::json!({"command":"true"})),
+            90_000,
+        ),
         text_step("## Objective\n- the checkpoint text"),
         text_step("finished after compaction"),
     ]);
@@ -340,15 +430,23 @@ async fn a_context_past_the_ceiling_is_summarized_and_the_turn_goes_on() {
         .await
         .unwrap();
     server.abort();
-    let (stdout, stderr) = (String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    let (stdout, stderr) = (
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
     assert!(out.status.success(), "{stdout}\n{stderr}");
     assert!(stderr.contains("compacting"), "{stderr}");
     assert!(stdout.contains("finished after compaction"), "{stdout}");
     let requests = requests.lock().unwrap();
     assert_eq!(requests.len(), 3);
     let summary_request = requests[1].to_string();
-    assert!(summary_request.contains("summarize the conversation above"), "{summary_request}");
-    assert!(requests[1].get("tools").is_none_or(|t| t.as_array().is_some_and(|a| a.is_empty())));
+    assert!(
+        summary_request.contains("summarize the conversation above"),
+        "{summary_request}"
+    );
+    assert!(requests[1]
+        .get("tools")
+        .is_none_or(|t| t.as_array().is_some_and(|a| a.is_empty())));
     let next = requests[2].to_string();
     assert!(next.contains("conversation-checkpoint"), "{next}");
     assert!(next.contains("the checkpoint text"), "{next}");
@@ -360,7 +458,12 @@ async fn a_request_the_endpoint_refuses_fails_at_once_and_says_why() {
     let addr = listener.local_addr().unwrap();
     let app = Router::new().route(
         "/v1/chat/completions",
-        post(|| async { Response::builder().status(400).body(Body::from("bad model name")).unwrap() }),
+        post(|| async {
+            Response::builder()
+                .status(400)
+                .body(Body::from("bad model name"))
+                .unwrap()
+        }),
     );
     let server = tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
@@ -396,7 +499,11 @@ async fn a_request_the_endpoint_refuses_fails_at_once_and_says_why() {
         .spawn()
         .unwrap();
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-    assert!(again.try_wait().unwrap().is_none(), "the store must open: {:?}", again.try_wait());
+    assert!(
+        again.try_wait().unwrap().is_none(),
+        "the store must open: {:?}",
+        again.try_wait()
+    );
 }
 
 #[tokio::test]
@@ -448,10 +555,16 @@ async fn chat_keeps_the_session_asks_before_acting_and_ends_on_exit() {
         .spawn()
         .unwrap();
     let mut stdin = child.stdin.take().unwrap();
-    stdin.write_all(b"make it\ny\nand the other\nn\n/new\nfresh start\n/exit\n").await.unwrap();
+    stdin
+        .write_all(b"make it\ny\nand the other\nn\n/new\nfresh start\n/exit\n")
+        .await
+        .unwrap();
     let out = child.wait_with_output().await.unwrap();
     server.abort();
-    let (stdout, stderr) = (String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    let (stdout, stderr) = (
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
     assert!(out.status.success(), "{stdout}\n{stderr}");
     assert!(dir.path().join("approved").exists(), "{stderr}");
     assert!(!dir.path().join("refused").exists(), "{stderr}");
@@ -465,5 +578,8 @@ async fn chat_keeps_the_session_asks_before_acting_and_ends_on_exit() {
     // The second turn sees the first; after /new nothing of them is sent.
     assert!(requests[2].to_string().contains("make it"));
     let fresh = requests[4].to_string();
-    assert!(fresh.contains("fresh start") && !fresh.contains("make it"), "{fresh}");
+    assert!(
+        fresh.contains("fresh start") && !fresh.contains("make it"),
+        "{fresh}"
+    );
 }

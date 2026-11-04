@@ -77,7 +77,18 @@ pub enum RunEvent {
 pub const RETRY_SCHEDULE: [std::time::Duration; 10] = {
     use std::time::Duration;
     let ten = Duration::from_secs(10);
-    [Duration::from_secs(2), Duration::from_secs(4), Duration::from_secs(8), ten, ten, ten, ten, ten, ten, ten]
+    [
+        Duration::from_secs(2),
+        Duration::from_secs(4),
+        Duration::from_secs(8),
+        ten,
+        ten,
+        ten,
+        ten,
+        ten,
+        ten,
+        ten,
+    ]
 };
 
 /// `isRetryable`: rate limits, provider-side failures, the network, and a stream cut short.
@@ -154,6 +165,27 @@ pub struct RunOutput {
     pub text: Option<String>,
 }
 
+/// Register one level of delegation with the same permissions and cancellation.
+/// The child gets the shared builtins, without another task tool.
+pub fn with_task_tool(
+    builtins: &Registry,
+    store: Arc<Store>,
+    client: Arc<Client>,
+    model: ModelRef,
+    opts: &RunOptions,
+) -> Registry {
+    let task = task::TaskTool::new(
+        store,
+        client,
+        Arc::new(builtins.clone()),
+        model,
+        opts.agent.clone(),
+        opts.max_steps,
+    )
+    .with_options(opts);
+    builtins.clone().with_tools(vec![Arc::new(task)])
+}
+
 /// Append the user turn, then run the loop. (`session.prompt`'s handler.)
 pub async fn prompt(
     store: &Store,
@@ -186,6 +218,7 @@ pub async fn run_turn(
     let worktree = worktree_of(store, session_id);
     let system = system_prompt(&model, &worktree);
     let mut step: u32 = 0;
+    let mut completed_steps: u32 = 0;
     let mut last_text: Option<String> = None;
     // What the provider last counted; a new turn starts from an estimate.
     let mut last_input: Option<u64> = None;
@@ -243,7 +276,10 @@ pub async fn run_turn(
         };
         // Dropping the stream on an abort closes the connection, so the
         // endpoint stops generating and its slot is free again.
-        let streamed = abortable(&opts.abort, client.complete_streaming(&model.id, &req, forward));
+        let streamed = abortable(
+            &opts.abort,
+            client.complete_streaming(&model.id, &req, forward),
+        );
         let resp = match streamed.await {
             None => break Outcome::Interrupted,
             Some(Ok(r)) => r,
@@ -264,13 +300,22 @@ pub async fn run_turn(
                 if retried < opts.retries.len() && is_retryable(&e) {
                     let delay = opts.retries[retried];
                     retried += 1;
-                    (opts.observer)(RunEvent::RetryScheduled { attempt: retried, delay, error: e.to_string() });
-                    if abortable(&opts.abort, tokio::time::sleep(delay)).await.is_none() {
+                    (opts.observer)(RunEvent::RetryScheduled {
+                        attempt: retried,
+                        delay,
+                        error: e.to_string(),
+                    });
+                    if abortable(&opts.abort, tokio::time::sleep(delay))
+                        .await
+                        .is_none()
+                    {
                         break Outcome::Interrupted;
                     }
                     continue;
                 }
-                (opts.observer)(RunEvent::ProviderFailed { error: e.to_string() });
+                (opts.observer)(RunEvent::ProviderFailed {
+                    error: e.to_string(),
+                });
                 // A provider failure ends the run as `failed`: the failure is
                 // recorded on a terminal assistant message, the idle marker
                 // lands, and the session outcome flips.
@@ -284,6 +329,7 @@ pub async fn run_turn(
                 });
             }
         };
+        completed_steps += 1;
         settle_step(
             store,
             registry,
@@ -321,7 +367,7 @@ pub async fn run_turn(
     store.set_outcome(session_id, outcome)?;
     Ok(RunOutput {
         outcome,
-        steps: step + 1,
+        steps: completed_steps,
         text: last_text,
     })
 }
@@ -336,9 +382,20 @@ async fn compact_and_report(
     rejected: Option<u64>,
 ) -> Result<compaction::Compacted, AgentError> {
     (opts.observer)(RunEvent::CompactionStarted);
-    let result =
-        compaction::compact(store, client, model, system, session_id, &opts.compaction, rejected, &opts.abort).await?;
-    (opts.observer)(RunEvent::CompactionFinished { result: result.clone() });
+    let result = compaction::compact(
+        store,
+        client,
+        model,
+        system,
+        session_id,
+        &opts.compaction,
+        rejected,
+        &opts.abort,
+    )
+    .await?;
+    (opts.observer)(RunEvent::CompactionFinished {
+        result: result.clone(),
+    });
     Ok(result)
 }
 
@@ -438,7 +495,9 @@ async fn settle_step(
                 // Dropping a shell call kills its process group.
                 Ok(()) => abortable(abort, registry.execute(&call.name, input, &ctx))
                     .await
-                    .unwrap_or_else(|| Err(oc_tools::ToolError::Failed("aborted by the user".into()))),
+                    .unwrap_or_else(|| {
+                        Err(oc_tools::ToolError::Failed("aborted by the user".into()))
+                    }),
                 Err(reason) => Err(oc_tools::ToolError::Failed(reason)),
             };
         let (ok, preview) = match &executed {
@@ -1327,16 +1386,34 @@ fn civil_from_days(z: i64) -> String {
 
 // ===== Environment configuration (shared by server and CLI) =====
 
-/// Provider endpoint from the environment: `OC_PROVIDER` (`openai` |
-/// `anthropic`, default openai), `OC_BASE_URL` (protocol default when
-/// unset), and the key from `OC_API_KEY`, `OC_API_KEY_FILE`, or the
-/// provider's conventional variable (`OPENAI_API_KEY` / `ANTHROPIC_API_KEY`).
-pub fn endpoint_from_env() -> oc_provider::Endpoint {
-    let provider = std::env::var("OC_PROVIDER")
-        .unwrap_or_default()
+/// An explicit provider wins; a Mistral key alone selects direct Mistral.
+fn provider_from_env() -> String {
+    std::env::var("OC_PROVIDER")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| {
+            if std::env::var_os("OC_BASE_URL").is_none()
+                && std::env::var("MISTRAL_API_KEY").is_ok_and(|s| !s.trim().is_empty())
+            {
+                "mistral".into()
+            } else {
+                "openai".into()
+            }
+        })
         .trim()
-        .to_lowercase();
+        .to_lowercase()
+}
+
+/// Endpoint and credential for OpenAI, Anthropic, or Mistral chat.
+/// Explicit OC_BASE_URL and OC_API_KEY[_FILE] override provider defaults.
+pub fn endpoint_from_env() -> oc_provider::Endpoint {
+    let provider = provider_from_env();
     let (protocol, default_base, conventional_key) = match provider.as_str() {
+        "mistral" => (
+            oc_provider::Protocol::OpenAI,
+            "https://api.mistral.ai/v1",
+            "MISTRAL_API_KEY",
+        ),
         "anthropic" => (
             oc_provider::Protocol::Anthropic,
             "https://api.anthropic.com",
@@ -1449,13 +1526,19 @@ pub fn embedded_permissions_from_env() -> oc_permission::Ruleset {
     }
 }
 
-/// Model ref from `OC_MODEL` (default `openai/gpt-4o-mini`; a local endpoint
-/// names its own model there).
+/// OC_MODEL overrides the model; direct Mistral defaults to mistral-small-latest.
+/// Other endpoints retain openai/gpt-4o-mini as their historical default.
 pub fn model_from_env() -> ModelRef {
     let raw = std::env::var("OC_MODEL")
         .ok()
         .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| "openai/gpt-4o-mini".into());
+        .unwrap_or_else(|| {
+            if provider_from_env() == "mistral" {
+                "mistral/mistral-small-latest".into()
+            } else {
+                "openai/gpt-4o-mini".into()
+            }
+        });
     ModelRef::parse(&raw).unwrap_or_else(|_| ModelRef::parse("openai/gpt-4o-mini").unwrap())
 }
 

@@ -15,7 +15,7 @@ so.
 
 ## Status
 
-- `cargo test --workspace`: **139 passed, 0 failed**. The CLI's 8 run whole
+- `cargo test --workspace`: **153 passed, 0 failed**. The CLI's 8 run whole
   turns against in-process mock streams: tool calls split across deltas,
   reasoning kept out of the text, `edit` + `shell`, Ctrl+C killing a running
   command's process group, a stream cut short and retried, a refused request
@@ -36,6 +36,32 @@ so.
   again (PASS), 4 steps in 25 s; Ctrl+C stopped a turn; `oc-cli chat` used 3.4 MB
   and the tunnel 3.1 MB (`VmRSS`). Reconnecting and compaction on the laptop are
   not proven yet.
+
+## LucinaOS readiness (2026-11-04)
+
+The active implementation includes the newer `baef556` work that was only in
+an older detached checkout; `main` and `SecretaryCode/engine-rs` are older copies.
+Use this branch's code and the pinned Juno package, not those older snapshots.
+
+- Direct Mistral: with `MISTRAL_API_KEY` set, `oc-cli chat` selects Mistral's
+  OpenAI-compatible endpoint and `mistral-small-latest`. Explicit `OC_PROVIDER`,
+  `OC_BASE_URL`, `OC_MODEL`, or `OC_API_KEY_FILE` override defaults. No model
+  server or SSH tunnel is needed for cloud Mistral. Credentials are not logged.
+- `shell` accepts `background: true`; `job` supports status, output, list, and
+  cancel. Output is bounded; ownership is session-scoped and process-local.
+  Registry shutdown kills running jobs. Jobs do not survive restarting the CLI.
+- The `task` child-agent tool is registered in embedded CLI and server. Children
+  inherit permission rules, approval callback, cancellation, retries and
+  compaction settings; delegation is limited to one level.
+- Server reads stay responsive during model/tool execution; duplicate prompts
+  for a running session return 409. `/event` carries `session.progress` for
+  live text, reasoning, tools, retries and compaction. Final transcript events
+  remain `message.updated`. Interactive server approvals and full desktop API
+  compatibility are still absent.
+- Static ARM64 binary deployed to Juno: 4.3 MiB. Direct Mistral read/edit/test
+  succeeded on the live laptop with normal edit/shell approval prompts.
+
+For measurements, methodology and limitations, see [bench/README.md](bench/README.md).
 
 ## What v0.2 ports (the agent runtime)
 
@@ -142,10 +168,10 @@ Mixed session round (POST create → GET → GET list → POST synthetic;
 
 Hosted tools, patch/skill tools, the MCP bridge in the CLI/server (the crate is
 tested standalone), pricing/cost (tokens accumulate, cost stays 0), the full-screen
-TUI (`chat` is a line REPL), plugins, background and native compaction. The `task`
-subagent exists in `oc-agent` but is not registered by the CLI yet. SQLite is
-behind `oc-store`'s `sqlite` feature (server on, CLI off). The retry ladder is used
-by the CLI; `oc-server` still stops at the first failure.
+TUI (`chat` is a line REPL), plugins, background summary precomputation and
+native provider compaction. Shell background jobs and the one-level `task` tool
+are registered. SQLite is behind `oc-store`'s `sqlite` feature (server on, CLI
+off). Both CLI and server use the retry ladder and streaming runner.
 
 The prompt path is now the real one: user message → model → tool calls →
 executed against the workspace → settled into the transcript → next step →

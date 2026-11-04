@@ -59,13 +59,19 @@ async fn run(mut args: Vec<String>) {
 
     let base = non_empty_env("OC_BASE");
     let base_url = non_empty_env("OC_BASE_URL");
-    let embedded = local || (base.is_none() && base_url.is_some());
+    let embedded = local
+        || (base.is_none()
+            && (base_url.is_some()
+                || non_empty_env("MISTRAL_API_KEY").is_some()
+                || non_empty_env("OC_PROVIDER").as_deref() == Some("mistral")));
     if embedded {
-        match args.first().map(String::as_str) {
+        let code = match args.first().map(String::as_str) {
             Some("ask") => embedded_ask(&args).await,
             Some("chat") => embedded_chat(&args).await,
             _ => usage("embedded mode supports ask and chat"),
-        }
+        };
+        // Return from the embedded runner first so registry drop stops jobs.
+        std::process::exit(code);
     }
 
     let base = base.unwrap_or_else(|| DEFAULT_BASE.into());
@@ -278,8 +284,17 @@ impl Renderer {
                 Compacted::Failed(error) => eprintln!("  compaction failed: {error}"),
                 Compacted::Interrupted => {}
             },
-            RunEvent::RetryScheduled { attempt, delay, error } => {
-                eprintln!("model request failed ({}); try {} in {} s", first_line(&error), attempt + 1, delay.as_secs())
+            RunEvent::RetryScheduled {
+                attempt,
+                delay,
+                error,
+            } => {
+                eprintln!(
+                    "model request failed ({}); try {} in {} s",
+                    first_line(&error),
+                    attempt + 1,
+                    delay.as_secs()
+                )
             }
             RunEvent::ProviderFailed { error } => eprintln!("model request failed: {error}"),
         }
@@ -356,7 +371,7 @@ fn turn_summary(
     );
 }
 
-async fn embedded_ask(args: &[String]) -> ! {
+async fn embedded_ask(args: &[String]) -> i32 {
     let Some(text) = args.get(1).cloned() else {
         usage("ask needs a prompt")
     };
@@ -365,7 +380,7 @@ async fn embedded_ask(args: &[String]) -> ! {
         Err(e) => fail(2, &e),
     };
     let store = match embedded_store() {
-        Ok(store) => store,
+        Ok(store) => Arc::new(store),
         Err(e) => fail(2, &e),
     };
     let session = match create_session(&store, &dir, &first_line(&text)) {
@@ -390,8 +405,15 @@ async fn embedded_ask(args: &[String]) -> ! {
         retries: &oc_agent::RETRY_SCHEDULE,
     };
     let registry = Registry::builtin(&dir);
-    let client = oc_agent::client_from_env();
+    let client = Arc::new(oc_agent::client_from_env());
     let model = oc_agent::model_from_env();
+    let registry = oc_agent::with_task_tool(
+        &registry,
+        store.clone(),
+        client.clone(),
+        model.clone(),
+        &opts,
+    );
     let started = Instant::now();
     let mut signals = match Signals::new() {
         Ok(signals) => signals,
@@ -415,20 +437,20 @@ async fn embedded_ask(args: &[String]) -> ! {
         &after,
         started.elapsed(),
     );
-    std::process::exit(outcome_code(output.outcome));
+    outcome_code(output.outcome)
 }
 
-async fn embedded_chat(args: &[String]) -> ! {
+async fn embedded_chat(args: &[String]) -> i32 {
     let dir = match embedded_dir(args.get(1)) {
         Ok(dir) => dir,
         Err(e) => fail(2, &e),
     };
     let store = match embedded_store() {
-        Ok(store) => store,
+        Ok(store) => Arc::new(store),
         Err(e) => fail(2, &e),
     };
     let registry = Registry::builtin(&dir);
-    let client = oc_agent::client_from_env();
+    let client = Arc::new(oc_agent::client_from_env());
     let model = oc_agent::model_from_env();
     let permissions = oc_agent::embedded_permissions_from_env();
     let mut session = match create_session(&store, &dir, "chat") {
@@ -482,10 +504,17 @@ async fn embedded_chat(args: &[String]) -> ! {
             compaction: Settings::from_env(),
             retries: &oc_agent::RETRY_SCHEDULE,
         };
+        let turn_registry = oc_agent::with_task_tool(
+            &registry,
+            store.clone(),
+            client.clone(),
+            model.clone(),
+            &opts,
+        );
         let started = Instant::now();
         let turn = oc_agent::prompt(
             &store,
-            &registry,
+            &turn_registry,
             &client,
             &session,
             model.clone(),
@@ -494,7 +523,7 @@ async fn embedded_chat(args: &[String]) -> ! {
         );
         let (output, stopped) = drive_turn(turn, &abort, &mut signals).await;
         if stopped == Some(Stop::Terminate) {
-            std::process::exit(143);
+            return 143;
         }
         let output = match output {
             Ok(output) => output,
@@ -516,7 +545,7 @@ async fn embedded_chat(args: &[String]) -> ! {
             started.elapsed(),
         );
     }
-    std::process::exit(0);
+    0
 }
 
 /// What a signal asks of a turn. A shell call runs in a process group of its

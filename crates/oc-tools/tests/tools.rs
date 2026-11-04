@@ -24,7 +24,7 @@ async fn registry_lists_all_builtins_with_verbatim_names() {
     let names: Vec<String> = r.defs().iter().map(|d| d.name.clone()).collect();
     assert_eq!(
         names,
-        ["shell", "read", "write", "edit", "glob", "grep", "todowrite", "webfetch"]
+        ["shell", "job", "read", "write", "edit", "glob", "grep", "todowrite", "webfetch"]
     );
     for d in r.defs() {
         assert!(!d.description.trim().is_empty(), "{} has an empty description", d.name);
@@ -306,6 +306,6 @@ async fn registry_is_shareable_across_threads() {
     let b = tokio::spawn(async move {
         r2.execute("shell", &j(serde_json::json!({"command": "true"})), &c).await
     });
-    assert_eq!(a.await.unwrap(), 8);
+    assert_eq!(a.await.unwrap(), 9);
     b.await.unwrap().unwrap();
 }
