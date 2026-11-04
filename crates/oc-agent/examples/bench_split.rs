@@ -8,8 +8,11 @@
 //! the rest of the request's HTTP time is waiting (gateway admission, the
 //! single slot busy with someone else, model load). Waiting while another
 //! request of the same run is in flight (DSH's title request) is the run's
-//! own and is counted apart from waiting on other clients. The gateway log,
-//! when given, adds owner-priority holds; the Tctl log the hottest reading.
+//! own and is counted apart from waiting on other clients. A request with no
+//! llama.cpp timings was cut off (the gateway preempts agents for the owner's
+//! own session): its time is "preempted", work thrown away. The gateway log,
+//! when given, adds owner-priority holds and preemptions; the Tctl log the
+//! hottest reading. A run with a preemption is not a clean measurement.
 //! Writes OUT_DIR/split.json and prints a Markdown table.
 use serde_json::{json, Value};
 
@@ -59,6 +62,10 @@ fn unix(ts: &str) -> Option<f64> {
     Some((days * 86_400 + hh * 3600 + mm * 60 + ss) as f64)
 }
 
+fn wall_of(run: &Value) -> f64 {
+    num(run, "elapsed_seconds")
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let Some(dir) = args.first().map(std::path::PathBuf::from) else {
@@ -98,12 +105,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .iter()
             .map(|r| (num(r, "started"), num(r, "started") + num(r, "elapsed_seconds")))
             .collect();
-        let (mut prompt, mut generation, mut waiting) = (0.0, 0.0, 0.0);
+        let (mut prompt, mut generation, mut waiting, mut preempted) = (0.0, 0.0, 0.0, 0.0);
         let (mut generated, mut prompt_tokens, mut cached, mut missing_timings) = (0.0, 0.0, 0.0, 0);
         for r in &mine {
             let t = &r["provider_timings"];
             if t.is_null() {
                 missing_timings += 1;
+                preempted += num(r, "elapsed_seconds");
+                continue;
             }
             let p = num(t, "prompt_ms") / 1000.0;
             let g = num(t, "predicted_ms") / 1000.0;
@@ -120,6 +129,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Waiting while another request of this run was in flight is the run's own.
         let own_overlap = covered(&spans, 2);
         let foreign_wait = (waiting - own_overlap).max(0.0);
+        let clean_wall = wall_of(run) - foreign_wait - preempted;
         let wall = num(run, "elapsed_seconds");
         let http = covered(&spans, 1);
         let (lo, hi) = spans
@@ -128,6 +138,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let in_window = |ts: &Value| {
             ts.as_str().and_then(unix).is_some_and(|t| t >= lo.floor() - 1.0 && t <= hi.ceil() + 1.0)
         };
+        let preemptions = gateway
+            .iter()
+            .filter(|e| e["event"] == "human_preempt" && e["peer_cmd"] == "python3" && in_window(&e["ts"]))
+            .count();
         let holds = gateway
             .iter()
             .filter(|e| e["event"] == "human_hold" && e["peer_cmd"] == "python3" && in_window(&e["ts"]))
@@ -161,7 +175,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "prompt_seconds": prompt,
             "generation_seconds": generation,
             "outside_model_seconds": (wall - http).max(0.0),
-            "wall_minus_queue_seconds": wall - foreign_wait,
+            "preempted_seconds": preempted,
+            "wall_minus_queue_and_preempted_seconds": clean_wall,
+            "gateway_preemptions": preemptions,
+            "clean": missing_timings == 0 && preemptions == 0,
             "generated_tokens": generated,
             "generation_tokens_per_second": if generation > 0.0 { generated / generation } else { 0.0 },
             "prompt_tokens_processed": prompt_tokens,
@@ -173,24 +190,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }));
     }
     std::fs::write(dir.join("split.json"), serde_json::to_string_pretty(&rows)? + "\n")?;
-    println!("| Run | Checks | Wall | Queue | Prompt | Generation | Outside model | Wall − queue | Tokens out | tok/s | Owner holds | Max Tctl |");
-    println!("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |");
+    println!("| Run | Checks | Wall | Queue | Preempted | Prompt | Generation | Outside model | Wall − queue − preempted | Tokens out | tok/s | Holds / preempts | Max Tctl |");
+    println!("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |");
     for r in &rows {
         println!(
-            "| {} {} | {}/{} | {:.1} s | {:.1} s | {:.1} s | {:.1} s | {:.1} s | {:.1} s | {} | {:.1} | {} | {} |",
+            "| {} {} | {}/{} | {:.1} s | {:.1} s | {:.1} s | {:.1} s | {:.1} s | {:.1} s | {:.1} s | {} | {:.1} | {} / {} | {} |",
             r["label"].as_str().unwrap_or_default(),
             r["harness"].as_str().unwrap_or_default(),
             r["checks_passed"],
             r["checks"],
             num(r, "wall_seconds"),
             num(r, "queue_seconds"),
+            num(r, "preempted_seconds"),
             num(r, "prompt_seconds"),
             num(r, "generation_seconds"),
             num(r, "outside_model_seconds"),
-            num(r, "wall_minus_queue_seconds"),
+            num(r, "wall_minus_queue_and_preempted_seconds"),
             num(r, "generated_tokens"),
             num(r, "generation_tokens_per_second"),
             r["gateway_owner_holds"],
+            r["gateway_preemptions"],
             r["max_tctl_c"],
         );
     }

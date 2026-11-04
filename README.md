@@ -92,7 +92,8 @@ cargo run -p oc-cli events         # SSE feed
 cargo run -p oc-cli -- --local chat    # embedded REPL, no server process
 # embedded ask: OC_BASE unset + OC_BASE_URL set, or pass --local
 # env: OC_BIND, OC_BASE, OC_DATA, OC_PERMISSIONS, OC_SHOW_THINKING, OC_VERBOSE,
-#      OC_API_KEY_FILE, OC_EXTRA_BODY, OC_CONTEXT_WINDOW, OC_COMPACT_BUFFER, OC_COMPACT_KEEP
+#      OC_API_KEY_FILE, OC_EXTRA_BODY, OC_CONTEXT_WINDOW, OC_COMPACT_BUFFER, OC_COMPACT_KEEP,
+#      OC_REASONING_REPLAY (on unless off/0/false/no), OC_TRACE (timing log; off, or a file)
 ```
 
 Embedded permissions follow upstream's fallback: anything no rule allows asks.
@@ -172,6 +173,26 @@ TUI (`chat` is a line REPL), plugins, background summary precomputation and
 native provider compaction. Shell background jobs and the one-level `task` tool
 are registered. SQLite is behind `oc-store`'s `sqlite` feature (server on, CLI
 off). Both CLI and server use the retry ladder and streaming runner.
+
+### Reasoning and output-limit stops (as upstream)
+
+- **Reasoning replay.** Earlier readable reasoning goes back on later requests
+  as `reasoning_content` (`to-llm-message.ts` + `protocols/openai-chat.ts`), for
+  any model, on by default. llama.cpp hands it to the chat template, so Qwen
+  keeps its own analysis between tool steps instead of redoing it. A failed
+  message gives its reasoning back as text. Compaction counts reasoning towards
+  the window and leaves it out of the summary. Anthropic thinking blocks need
+  signatures the port does not keep, so they are not replayed (delta).
+- **`finish_reason: length` / `max_tokens` is not success** (`runner/llm.ts`
+  `OutputLimit`). The turn continues: tool results go back as usual, or, with
+  no tool call, upstream's "Break the remaining work into smaller pieces"
+  nudge. Three truncated responses in a row fail the turn with "Response still
+  truncated after two output token limit continuations".
+- **Cut-off tool calls never run** (`publish-llm-event.ts` `INPUT_FAILURES`).
+  The model gets upstream's "not executed" error instead. The port is stricter
+  in one place: the last call of a truncated response never runs even when its
+  arguments parse, because servers can close partial JSON when they stop.
+  Arguments that are not a JSON object never run (before, they ran with `null`).
 
 The prompt path is now the real one: user message → model → tool calls →
 executed against the workspace → settled into the transcript → next step →
