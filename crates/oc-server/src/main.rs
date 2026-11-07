@@ -307,10 +307,12 @@ async fn session_prompt(
                 RunEvent::ReasoningDelta { delta } => {
                     serde_json::json!({"type": "reasoning", "delta": delta})
                 }
-                RunEvent::ToolCallStarted { name, input } => {
+                RunEvent::ToolCallStarted { name, input, .. } => {
                     serde_json::json!({"type": "tool-started", "name": name, "input": input})
                 }
-                RunEvent::ToolCallFinished { name, ok, preview } => {
+                RunEvent::ToolCallFinished {
+                    name, ok, preview, ..
+                } => {
                     serde_json::json!({"type": "tool-finished", "name": name, "ok": ok, "preview": preview})
                 }
                 RunEvent::StepFinished { usage } => {
