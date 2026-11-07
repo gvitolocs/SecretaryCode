@@ -415,6 +415,7 @@ async fn embedded_ask(args: &[String]) -> i32 {
         compaction: Settings::from_env(),
         retries: &oc_agent::RETRY_SCHEDULE,
         replay_reasoning: oc_agent::reasoning_replay_from_env(),
+        ..RunOptions::default()
     };
     let registry = Registry::builtin(&dir);
     let client = Arc::new(oc_agent::client_from_env());
@@ -516,6 +517,7 @@ async fn embedded_chat(args: &[String]) -> i32 {
             compaction: Settings::from_env(),
             retries: &oc_agent::RETRY_SCHEDULE,
             replay_reasoning: oc_agent::reasoning_replay_from_env(),
+            ..RunOptions::default()
         };
         let turn_registry = oc_agent::with_task_tool(
             &registry,

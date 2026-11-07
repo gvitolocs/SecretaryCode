@@ -11,6 +11,7 @@ members = [
     "crates/oc-cli",
     "crates/oc-mcp",
     "crates/oc-tunnel",
+    "crates/oc-claude",
 ]
 
 [workspace.package]
@@ -35,6 +36,7 @@ oc-provider = { path = "crates/oc-provider" }
 oc-agent = { path = "crates/oc-agent" }
 oc-mcp = { path = "crates/oc-mcp" }
 oc-tunnel = { path = "crates/oc-tunnel" }
+oc-claude = { path = "crates/oc-claude" }
 tokio = { version = "1", features = ["full"] }
 axum = "0.8"
 serde = { version = "1", features = ["derive"] }

@@ -4,6 +4,7 @@
 //! tools, no provider-metadata replay).
 
 pub mod compaction;
+pub mod hooks;
 pub mod task;
 mod trace;
 
@@ -146,6 +147,17 @@ pub struct RunOptions {
     /// Send earlier readable reasoning back as `reasoning_content` (upstream
     /// to-llm-message.ts + openai-chat.ts); on by default, OC_REASONING_REPLAY=off stops it.
     pub replay_reasoning: bool,
+    /// Hooks that watch and steer the turn (Claude Code projects); None runs
+    /// the plain OpenCode flow.
+    pub hooks: Option<Arc<dyn hooks::TurnHooks>>,
+    /// Project instructions for the system prompt. Some replaces the root
+    /// AGENTS.md block (Claude Code's CLAUDE.md hierarchy, for example).
+    pub instructions: Option<Arc<String>>,
+    /// A subagent's own system prompt: replaces the harness text, keeping
+    /// the environment block and the instructions.
+    pub agent_prompt: Option<Arc<String>>,
+    /// True inside a subagent started by the `task` tool.
+    pub subagent: bool,
 }
 
 fn allow_all_permissions() -> oc_permission::Ruleset {
@@ -170,8 +182,21 @@ impl Default for RunOptions {
             compaction: compaction::Settings::default(),
             retries: &[],
             replay_reasoning: true,
+            hooks: None,
+            instructions: None,
+            agent_prompt: None,
+            subagent: false,
         }
     }
+}
+
+/// Claude Code's cap on consecutive stop-hook continuations (8), or
+/// `CLAUDE_CODE_STOP_HOOK_BLOCK_CAP`.
+fn stop_hook_cap() -> u32 {
+    std::env::var("CLAUDE_CODE_STOP_HOOK_BLOCK_CAP")
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(8)
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -255,7 +280,9 @@ async fn run_turn_inner(
         return Err(AgentError::NotFound(session_id.to_string()));
     }
     let worktree = worktree_of(store, session_id);
-    let system = system_prompt(&model, &worktree);
+    let system = system_prompt_for(&model, &worktree, opts);
+    let mut stop_continuations: u32 = 0;
+    let mut stop_hook_active = false;
     let mut step: u32 = 0;
     let mut completed_steps: u32 = 0;
     let mut last_text: Option<String> = None;
@@ -302,7 +329,11 @@ async fn run_turn_inner(
             model: model.id.clone(),
             system: Some(system.clone()),
             messages,
-            tools: registry.defs(),
+            tools: registry
+                .defs()
+                .into_iter()
+                .filter(|d| opts.hooks.as_ref().is_none_or(|h| h.tool_visible(&d.name)))
+                .collect(),
             tool_choice: if limit_reached {
                 ToolChoice::None
             } else {
@@ -424,20 +455,21 @@ async fn run_turn_inner(
             }
         };
         completed_steps += 1;
-        let assistant_id = settle_step(
+        let (assistant_id, hook_stop) = settle_step(
             store,
             registry,
             session_id,
             &opts.agent,
             &model,
             &resp,
-            &opts.permissions,
-            opts.permission_ask.as_ref(),
-            &opts.observer,
-            &opts.abort,
+            opts,
             trace,
         )
         .await?;
+        if !resp.tool_calls.is_empty() {
+            // Claude Code resets the stop-hook continuation count on every tool call.
+            stop_continuations = 0;
+        }
         fold_usage(store, session_id, &resp)?;
         (opts.observer)(RunEvent::StepFinished {
             usage: resp.usage.clone(),
@@ -476,12 +508,42 @@ async fn run_turn_inner(
             step += 1;
             continue;
         }
+        if let Some(reason) = hook_stop {
+            // A hook's `continue: false`: processing stops; its reason stays
+            // in the conversation for a later turn.
+            store.append_message(session_id, |id, t| {
+                oc_store::synthetic_message(&hooks::system_reminder(&reason), id, t)
+            })?;
+            break Outcome::Succeeded;
+        }
         if !has_calls || limit_reached || opts.abort.load(Ordering::Relaxed) {
-            break if opts.abort.load(Ordering::Relaxed) {
-                Outcome::Interrupted
-            } else {
-                Outcome::Succeeded
-            };
+            if opts.abort.load(Ordering::Relaxed) {
+                break Outcome::Interrupted;
+            }
+            if let Some(h) = &opts.hooks {
+                let verdict = h
+                    .stop(&hooks::StopContext {
+                        session_id,
+                        worktree: &worktree,
+                        agent: &opts.agent,
+                        subagent: opts.subagent,
+                        last_text: last_text.as_deref(),
+                        stop_hook_active,
+                    })
+                    .await;
+                if let hooks::StopVerdict::Continue(reason) = verdict {
+                    if stop_continuations < stop_hook_cap() && !limit_reached {
+                        stop_continuations += 1;
+                        stop_hook_active = true;
+                        store.append_message(session_id, |id, t| {
+                            oc_store::synthetic_message(&hooks::system_reminder(&reason), id, t)
+                        })?;
+                        step += 1;
+                        continue;
+                    }
+                }
+            }
+            break Outcome::Succeeded;
         }
         step += 1;
     };
@@ -504,6 +566,25 @@ async fn compact_and_report(
     rejected: Option<u64>,
     trace: &trace::TurnTrace,
 ) -> Result<compaction::Compacted, AgentError> {
+    // Claude Code's PreCompact: a hook can block compaction or add
+    // instructions for the summary. The runner only compacts automatically.
+    let mut summary_system = None;
+    if let Some(h) = &opts.hooks {
+        let worktree = worktree_of(store, session_id);
+        match h.pre_compact(session_id, &worktree, "auto").await {
+            hooks::CompactVerdict::Block(reason) => {
+                trace.emit("compaction.blocked", serde_json::json!({"reason_bytes": reason.len()}));
+                return Ok(compaction::Compacted::Nothing);
+            }
+            hooks::CompactVerdict::Proceed(Some(extra)) if !extra.trim().is_empty() => {
+                summary_system = Some(format!(
+                    "{system}\n\n# Instructions for the summary\n\n{extra}"
+                ));
+            }
+            hooks::CompactVerdict::Proceed(_) => {}
+        }
+    }
+    let system = summary_system.as_deref().unwrap_or(system);
     let started = std::time::Instant::now();
     trace.emit("compaction.start", serde_json::json!({}));
     (opts.observer)(RunEvent::CompactionStarted);
@@ -563,12 +644,14 @@ async fn settle_step(
     agent: &str,
     model: &ModelRef,
     resp: &LlmResponse,
-    permissions: &oc_permission::Ruleset,
-    permission_ask: Option<&PermissionAsk>,
-    observer: &Observer,
-    abort: &AtomicBool,
+    opts: &RunOptions,
     trace: &trace::TurnTrace,
-) -> Result<String, AgentError> {
+) -> Result<(String, Option<String>), AgentError> {
+    let permissions = &opts.permissions;
+    let permission_ask = opts.permission_ask.as_ref();
+    let observer = &opts.observer;
+    let abort: &AtomicBool = &opts.abort;
+    let mut hook_stop: Option<String> = None;
     let now = now_ms();
     let mut content: Vec<AssistantContent> = Vec::new();
     if let Some(r) = &resp.reasoning {
@@ -659,20 +742,12 @@ async fn settle_step(
     let calls = runnable.iter().map(|&n| &resp.tool_calls[n]);
     for (call, (call_id, input)) in calls.zip(tool_inputs.iter()) {
         let ran = now_ms();
+        let worktree = worktree_of(store, session_id);
         let ctx = ToolContext {
-            worktree: worktree_of(store, session_id),
+            worktree: worktree.clone(),
             session_id: session_id.to_string(),
             call_id: call_id.clone(),
         };
-        // permission gate: the resource is the tool's primary target —
-        // its path / command / url when present, "*" otherwise
-        let resource = input
-            .get("path")
-            .or_else(|| input.get("command"))
-            .or_else(|| input.get("url"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("*")
-            .to_string();
         observer(RunEvent::ToolCallStarted {
             name: call.name.clone(),
             input: input.clone(),
@@ -682,7 +757,28 @@ async fn settle_step(
             "tool.start",
             serde_json::json!({"call_id": call_id, "name": call.name}),
         );
-        let decision = opts_permissions_check(permissions, &call.name, &resource, permission_ask);
+        let mut input = input.clone();
+        let mut extra_context: Vec<String> = Vec::new();
+        let skipped = hook_stop.is_some();
+        let decision = if let Some(reason) = &hook_stop {
+            Err(format!("not executed: a hook stopped processing ({reason})"))
+        } else if let Some(h) = &opts.hooks {
+            gate_with_hooks(
+                h.as_ref(),
+                opts,
+                session_id,
+                call_id,
+                &call.name,
+                &mut input,
+                &worktree,
+                &mut extra_context,
+                &mut hook_stop,
+            )
+            .await
+        } else {
+            opts_permissions_check(permissions, &call.name, &resource_of(&input), permission_ask)
+        };
+        let input = &input;
         let permission_ms = trace::ms(tool_started.elapsed());
         let executed = match decision {
             // Dropping a shell call kills its process group.
@@ -690,6 +786,39 @@ async fn settle_step(
                 .await
                 .unwrap_or_else(|| Err(oc_tools::ToolError::Failed("aborted by the user".into()))),
             Err(reason) => Err(oc_tools::ToolError::Failed(reason)),
+        };
+        let executed = match &opts.hooks {
+            Some(h) if !skipped => {
+                let call_view = hooks::ToolCall {
+                    session_id,
+                    call_id,
+                    name: &call.name,
+                    input,
+                    worktree: &worktree,
+                    agent: &opts.agent,
+                    subagent: opts.subagent,
+                };
+                let text = match &executed {
+                    Ok(out) => tool_output_text(out),
+                    Err(e) => e.to_string(),
+                };
+                let post = h
+                    .post_tool(
+                        &call_view,
+                        match &executed {
+                            Ok(_) => hooks::ToolResult::Ok(&text),
+                            Err(_) => hooks::ToolResult::Err(&text),
+                        },
+                        tool_started.elapsed().as_millis() as u64,
+                    )
+                    .await;
+                extra_context.extend(post.context);
+                if hook_stop.is_none() {
+                    hook_stop = post.stop;
+                }
+                apply_hook_output(executed, post.replace_output, &extra_context)
+            }
+            _ => apply_hook_output(executed, None, &extra_context),
         };
         let (ok, preview) = match &executed {
             Ok(out) => (true, tool_output_preview(out)),
@@ -740,7 +869,154 @@ async fn settle_step(
         };
         store.replace_message(session_id, msg)?;
     }
-    Ok(assistant_id)
+    Ok((assistant_id, hook_stop))
+}
+
+/// The permission resource of a tool call: its path / command / url when
+/// present, "*" otherwise.
+fn resource_of(input: &serde_json::Value) -> String {
+    input
+        .get("path")
+        .or_else(|| input.get("command"))
+        .or_else(|| input.get("url"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("*")
+        .to_string()
+}
+
+/// Every text part of a tool's output, joined.
+fn tool_output_text(out: &oc_tools::ToolOutput) -> String {
+    out.content
+        .iter()
+        .filter_map(|c| match c {
+            ToolContent::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Hook output on a tool result: a replacement text, then context notes.
+fn apply_hook_output(
+    executed: Result<oc_tools::ToolOutput, oc_tools::ToolError>,
+    replace: Option<String>,
+    context: &[String],
+) -> Result<oc_tools::ToolOutput, oc_tools::ToolError> {
+    if replace.is_none() && context.is_empty() {
+        return executed;
+    }
+    let notes: String = context
+        .iter()
+        .filter(|c| !c.trim().is_empty())
+        .map(|c| format!("\n\n{}", hooks::system_reminder(c)))
+        .collect();
+    match executed {
+        Ok(mut out) => {
+            if let Some(text) = replace {
+                out.content = vec![ToolContent::Text { text }];
+            }
+            if !notes.is_empty() {
+                out.content.push(ToolContent::Text { text: notes.trim_start().to_string() });
+            }
+            Ok(out)
+        }
+        Err(e) => {
+            let text = replace.unwrap_or_else(|| e.to_string());
+            Err(oc_tools::ToolError::Failed(format!("{text}{notes}")))
+        }
+    }
+}
+
+/// Pre-tool hooks, then the hooks' permission verdict, then the OpenCode
+/// ruleset. Claude Code's precedence: a hook deny (or exit 2) blocks first;
+/// a rules deny blocks and a rules ask prompts whatever the hook said; a
+/// hook ask prompts; a hook allow or a rules allow runs; otherwise the
+/// OpenCode ruleset decides.
+#[allow(clippy::too_many_arguments)]
+async fn gate_with_hooks(
+    h: &dyn hooks::TurnHooks,
+    opts: &RunOptions,
+    session_id: &str,
+    call_id: &str,
+    name: &str,
+    input: &mut serde_json::Value,
+    worktree: &std::path::Path,
+    extra_context: &mut Vec<String>,
+    hook_stop: &mut Option<String>,
+) -> Result<(), String> {
+    let pre = h
+        .pre_tool(&hooks::ToolCall {
+            session_id,
+            call_id,
+            name,
+            input,
+            worktree,
+            agent: &opts.agent,
+            subagent: opts.subagent,
+        })
+        .await;
+    extra_context.extend(pre.context.iter().cloned());
+    if let Some(updated) = pre.updated_input {
+        if updated.is_object() {
+            *input = updated;
+        }
+    }
+    if let Some(reason) = &pre.stop {
+        *hook_stop = Some(reason.clone());
+        return Err(format!("not executed: a PreToolUse hook stopped processing ({reason})"));
+    }
+    if pre.decision == Some(hooks::HookDecision::Deny) {
+        return Err(pre
+            .reason
+            .unwrap_or_else(|| format!("{name} was blocked by a PreToolUse hook")));
+    }
+    let call = hooks::ToolCall {
+        session_id,
+        call_id,
+        name,
+        input,
+        worktree,
+        agent: &opts.agent,
+        subagent: opts.subagent,
+    };
+    let ask = |why: String| -> Result<(), String> {
+        match opts.permission_ask.as_ref() {
+            Some(ask) if ask(name, &resource_of(input)) => Ok(()),
+            Some(_) => Err(format!("permission denied by the user: {name} {}", resource_of(input))),
+            None => Err(format!(
+                "permission requires interactive approval, which this runner cannot ask for: {name} {} ({why})",
+                resource_of(input)
+            )),
+        }
+    };
+    match h.permission(&call) {
+        hooks::PermissionVerdict::Deny(reason) => Err(reason),
+        hooks::PermissionVerdict::Ask => {
+            if opts.permission_ask.is_some() {
+                h.notify(session_id, worktree, "permission_prompt", &format!("Claude needs your permission to use {name}")).await;
+            }
+            ask("an ask rule matched".into())
+        }
+        verdict => match pre.decision {
+            Some(hooks::HookDecision::Ask) => {
+                if opts.permission_ask.is_some() {
+                    h.notify(session_id, worktree, "permission_prompt", &format!("Claude needs your permission to use {name}")).await;
+                }
+                ask(pre.reason.clone().unwrap_or_else(|| "a hook asked".into()))
+            }
+            Some(hooks::HookDecision::Allow) => Ok(()),
+            _ if verdict == hooks::PermissionVerdict::Allow => Ok(()),
+            _ => {
+                let resource = resource_of(input);
+                if opts.permissions.decide(name, &resource) == oc_permission::Effect::Ask
+                    && opts.permission_ask.is_some()
+                {
+                    h.notify(session_id, worktree, "permission_prompt", &format!("Claude needs your permission to use {name}")).await;
+                }
+                opts_permissions_check(&opts.permissions, name, &resource, opts.permission_ask.as_ref())
+            }
+        },
+    }
 }
 
 // runner/llm.ts and publish-llm-event.ts texts, verbatim.
@@ -1909,6 +2185,36 @@ pub fn to_llm_messages_with(history: &[Message], replay_reasoning: bool) -> Vec<
 /// guidance, the date and environment block, plus the worktree's AGENTS.md
 /// when present (upstream's instruction discovery, root file only).
 pub fn system_prompt(model: &ModelRef, worktree: &std::path::Path) -> String {
+    compose_system_prompt(model, worktree, None, worktree_instructions(worktree).as_deref())
+}
+
+/// The system prompt for one turn: a subagent's own prompt replaces the
+/// harness text, and `opts.instructions` (when set) replaces the AGENTS.md block.
+pub fn system_prompt_for(model: &ModelRef, worktree: &std::path::Path, opts: &RunOptions) -> String {
+    let fallback;
+    let instructions = match &opts.instructions {
+        Some(text) => Some(text.as_str()),
+        None => {
+            fallback = worktree_instructions(worktree);
+            fallback.as_deref()
+        }
+    };
+    compose_system_prompt(model, worktree, opts.agent_prompt.as_deref().map(String::as_str), instructions)
+}
+
+fn compose_system_prompt(
+    model: &ModelRef,
+    worktree: &std::path::Path,
+    preamble: Option<&str>,
+    instructions: Option<&str>,
+) -> String {
+    if let Some(own) = preamble {
+        let mut s = own.trim_end().to_string();
+        s.push('\n');
+        push_environment(&mut s, model, worktree);
+        push_instructions(&mut s, instructions);
+        return s;
+    }
     let mut s = String::from(
         "You are an AI agent running in OpenCode, a coding agent harness. Help the user accomplish their goals using the tools you have available.\n\n\
          # Harness\n\
@@ -1925,6 +2231,12 @@ pub fn system_prompt(model: &ModelRef, worktree: &std::path::Path) -> String {
          - Keep changes consistent with the structure, naming, style, and patterns of the surrounding code.\n\
          - Treat unfamiliar files or changes as potential user work and investigate before deleting or overwriting them.\n",
     );
+    push_environment(&mut s, model, worktree);
+    push_instructions(&mut s, instructions);
+    s
+}
+
+fn push_environment(s: &mut String, model: &ModelRef, worktree: &std::path::Path) {
     s.push_str(&format!(
         "\nYou are powered by the model {}/{}.\nToday's date: {}.\n",
         model.provider_id,
@@ -1944,12 +2256,14 @@ pub fn system_prompt(model: &ModelRef, worktree: &std::path::Path) -> String {
     ));
     s.push_str(&format!("  Platform: {}\n", std::env::consts::OS));
     s.push_str("</env>\n");
-    if let Some(instructions) = worktree_instructions(worktree) {
+}
+
+fn push_instructions(s: &mut String, instructions: Option<&str>) {
+    if let Some(instructions) = instructions.filter(|t| !t.trim().is_empty()) {
         s.push_str("\n# Project instructions\n\n");
-        s.push_str(&instructions);
+        s.push_str(instructions);
         s.push('\n');
     }
-    s
 }
 
 /// AGENTS.md content at the worktree root, if any — the instruction file the

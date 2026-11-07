@@ -28,12 +28,37 @@ pub struct TaskTool {
     agent: String,
     max_steps: Option<u32>,
     options: RunOptions,
+    profiles: Vec<AgentProfile>,
+}
+
+/// A named subagent definition (a Claude Code `.claude/agents/*.md` file,
+/// for example): its own system prompt, tool list, model and step limit.
+#[derive(Debug, Clone, Default)]
+pub struct AgentProfile {
+    pub name: String,
+    pub description: String,
+    /// The subagent's system prompt; None keeps the harness prompt.
+    pub prompt: Option<String>,
+    /// Tool allowlist in registry names; None inherits every tool.
+    pub tools: Option<Vec<String>>,
+    /// Registry names removed from the pool (applied before `tools`).
+    pub disallowed_tools: Vec<String>,
+    pub model: Option<ModelRef>,
+    pub max_steps: Option<u32>,
+    /// Instructions for the child's system prompt; None inherits the caller's.
+    pub instructions: Option<Arc<String>>,
 }
 
 impl TaskTool {
     /// Child executions inherit the caller's permissions, cancellation and model settings.
     pub fn with_options(mut self, options: &RunOptions) -> Self {
         self.options = options.clone();
+        self
+    }
+
+    /// Named subagents the model may pick with `agent` (or `subagent_type`).
+    pub fn with_profiles(mut self, profiles: Vec<AgentProfile>) -> Self {
+        self.profiles = profiles;
         self
     }
 
@@ -54,6 +79,7 @@ impl TaskTool {
             agent,
             max_steps,
             options: RunOptions::default(),
+            profiles: Vec::new(),
         }
     }
 }
@@ -63,7 +89,15 @@ impl Tool for TaskTool {
     fn def(&self) -> ToolDef {
         ToolDef {
             name: TASK_NAME.into(),
-            description: TASK_DESCRIPTION.into(),
+            description: if self.profiles.is_empty() {
+                TASK_DESCRIPTION.into()
+            } else {
+                let mut d = format!("{TASK_DESCRIPTION}\n\nAvailable agents (pass the name as `agent`):");
+                for p in &self.profiles {
+                    d.push_str(&format!("\n- {}: {}", p.name, p.description));
+                }
+                d
+            },
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -92,10 +126,14 @@ impl Tool for TaskTool {
             .ok_or_else(|| ToolError::Failed("missing required field: prompt".into()))?;
         let agent = input
             .get("agent")
+            .or_else(|| input.get("subagent_type"))
             .and_then(|v| v.as_str())
             .unwrap_or(&self.agent)
             .to_string();
-        let mut model = self.model.clone();
+        let profile = self.profiles.iter().find(|p| p.name == agent);
+        let mut model = profile
+            .and_then(|p| p.model.clone())
+            .unwrap_or_else(|| self.model.clone());
         if let Some(m) = input.get("model").and_then(|v| v.as_str()) {
             model = ModelRef::parse(m)
                 .map_err(|e| ToolError::Failed(format!("bad model ref {m:?}: {e}")))?;
@@ -113,14 +151,39 @@ impl Tool for TaskTool {
                 project_id: "global".into(),
             })
             .map_err(|e| ToolError::Failed(e.to_string()))?;
-        let opts = RunOptions {
+        let mut opts = RunOptions {
             agent,
             max_steps: self.max_steps,
+            subagent: true,
             ..self.options.clone()
         };
+        let mut tools = (*self.tools).clone();
+        if let Some(p) = profile {
+            if p.max_steps.is_some() {
+                opts.max_steps = p.max_steps;
+            }
+            if let Some(prompt) = &p.prompt {
+                opts.agent_prompt = Some(Arc::new(prompt.clone()));
+            }
+            if p.instructions.is_some() {
+                opts.instructions = p.instructions.clone();
+            }
+            let denied = p.disallowed_tools.clone();
+            let allowed = p.tools.clone();
+            tools = tools.retain(|name| {
+                !denied.iter().any(|d| d == name)
+                    && allowed.as_ref().is_none_or(|a| a.iter().any(|x| x == name))
+            });
+            if tools.names().is_empty() {
+                return Err(ToolError::Failed(format!(
+                    "agent {} would be spawned with zero tools",
+                    p.name
+                )));
+            }
+        }
         let output = crate::prompt(
             &self.store,
-            &self.tools,
+            &tools,
             &self.client,
             &info.id,
             model,
