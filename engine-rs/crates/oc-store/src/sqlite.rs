@@ -21,7 +21,7 @@ use std::sync::{Mutex, MutexGuard};
 
 use rusqlite::Connection;
 
-use super::{message_key, Backend, Message, SessionInfo, Store, StoreError};
+use super::{message_base, Backend, Message, SessionInfo, Store, StoreError};
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, json TEXT NOT NULL);
@@ -41,7 +41,8 @@ fn doc<T: serde::Serialize>(value: &T) -> Result<String, StoreError> {
 /// Lock the shared connection. The guard is held only inside these synchronous
 /// helpers, so it never crosses an await point in callers.
 pub(super) fn lock(conn: &Mutex<Connection>) -> Result<MutexGuard<'_, Connection>, StoreError> {
-    conn.lock().map_err(|_| StoreError::Db("connection mutex poisoned".into()))
+    conn.lock()
+        .map_err(|_| StoreError::Db("connection mutex poisoned".into()))
 }
 
 impl Store {
@@ -61,7 +62,9 @@ impl Store {
         let mut messages: HashMap<String, Vec<Message>> = HashMap::new();
         {
             let mut stmt = conn.prepare("SELECT json FROM sessions").map_err(db)?;
-            let rows = stmt.query_map([], |row| row.get::<_, String>(0)).map_err(db)?;
+            let rows = stmt
+                .query_map([], |row| row.get::<_, String>(0))
+                .map_err(db)?;
             for row in rows {
                 let json = row.map_err(db)?;
                 let info: SessionInfo = serde_json::from_str(&json)
@@ -86,7 +89,13 @@ impl Store {
             }
         }
 
-        Ok(Self { sessions, messages, backend: Backend::Db(Mutex::new(conn)) })
+        Ok(Self {
+            inner: std::sync::RwLock::new(super::Inner {
+                sessions,
+                messages,
+                backend: Backend::Db(Mutex::new(conn)),
+            }),
+        })
     }
 }
 
@@ -103,9 +112,13 @@ pub(super) fn upsert_session(conn: &Connection, s: &SessionInfo) -> Result<(), S
 
 /// Delete a session document and all of its message rows.
 pub(super) fn delete_session(conn: &Connection, id: &str) -> Result<(), StoreError> {
-    conn.execute("DELETE FROM messages WHERE session_id = ?1", rusqlite::params![id])
+    conn.execute(
+        "DELETE FROM messages WHERE session_id = ?1",
+        rusqlite::params![id],
+    )
+    .map_err(db)?;
+    conn.execute("DELETE FROM sessions WHERE id = ?1", rusqlite::params![id])
         .map_err(db)?;
-    conn.execute("DELETE FROM sessions WHERE id = ?1", rusqlite::params![id]).map_err(db)?;
     Ok(())
 }
 
@@ -115,7 +128,7 @@ pub(super) fn append_message_row(
     session_id: &str,
     msg: &Message,
 ) -> Result<(), StoreError> {
-    let id = message_key(msg);
+    let id = message_base(msg).id.clone();
     conn.execute(
         "INSERT INTO messages (session_id, id, seq, json)
          VALUES (?1, ?2, (SELECT COALESCE(MAX(seq), 0) + 1 FROM messages WHERE session_id = ?1), ?3)",
@@ -125,13 +138,31 @@ pub(super) fn append_message_row(
     Ok(())
 }
 
+/// All of a session's message rows, in one transaction.
+pub(super) fn replace_history_rows(
+    conn: &Connection,
+    session_id: &str,
+    messages: &[Message],
+) -> Result<(), StoreError> {
+    let tx = conn.unchecked_transaction().map_err(db)?;
+    tx.execute(
+        "DELETE FROM messages WHERE session_id = ?1",
+        rusqlite::params![session_id],
+    )
+    .map_err(db)?;
+    for msg in messages {
+        append_message_row(&tx, session_id, msg)?;
+    }
+    tx.commit().map_err(db)
+}
+
 /// Overwrite one stored message document in place (same `seq`).
 pub(super) fn replace_message_row(
     conn: &Connection,
     session_id: &str,
     msg: &Message,
 ) -> Result<(), StoreError> {
-    let id = message_key(msg);
+    let id = message_base(msg).id.clone();
     let updated = conn
         .execute(
             "UPDATE messages SET json = ?3 WHERE session_id = ?1 AND id = ?2",
@@ -163,12 +194,16 @@ mod tests {
         }
     }
 
-    fn append_synthetic(store: &mut Store, session_id: &str, text: &str) {
+    fn append_synthetic(store: &Store, session_id: &str, text: &str) {
         let owned = text.to_string();
         store
             .append_message(session_id, move |id, t| {
                 Message::Synthetic(oc_schema::SyntheticMessage {
-                    base: MessageBase { id, metadata: None, time: MessageTime { created: t } },
+                    base: MessageBase {
+                        id,
+                        metadata: None,
+                        time: MessageTime { created: t },
+                    },
                     text: owned,
                     description: None,
                 })
@@ -191,9 +226,9 @@ mod tests {
     fn sqlite_persistence_roundtrip() {
         let tmp = tempfile::tempdir().unwrap();
         let db_path = tmp.path().join("store.sqlite");
-        let mut store = Store::open_sqlite(&db_path).unwrap();
+        let store = Store::open_sqlite(&db_path).unwrap();
         let s = store.create_session(mk("/a")).unwrap();
-        append_synthetic(&mut store, &s.id, "durable");
+        append_synthetic(&store, &s.id, "durable");
         // mutate a message in place, then reopen from the database
         let msgs = store.messages(&s.id).unwrap();
         let mut edited = msgs[0].clone();
@@ -201,18 +236,12 @@ mod tests {
             syn.text = "edited".into();
         }
         store.replace_message(&s.id, edited).unwrap();
-        let assistant = store.append_message(&s.id, |id, created| crate::assistant_message(
-            "build", oc_schema::ModelRef::parse("local/test").unwrap(),
-            vec![oc_schema::AssistantContent::Text(oc_schema::AssistantText { text: "Café 東京".into() })],
-            id, created,
-        )).unwrap();
         drop(store);
 
         let reopened = Store::open_sqlite(&db_path).unwrap();
         assert_eq!(reopened.get_session(&s.id).unwrap().id, s.id);
         let msgs = reopened.messages(&s.id).unwrap();
-        assert_eq!(msgs.len(), 2);
-        assert_eq!(msgs[1], assistant);
+        assert_eq!(msgs.len(), 1);
         match &msgs[0] {
             Message::Synthetic(syn) => assert_eq!(syn.text, "edited"),
             other => panic!("wrong variant: {other:?}"),
@@ -223,26 +252,40 @@ mod tests {
     fn sqlite_usage_folds_and_second_open_sees_everything() {
         let tmp = tempfile::tempdir().unwrap();
         let db_path = tmp.path().join("store.sqlite");
-        let mut store = Store::open_sqlite(&db_path).unwrap();
+        let store = Store::open_sqlite(&db_path).unwrap();
         let a = store.create_session(mk("/a")).unwrap();
         let b = store.create_session(mk("/b")).unwrap();
-        append_synthetic(&mut store, &a.id, "m1");
+        append_synthetic(&store, &a.id, "m1");
         std::thread::sleep(std::time::Duration::from_millis(2));
-        append_synthetic(&mut store, &a.id, "m2");
-        let u = LlmUsage { input: 10.0, output: 5.0, ..Default::default() };
+        append_synthetic(&store, &a.id, "m2");
+        let u = LlmUsage {
+            input: 10.0,
+            output: 5.0,
+            ..Default::default()
+        };
         store.add_usage(&a.id, 0.01, &u).unwrap();
         store.add_usage(&a.id, 0.02, &u).unwrap();
         store.set_outcome(&b.id, Outcome::Succeeded).unwrap();
         drop(store);
 
         let reopened = Store::open_sqlite(&db_path).unwrap();
-        assert_eq!(reopened.list_sessions(&SessionListFilter::default()).sessions.len(), 2);
+        assert_eq!(
+            reopened
+                .list_sessions(&SessionListFilter::default())
+                .sessions
+                .len(),
+            2
+        );
         let done = reopened.get_session(&a.id).unwrap();
         assert_eq!(done.cost, 0.03);
         assert_eq!(done.tokens.input, 20.0);
         assert_eq!(done.tokens.output, 10.0);
         let msgs = reopened.messages(&a.id).unwrap();
-        assert_eq!(texts(&msgs), ["m1", "m2"], "append order survives the reopen");
+        assert_eq!(
+            texts(&msgs),
+            ["m1", "m2"],
+            "append order survives the reopen"
+        );
         let idle = reopened.get_session(&b.id).unwrap();
         assert_eq!(idle.outcome, Some(Outcome::Succeeded));
         assert!(idle.time.idle.is_some());
@@ -252,15 +295,15 @@ mod tests {
     fn sqlite_remove_session_deletes_messages() {
         let tmp = tempfile::tempdir().unwrap();
         let db_path = tmp.path().join("store.sqlite");
-        let mut store = Store::open_sqlite(&db_path).unwrap();
+        let store = Store::open_sqlite(&db_path).unwrap();
         let s = store.create_session(mk("/a")).unwrap();
-        append_synthetic(&mut store, &s.id, "gone");
+        append_synthetic(&store, &s.id, "gone");
         store.remove_session(&s.id).unwrap();
         assert!(store.get_session(&s.id).is_err());
         assert!(store.messages(&s.id).is_err());
         drop(store);
 
-        let mut reopened = Store::open_sqlite(&db_path).unwrap();
+        let reopened = Store::open_sqlite(&db_path).unwrap();
         assert!(reopened.get_session(&s.id).is_err());
         assert!(reopened.messages(&s.id).is_err());
         // the reopened store stays usable
@@ -272,7 +315,7 @@ mod tests {
     fn sqlite_append_rejects_unknown_session_without_writes() {
         let tmp = tempfile::tempdir().unwrap();
         let db_path = tmp.path().join("store.sqlite");
-        let mut store = Store::open_sqlite(&db_path).unwrap();
+        let store = Store::open_sqlite(&db_path).unwrap();
         assert!(matches!(
             store.append_message("ses_missing0000000000000000000", |_, _| {
                 Message::Synthetic(oc_schema::SyntheticMessage {

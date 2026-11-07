@@ -1,7 +1,6 @@
 //! Tests for the oc-provider protocol subset. No network: the `Client` is
 //! exercised through a mock `Transport` that captures what was posted.
 
-use crate::{drive_sse, StreamEvent};
 use std::sync::{Arc, Mutex};
 
 use crate::{
@@ -57,7 +56,7 @@ fn openai_full_body() {
         messages: vec![
             ChatMessage::User { text: "list files".into() },
             ChatMessage::Assistant {
-                text: Some("checking".into()),
+                reasoning: None, text: Some("checking".into()),
                 tool_calls: vec![call("call_1", "bash", r#"{"cmd":"ls"}"#)],
             },
             ChatMessage::ToolResult {
@@ -115,7 +114,7 @@ fn openai_assistant_without_text_omits_content() {
         system: None,
         messages: vec![
             ChatMessage::User { text: "go".into() },
-            ChatMessage::Assistant { text: None, tool_calls: vec![call("c1", "bash", "{}")] },
+            ChatMessage::Assistant { reasoning: None, text: None, tool_calls: vec![call("c1", "bash", "{}")] },
         ],
         tools: vec![],
         tool_choice: ToolChoice::Auto,
@@ -318,7 +317,7 @@ fn anthropic_full_body() {
         messages: vec![
             ChatMessage::User { text: "list files".into() },
             ChatMessage::Assistant {
-                text: Some("checking".into()),
+                reasoning: None, text: Some("checking".into()),
                 tool_calls: vec![call("toolu_1", "bash", r#"{"cmd":"ls"}"#)],
             },
             ChatMessage::ToolResult {
@@ -381,7 +380,7 @@ fn anthropic_invalid_arguments_become_empty_object() {
             ChatMessage::User { text: "go".into() },
             // Both spellings the model might emit: garbage and a non-object.
             ChatMessage::Assistant {
-                text: None,
+                reasoning: None, text: None,
                 tool_calls: vec![call("t1", "bash", "not json at all"), call("t2", "bash", "[1,2]")],
             },
         ],
@@ -740,42 +739,509 @@ async fn client_empty_model_id_falls_back_to_request_model() {
     assert_eq!(transport.captured().body["model"], "fallback-model");
 }
 
-
-/// The transport may split JSON, UTF-8 characters and CRLF delimiters at any byte.
 #[tokio::test]
-async fn streaming_reassembles_text_tools_and_usage_for_both_protocols() {
-    let cases = [
-        (Protocol::OpenAI, vec![
-            json!({"choices":[{"delta":{"content":"Café 東京","tool_calls":[{"index":0,"id":"call_1","function":{"name":"read","arguments":"{\"path\":"}}]}}]}),
-            json!({"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"note.txt\"}"}}]},"finish_reason":"tool_calls"}]}),
-            json!({"choices":[],"usage":{"prompt_tokens":7,"completion_tokens":3}}),
-        ], "[DONE]"),
-        (Protocol::Anthropic, vec![
-            json!({"type":"message_start","message":{"usage":{"input_tokens":7,"cache_read_input_tokens":2}}}),
-            json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Café 東京"}}),
-            json!({"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"call_1","name":"read","input":{}}}),
-            json!({"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"path\":\"note.txt\"}"}}),
-            json!({"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":3}}),
-            json!({"type":"message_stop"}),
-        ], ""),
-    ];
-    for (protocol, frames, terminal) in cases {
-        let mut wire = String::from(": keepalive\r\n\r\n");
-        for frame in frames { wire.push_str(&format!("data: {frame}\r\n\r\n")); }
-        if !terminal.is_empty() { wire.push_str(&format!("data: {terminal}\r\n\r\n")); }
-        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let captured = events.clone();
-        let stream = futures_util::stream::iter(wire.into_bytes().into_iter().map(|b| Ok(bytes::Bytes::from(vec![b]))));
-        let response = drive_sse(Box::pin(stream), protocol, Arc::new(move |event| captured.lock().unwrap().push(event))).await.unwrap();
-        assert_eq!(response.text.as_deref(), Some("Café 東京"));
-        assert_eq!(response.finish, FinishReason::ToolCalls);
-        assert_eq!(response.tool_calls.len(), 1);
-        assert_eq!(response.tool_calls[0].id, "call_1");
-        assert_eq!(response.tool_calls[0].name, "read");
-        assert_eq!(response.tool_calls[0].arguments, r#"{"path":"note.txt"}"#);
-        let usage = response.usage.unwrap();
-        assert_eq!((usage.input, usage.output), (7.0, 3.0));
-        assert!(events.lock().unwrap().contains(&StreamEvent::Text { delta: "Café 東京".into() }));
-        assert!(events.lock().unwrap().contains(&StreamEvent::Finished));
+async fn extra_body_merges_at_the_top_level() {
+    let transport = MockTransport::ok(json!({
+        "choices": [ { "message": { "role": "assistant", "content": "ok" }, "finish_reason": "stop" } ]
+    }));
+    let client = Client::with_transport(openai_endpoint(), transport.clone()).with_extra_body(json!({
+        "chat_template_kwargs": { "enable_thinking": true },
+        "temperature": 1.0,
+        "model": "must-not-win"
+    }));
+    client.complete("gpt-5", &sample_request()).await.expect("completes");
+
+    let body = transport.captured().body;
+    assert_eq!(body["chat_template_kwargs"], json!({ "enable_thinking": true }));
+    assert_eq!(body["temperature"], 1.0);
+    assert_eq!(body["model"], "must-not-win", "extras win over generated keys");
+    assert_eq!(body["messages"][1]["content"], "hi");
+}
+
+// =============================================================================
+// Streaming: scripted byte-stream transport
+// =============================================================================
+
+use crate::{
+    parse_anthropic_sse_frame, parse_openai_sse_frame, parse_sse_frame, AnthropicStreamState, ByteStream, OnEvent,
+    OpenAiStreamState, SseFrame, StreamEvent,
+};
+use bytes::Bytes;
+
+struct ScriptedStream {
+    captured: Mutex<Option<Captured>>,
+    chunks: Vec<Result<Bytes, ProviderError>>,
+}
+
+impl ScriptedStream {
+    fn new(chunks: Vec<Result<Bytes, ProviderError>>) -> Arc<Self> {
+        Arc::new(Self { captured: Mutex::new(None), chunks })
     }
+
+    fn captured(&self) -> Captured {
+        self.captured.lock().expect("capture lock").clone().expect("transport was called")
+    }
+}
+
+#[async_trait::async_trait]
+impl Transport for ScriptedStream {
+    async fn post_json(&self, _url: &str, _headers: Vec<(String, String)>, _body: Value) -> Result<Value, ProviderError> {
+        Err(ProviderError::Transport("post_json reached although post_stream is implemented".into()))
+    }
+
+    async fn post_stream(&self, url: &str, headers: Vec<(String, String)>, body: Value) -> Result<ByteStream, ProviderError> {
+        *self.captured.lock().expect("capture lock") = Some(Captured { url: url.to_owned(), headers, body });
+        Ok(Box::pin(futures_util::stream::iter(self.chunks.clone())))
+    }
+}
+
+/// `data: {json}\n\n` wire frames for each value.
+fn sse_chunks(frames: &[Value]) -> Vec<Result<Bytes, ProviderError>> {
+    frames
+        .iter()
+        .map(|v| Ok(Bytes::from(format!("data: {v}\n\n"))))
+        .collect()
+}
+
+fn done_chunk() -> Result<Bytes, ProviderError> {
+    Ok(Bytes::from("data: [DONE]\n\n"))
+}
+
+/// A callback sink collecting every event in stream order.
+fn recorder() -> (OnEvent, Arc<Mutex<Vec<StreamEvent>>>) {
+    let events: Arc<Mutex<Vec<StreamEvent>>> = Arc::new(Mutex::new(Vec::new()));
+    let sink = events.clone();
+    (
+        Arc::new(move |event| {
+            if !matches!(
+                event,
+                StreamEvent::RequestPrepared { .. } | StreamEvent::ResponseStarted
+            ) {
+                sink.lock().expect("event lock").push(event);
+            }
+        }),
+        events,
+    )
+}
+
+#[tokio::test]
+async fn openai_streaming_text_usage_and_done() {
+    let frames = vec![
+        json!({ "choices": [ { "index": 0, "delta": { "role": "assistant", "content": "Hel" } } ] }),
+        json!({ "choices": [ { "index": 0, "delta": { "content": "lo" } } ] }),
+        json!({ "choices": [ { "index": 0, "delta": {}, "finish_reason": "stop" } ] }),
+        json!({ "choices": [ { "index": 0, "delta": {} } ], "usage": { "prompt_tokens": 7, "completion_tokens": 3 } }),
+    ];
+    let mut chunks = sse_chunks(&frames);
+    chunks.push(done_chunk());
+    let transport = ScriptedStream::new(chunks);
+    let client = Client::with_transport(openai_endpoint(), transport.clone());
+
+    let (on_event, events) = recorder();
+    let got = client.complete_streaming("gpt-5", &sample_request(), on_event).await.expect("streams");
+
+    assert_eq!(
+        *events.lock().expect("event lock"),
+        vec![
+            StreamEvent::Text { delta: "Hel".into() },
+            StreamEvent::Text { delta: "lo".into() },
+            StreamEvent::Finished,
+        ]
+    );
+    assert_eq!(
+        got,
+        parse_openai_response(&json!({
+            "choices": [ { "message": { "content": "Hello" }, "finish_reason": "stop" } ],
+            "usage": { "prompt_tokens": 7, "completion_tokens": 3 }
+        }))
+        .expect("parses"),
+        "stream result equals the non-streaming parse of the full body"
+    );
+
+    let captured = transport.captured();
+    assert_eq!(captured.url, "https://api.openai.com/v1/chat/completions");
+    assert_eq!(captured.body["stream"], true);
+    assert_eq!(captured.body["stream_options"], json!({ "include_usage": true }));
+    assert_eq!(captured.body["model"], "gpt-5");
+}
+
+#[tokio::test]
+async fn openai_streaming_tool_call_fragment_reassembly() {
+    // call_1's arguments arrive split across three frames.
+    let frames = vec![
+        json!({ "choices": [ { "index": 0, "delta": { "tool_calls": [
+            { "index": 0, "id": "call_1", "type": "function", "function": { "name": "bash", "arguments": "" } }
+        ] } } ] }),
+        json!({ "choices": [ { "index": 0, "delta": { "tool_calls": [
+            { "index": 0, "function": { "arguments": "{\"cmd\":" } }
+        ] } } ] }),
+        json!({ "choices": [ { "index": 0, "delta": { "tool_calls": [
+            { "index": 0, "function": { "arguments": "\"ls -la\"}" } }
+        ] } } ] }),
+        json!({ "choices": [ { "index": 0, "delta": { "tool_calls": [
+            { "index": 1, "id": "call_2", "type": "function", "function": { "name": "read", "arguments": "{\"path\":\"a\"}" } }
+        ] } } ] }),
+        json!({ "choices": [ { "index": 0, "delta": {}, "finish_reason": "tool_calls" } ] }),
+        json!({ "choices": [ { "index": 0, "delta": {} } ], "usage": { "prompt_tokens": 5, "completion_tokens": 9 } }),
+    ];
+    let mut chunks = sse_chunks(&frames);
+    chunks.push(done_chunk());
+    let transport = ScriptedStream::new(chunks);
+    let client = Client::with_transport(openai_endpoint(), transport.clone());
+
+    let (on_event, events) = recorder();
+    let got = client.complete_streaming("gpt-5", &sample_request(), on_event).await.expect("streams");
+
+    assert_eq!(
+        *events.lock().expect("event lock"),
+        vec![
+            StreamEvent::ToolCallStarted { index: 0, id: "call_1".into(), name: "bash".into() },
+            StreamEvent::ToolCallDelta { index: 0, arguments_delta: "{\"cmd\":".into() },
+            StreamEvent::ToolCallDelta { index: 0, arguments_delta: "\"ls -la\"}".into() },
+            StreamEvent::ToolCallStarted { index: 1, id: "call_2".into(), name: "read".into() },
+            StreamEvent::ToolCallDelta { index: 1, arguments_delta: "{\"path\":\"a\"}".into() },
+            StreamEvent::Finished,
+        ]
+    );
+    assert_eq!(
+        got,
+        parse_openai_response(&json!({
+            "choices": [ {
+                "message": {
+                    "content": null,
+                    "tool_calls": [
+                        { "id": "call_1", "type": "function", "function": { "name": "bash", "arguments": "{\"cmd\":\"ls -la\"}" } },
+                        { "id": "call_2", "type": "function", "function": { "name": "read", "arguments": "{\"path\":\"a\"}" } }
+                    ]
+                },
+                "finish_reason": "tool_calls"
+            } ],
+            "usage": { "prompt_tokens": 5, "completion_tokens": 9 }
+        }))
+        .expect("parses"),
+        "reassembled stream equals the non-streaming parse of the full body"
+    );
+    assert_eq!(got.tool_calls[0].arguments, "{\"cmd\":\"ls -la\"}", "fragments concatenated");
+}
+
+#[test]
+fn openai_stream_parser_reassembles_fragments_purely() {
+    let mut state = OpenAiStreamState::default();
+    let frames = [
+        json!({ "choices": [ { "index": 0, "delta": { "tool_calls": [
+            { "index": 0, "id": "call_1", "type": "function", "function": { "name": "bash" } }
+        ] } } ] }),
+        json!({ "choices": [ { "index": 0, "delta": { "tool_calls": [
+            { "index": 0, "function": { "arguments": "{\"cmd\":" } }
+        ] } } ] }),
+        json!({ "choices": [ { "index": 0, "delta": { "tool_calls": [
+            { "index": 0, "function": { "arguments": "\"ls\"" } }
+        ] } } ] }),
+        json!({ "choices": [ { "index": 0, "delta": { "tool_calls": [
+            { "index": 0, "function": { "arguments": "}" } }
+        ] } } ] }),
+        json!({ "choices": [ { "index": 0, "delta": {}, "finish_reason": "tool_calls" } ] }),
+    ];
+    for frame in &frames {
+        parse_openai_sse_frame(frame, &mut state).expect("frame parses");
+    }
+    let got = state.finish().expect("finishes");
+    assert_eq!(
+        got.tool_calls,
+        vec![call("call_1", "bash", "{\"cmd\":\"ls\"}")],
+        "arguments split over 4 frames reassemble"
+    );
+}
+
+#[test]
+fn openai_stream_unknown_frames_are_ignored() {
+    let mut state = OpenAiStreamState::default();
+    assert!(parse_openai_sse_frame(&json!({ "totally": "unknown" }), &mut state).expect("ok").is_empty());
+    assert!(parse_openai_sse_frame(&json!({ "choices": [] }), &mut state).expect("ok").is_empty());
+    assert!(
+        parse_openai_sse_frame(&json!({ "choices": [ { "index": 0, "delta": {} } ] }), &mut state)
+            .expect("ok")
+            .is_empty()
+    );
+    let err = state.finish().expect_err("a stream without finish_reason is a provider failure");
+    assert!(matches!(err, ProviderError::Malformed(ref m) if m.contains("finish_reason")), "got {err:?}");
+}
+
+#[test]
+fn parse_sse_frame_decodes_sentinel_blank_and_json() {
+    assert_eq!(parse_sse_frame("[DONE]").expect("ok"), Some(SseFrame::Done));
+    assert_eq!(parse_sse_frame("   \n").expect("ok"), None, "blank frames are skipped");
+    assert!(parse_sse_frame("not json").is_err(), "non-JSON payload is malformed");
+    assert!(matches!(parse_sse_frame("{\"type\":\"ping\"}").expect("ok"), Some(SseFrame::Json(_))));
+}
+
+#[tokio::test]
+async fn anthropic_streaming_text_usage_merge_and_message_stop() {
+    let frames = vec![
+        json!({ "type": "message_start", "message": { "id": "msg_1", "usage": {
+            "input_tokens": 100, "cache_read_input_tokens": 60, "cache_creation_input_tokens": 5 } } }),
+        json!({ "type": "content_block_start", "index": 0, "content_block": { "type": "text", "text": "" } }),
+        json!({ "type": "content_block_delta", "index": 0, "delta": { "type": "text_delta", "text": "bon" } }),
+        json!({ "type": "content_block_delta", "index": 0, "delta": { "type": "text_delta", "text": "jour" } }),
+        json!({ "type": "content_block_stop", "index": 0 }),
+        json!({ "type": "message_delta", "delta": { "stop_reason": "end_turn" }, "usage": { "output_tokens": 40 } }),
+        json!({ "type": "message_stop" }),
+    ];
+    let transport = ScriptedStream::new(sse_chunks(&frames));
+    let client = Client::with_transport(anthropic_endpoint(), transport.clone());
+
+    let (on_event, events) = recorder();
+    let got = client.complete_streaming("claude-sonnet-4", &sample_request(), on_event).await.expect("streams");
+
+    assert_eq!(
+        *events.lock().expect("event lock"),
+        vec![
+            StreamEvent::Text { delta: "bon".into() },
+            StreamEvent::Text { delta: "jour".into() },
+            StreamEvent::Finished,
+        ]
+    );
+    assert_eq!(
+        got,
+        parse_anthropic_response(&json!({
+            "content": [ { "type": "text", "text": "bonjour" } ],
+            "stop_reason": "end_turn",
+            "usage": {
+                "input_tokens": 100, "output_tokens": 40,
+                "cache_read_input_tokens": 60, "cache_creation_input_tokens": 5
+            }
+        }))
+        .expect("parses"),
+        "usage merges message_start input with message_delta output"
+    );
+
+    let captured = transport.captured();
+    assert_eq!(captured.url, "https://api.anthropic.com/v1/messages");
+    assert_eq!(captured.body["stream"], true);
+    assert!(captured.body.get("stream_options").is_none(), "stream_options is OpenAI-only");
+}
+
+#[tokio::test]
+async fn anthropic_streaming_tool_call_reassembly() {
+    let frames = vec![
+        json!({ "type": "message_start", "message": { "usage": { "input_tokens": 10 } } }),
+        json!({ "type": "content_block_start", "index": 0, "content_block": {
+            "type": "tool_use", "id": "toolu_1", "name": "bash", "input": {} } }),
+        json!({ "type": "content_block_delta", "index": 0, "delta": { "type": "input_json_delta", "partial_json": "{\"cmd\":" } }),
+        json!({ "type": "content_block_delta", "index": 0, "delta": { "type": "input_json_delta", "partial_json": "\"ls\"," } }),
+        json!({ "type": "content_block_delta", "index": 0, "delta": { "type": "input_json_delta", "partial_json": "\"n\":2}" } }),
+        json!({ "type": "content_block_stop", "index": 0 }),
+        json!({ "type": "message_delta", "delta": { "stop_reason": "tool_use" }, "usage": { "output_tokens": 20 } }),
+        json!({ "type": "message_stop" }),
+    ];
+    let transport = ScriptedStream::new(sse_chunks(&frames));
+    let client = Client::with_transport(anthropic_endpoint(), transport.clone());
+
+    let (on_event, events) = recorder();
+    let got = client.complete_streaming("claude-sonnet-4", &sample_request(), on_event).await.expect("streams");
+
+    assert_eq!(
+        *events.lock().expect("event lock"),
+        vec![
+            StreamEvent::ToolCallStarted { index: 0, id: "toolu_1".into(), name: "bash".into() },
+            StreamEvent::ToolCallDelta { index: 0, arguments_delta: "{\"cmd\":".into() },
+            StreamEvent::ToolCallDelta { index: 0, arguments_delta: "\"ls\",".into() },
+            StreamEvent::ToolCallDelta { index: 0, arguments_delta: "\"n\":2}".into() },
+            StreamEvent::Finished,
+        ]
+    );
+    assert_eq!(
+        got,
+        parse_anthropic_response(&json!({
+            "content": [ { "type": "tool_use", "id": "toolu_1", "name": "bash", "input": { "cmd": "ls", "n": 2 } } ],
+            "stop_reason": "tool_use",
+            "usage": { "input_tokens": 10, "output_tokens": 20 }
+        }))
+        .expect("parses"),
+        "reassembled partial_json equals the non-streaming input encoding"
+    );
+}
+
+#[tokio::test]
+async fn anthropic_streaming_thinking_then_text() {
+    let frames = vec![
+        json!({ "type": "message_start", "message": { "usage": { "input_tokens": 10 } } }),
+        json!({ "type": "content_block_start", "index": 0, "content_block": { "type": "thinking", "thinking": "" } }),
+        json!({ "type": "content_block_delta", "index": 0, "delta": { "type": "thinking_delta", "thinking": "think" } }),
+        json!({ "type": "content_block_delta", "index": 0, "delta": { "type": "thinking_delta", "thinking": "ing" } }),
+        json!({ "type": "content_block_stop", "index": 0 }),
+        json!({ "type": "content_block_start", "index": 1, "content_block": { "type": "text", "text": "" } }),
+        json!({ "type": "content_block_delta", "index": 1, "delta": { "type": "text_delta", "text": "answer" } }),
+        json!({ "type": "content_block_stop", "index": 1 }),
+        json!({ "type": "message_delta", "delta": { "stop_reason": "stop_sequence" } }),
+        json!({ "type": "message_stop" }),
+    ];
+    let transport = ScriptedStream::new(sse_chunks(&frames));
+    let client = Client::with_transport(anthropic_endpoint(), transport.clone());
+
+    let (on_event, events) = recorder();
+    let got = client.complete_streaming("claude-sonnet-4", &sample_request(), on_event).await.expect("streams");
+
+    assert_eq!(
+        *events.lock().expect("event lock"),
+        vec![
+            StreamEvent::Reasoning { delta: "think".into() },
+            StreamEvent::Reasoning { delta: "ing".into() },
+            StreamEvent::Text { delta: "answer".into() },
+            StreamEvent::Finished,
+        ]
+    );
+    assert_eq!(
+        got,
+        parse_anthropic_response(&json!({
+            "content": [
+                { "type": "thinking", "thinking": "thinking" },
+                { "type": "text", "text": "answer" }
+            ],
+            "stop_reason": "stop_sequence",
+            "usage": { "input_tokens": 10 }
+        }))
+        .expect("parses")
+    );
+}
+
+#[test]
+fn anthropic_stream_unknown_events_ignored_error_fails() {
+    let mut state = AnthropicStreamState::default();
+    assert!(parse_anthropic_sse_frame(&json!({ "type": "ping" }), &mut state).expect("ok").is_empty());
+    assert!(
+        parse_anthropic_sse_frame(&json!({ "type": "content_block_stop", "index": 0 }), &mut state)
+            .expect("ok")
+            .is_empty()
+    );
+    assert!(
+        parse_anthropic_sse_frame(&json!({ "type": "sigil_delta", "index": 0 }), &mut state)
+            .expect("ok")
+            .is_empty(),
+        "unknown event types are ignored"
+    );
+    let err = parse_anthropic_sse_frame(
+        &json!({ "type": "error", "error": { "message": "overloaded" } }),
+        &mut state,
+    )
+    .expect_err("error events fail the stream");
+    assert!(matches!(err, ProviderError::Malformed(ref m) if m == "overloaded"), "got {err:?}");
+}
+
+#[tokio::test]
+async fn anthropic_stream_frames_split_across_byte_chunks() {
+    // The whole SSE payload split at arbitrary byte boundaries still frames
+    // correctly (a frame may straddle chunks, including the `\n\n`).
+    let frames = vec![
+        json!({ "type": "message_start", "message": { "usage": { "input_tokens": 3 } } }),
+        json!({ "type": "content_block_start", "index": 0, "content_block": { "type": "text", "text": "" } }),
+        json!({ "type": "content_block_delta", "index": 0, "delta": { "type": "text_delta", "text": "hi" } }),
+        json!({ "type": "message_delta", "delta": { "stop_reason": "end_turn" }, "usage": { "output_tokens": 4 } }),
+        json!({ "type": "message_stop" }),
+    ];
+    let payload: String = frames.iter().map(|f| format!("data: {f}\n\n")).collect();
+    let chunks: Vec<Result<Bytes, ProviderError>> = payload
+        .as_bytes()
+        .chunks(7)
+        .map(|slice| Ok(Bytes::copy_from_slice(slice)))
+        .collect();
+    let transport = ScriptedStream::new(chunks);
+    let client = Client::with_transport(anthropic_endpoint(), transport);
+
+    let (on_event, events) = recorder();
+    let got = client.complete_streaming("claude-sonnet-4", &sample_request(), on_event).await.expect("streams");
+    assert_eq!(
+        *events.lock().expect("event lock"),
+        vec![
+            StreamEvent::Text { delta: "hi".into() },
+            StreamEvent::Finished,
+        ]
+    );
+    assert_eq!(got.text.as_deref(), Some("hi"));
+    assert_eq!(got.finish, FinishReason::Stop);
+    assert_eq!(got.usage, Some(LlmUsage { input: 3.0, output: 4.0, ..Default::default() }));
+}
+
+#[tokio::test]
+async fn streaming_falls_back_to_complete_without_post_stream() {
+    // MockTransport only implements post_json: the default post_stream
+    // reports "streaming not supported" and complete_streaming falls back.
+    let transport = MockTransport::ok(json!({
+        "choices": [ { "message": { "content": "plain" }, "finish_reason": "stop" } ]
+    }));
+    let client = Client::with_transport(openai_endpoint(), transport.clone());
+
+    let (on_event, events) = recorder();
+    let got = client.complete_streaming("gpt-5", &sample_request(), on_event).await.expect("falls back");
+
+    let captured = transport.captured();
+    assert!(captured.body.get("stream").is_none(), "the fallback body must not stream");
+    assert_eq!(got.text.as_deref(), Some("plain"));
+    assert_eq!(got.finish, FinishReason::Stop);
+    assert!(events.lock().expect("event lock").is_empty(), "no events are emitted on the fallback path");
+}
+
+#[test]
+fn whole_response_reasoning_is_read_like_the_stream() {
+    let got = parse_openai_response(&json!({"choices":[{"message":{"role":"assistant",
+        "content":null,"reasoning_content":"thinking"},"finish_reason":"length"}]}))
+    .unwrap();
+    assert_eq!(got.reasoning.as_deref(), Some("thinking"));
+    assert_eq!(got.finish, FinishReason::Length);
+}
+
+#[test]
+fn reasoning_only_assistant_turn_is_sent_with_empty_content() {
+    let req = ChatRequest {
+        model: "m".into(),
+        system: None,
+        messages: vec![
+            ChatMessage::User { text: "go".into() },
+            ChatMessage::Assistant { reasoning: Some("plan".into()), text: None, tool_calls: vec![] },
+            ChatMessage::Assistant { reasoning: None, text: None, tool_calls: vec![] },
+        ],
+        tools: vec![],
+        tool_choice: ToolChoice::Auto,
+    };
+    let body = build_openai_request("m", &req);
+    let messages = body["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), 2, "a fully empty turn is still dropped");
+    assert_eq!(messages[1], json!({"role":"assistant","reasoning_content":"plan","content":""}));
+}
+
+#[tokio::test]
+async fn stream_diagnostics_expose_sizes_and_numeric_timings_without_content_or_headers() {
+    let mut chunks = sse_chunks(&[
+        json!({"choices":[{"index":0,"delta":{"content":"private output"},"finish_reason":"stop"}]}),
+        json!({"choices":[],"timings":{"prompt_n":42,"prompt_ms":7.5,"predicted_ms":10.0,
+            "secret":"never-log-me","unexpected_count":123}}),
+    ]);
+    chunks.push(done_chunk());
+    let client = Client::with_transport(openai_endpoint(), ScriptedStream::new(chunks));
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let sink = events.clone();
+    let observer = Arc::new(move |event| sink.lock().unwrap().push(event));
+    client
+        .complete_streaming("gpt-test", &sample_request(), observer)
+        .await
+        .unwrap();
+    let events = events.lock().unwrap();
+    let StreamEvent::RequestPrepared { metadata } = &events[0] else {
+        panic!("request metadata missing")
+    };
+    assert!(metadata["body_bytes"].as_u64().unwrap() > 0);
+    assert!(matches!(events[1], StreamEvent::ResponseStarted));
+    let timings = events
+        .iter()
+        .find_map(|e| match e {
+            StreamEvent::ProviderTimings { timings } => Some(timings),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(
+        timings,
+        &json!({"prompt_n":42,"prompt_ms":7.5,"predicted_ms":10.0})
+    );
+    assert!(!metadata.to_string().contains("Authorization"));
+    assert!(!metadata.to_string().contains("private output"));
 }

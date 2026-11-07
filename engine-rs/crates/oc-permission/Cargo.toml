@@ -9,3 +9,6 @@ description = "OpenCode v2 port — permission ruleset (allow/deny/ask, wildcard
 serde_json = { workspace = true }
 serde = { workspace = true }
 regex = { workspace = true }
+
+[dependencies.globset]
+version = "0.4"
