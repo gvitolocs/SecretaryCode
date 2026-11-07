@@ -3,9 +3,10 @@
 // "Rust engine (preview)" settings toggle, which keeps a bundled `oc-server` running beside the TypeScript
 // engine on its own loopback port. The TypeScript engine is never replaced or reconfigured here.
 //
-// `oc-cli` is an HTTP client for `oc-server`, so a lane run starts a private server for that project first
-// (OC_WORKTREE/OC_DATA/provider env), waits for its health route, then runs the CLI against it. The API key
-// travels only in the server's environment: never in argv, never in the CLI's environment, never logged.
+// A lane run uses `oc-cli --local ask`, the embedded mode: the runner lives in the CLI process, so it calls the
+// provider itself and loads the project as Claude Code would (CLAUDE.md, .claude/settings*.json, hooks,
+// skills, commands, subagents, .mcp.json, plus the owner's ~/.claude). The API key therefore travels in the
+// CLI's environment; it never appears in argv and is never logged. The preview server keeps the HTTP routes.
 import { spawn } from "node:child_process"
 import type { ChildProcess } from "node:child_process"
 import { mkdir, readFile, writeFile } from "node:fs/promises"
@@ -31,10 +32,15 @@ export interface RustProvider {
 }
 
 export interface RustEnginePlan {
-  server: { executable: string; args: string[]; env: Record<string, string> }
   cli: { executable: string; args: string[]; env: Record<string, string> }
-  url: string
 }
+
+/**
+ * The lane's ruleset: allow what Claude Code settings do not decide. A lane run is headless, so nothing could
+ * answer an `ask`; this keeps the 2.1.4 lane's behaviour (its private server ran allow-all), while a project's
+ * own deny and ask rules, permission mode and PreToolUse hooks are still applied first by the engine.
+ */
+export const RUST_LANE_PERMISSIONS = JSON.stringify([{ action: "*", resource: "*", effect: "allow" }])
 
 // Providers whose wire protocol is not one of the two `oc-provider` implements. Everything else is treated
 // as OpenAI-compatible, which is what nearly every provider actually ships, including local servers.
@@ -169,41 +175,33 @@ function providerEnvironment(provider: RustProvider) {
 }
 
 /**
- * The two processes a lane run needs. The server gets the project, the data directory and the provider (its
- * key included); the CLI gets only the endpoint, because the server is what calls the provider.
+ * The one process a lane run needs: `oc-cli --local ask <prompt> <project>`. It gets the project, its own data
+ * directory and the provider (key included) in its environment, and runs the turn itself.
  */
-export function rustLanePlan(input: {
-  server: string
-  cli: string
-  project: string
-  prompt: string
-  data: string
-  port: number
-  provider?: RustProvider
-}): RustEnginePlan {
-  if (!Number.isInteger(input.port) || input.port < 1 || input.port > 65_535) throw new LaneError("invalid_port", "The Rust engine needs a valid loopback port")
-  const url = `http://127.0.0.1:${input.port}`
+export function rustLanePlan(input: { cli: string; project: string; prompt: string; data: string; provider?: RustProvider }): RustEnginePlan {
   return {
-    server: {
-      executable: input.server,
-      args: [],
+    cli: {
+      executable: input.cli,
+      args: ["--local", "ask", flagSafe(input.prompt), input.project],
       env: {
-        OC_BIND: `127.0.0.1:${input.port}`,
         OC_DATA: input.data,
-        OC_WORKTREE: input.project,
+        OC_CWD: input.project,
+        OC_PERMISSIONS: RUST_LANE_PERMISSIONS,
         ...(input.provider ? providerEnvironment(input.provider) : {}),
       },
     },
-    cli: {
-      executable: input.cli,
-      args: ["ask", input.prompt, input.project],
-      env: { OC_BASE: url, OC_DATA: input.data, OC_WORKTREE: input.project },
-    },
-    url,
   }
 }
 
-/** An ephemeral loopback port, used for the lane's private server and the preview server. */
+/**
+ * oc-cli reads `--local` and Claude Code's flags (`--settings`, `--plugin-dir`, `--permission-mode`, ...) from
+ * anywhere in argv, so a prompt that starts with a dash gets one leading space and always stays the prompt.
+ */
+function flagSafe(prompt: string) {
+  return prompt.startsWith("-") ? ` ${prompt}` : prompt
+}
+
+/** An ephemeral loopback port, used for the preview server. */
 export async function freeLoopbackPort(): Promise<number> {
   const server = createServer()
   await new Promise<void>((resolve, reject) => {
