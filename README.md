@@ -99,6 +99,33 @@ cargo run -p oc-cli -- --local chat    # embedded REPL, no server process
 Embedded permissions follow upstream's fallback: anything no rule allows asks.
 `chat` asks `y/N`; `ask` refuses, unless `OC_PERMISSIONS` allows it.
 
+## ACP
+
+`oc-cli acp` runs LucinaCode as an Agent Client Protocol agent over stdio:
+one JSON-RPC 2.0 object per line on stdin/stdout (logs go to stderr), so an
+ACP client such as lucina-agentd gets sessions, worktrees and approvals.
+Supported methods: `initialize`, `session/new`, `session/load` (replays the
+stored history as `session/update` notifications), `session/prompt` (streams
+`agent_message_chunk` / `agent_thought_chunk` / `tool_call` /
+`tool_call_update` and answers `{stopReason}`), `session/cancel`, and
+`session/request_permission` client requests for rules that resolve to `ask`.
+Several sessions may run a turn each at the same time (one per session); a
+`session/cancel` also resolves that session's open permission requests as
+cancelled, so the turn ends with `{stopReason:"cancelled"}`. A permission
+request describes the pending tool call it gates — same `toolCallId` as the
+`tool_call` notification, its title/kind/rawInput, plus a `diff` content with
+the file's text before and after for edit/write.
+
+```bash
+OC_BASE_URL=https://api.openai.com/v1 OC_API_KEY=sk-... OC_MODEL=openai/gpt-4o-mini \
+  OC_DATA=~/.local/share/oc-rust oc-cli acp
+```
+
+Env is the embedded mode's: `OC_BASE_URL`, `OC_MODEL`, `OC_API_KEY_FILE`,
+`OC_DATA`, `OC_PERMISSIONS`, `OC_EXTRA_BODY`, the compaction settings and
+`OC_REASONING_REPLAY`. With `OC_PERMISSIONS` unset, read/glob/grep/todowrite
+are allowed and everything else (edits, shell) is asked of the client.
+
 ## The model on another machine
 
 `oc-tunnel` (also `oc-cli tunnel`) is `ssh -NT -L` for a machine with no ssh

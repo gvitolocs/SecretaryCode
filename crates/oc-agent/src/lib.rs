@@ -51,10 +51,12 @@ pub enum RunEvent {
         delta: String,
     },
     ToolCallStarted {
+        call_id: String,
         name: String,
         input: serde_json::Value,
     },
     ToolCallFinished {
+        call_id: String,
         name: String,
         ok: bool,
         preview: String,
@@ -119,7 +121,24 @@ pub fn traced_observer(observer: Observer, session: &str) -> Observer {
 
 /// Terminal approval for a rule that resolves to `ask`. Returning `false`
 /// refuses the action, and the refusal goes back to the model.
-pub type PermissionAsk = Arc<dyn Fn(&str, &str) -> bool + Send + Sync>;
+pub type PermissionAsk = Arc<dyn Fn(&PermissionRequest) -> bool + Send + Sync>;
+
+/// The pending tool call a permission `ask` is about: the runner's call id,
+/// the tool name and its parsed input, plus the permission action/resource
+/// the ruleset was evaluated with.
+#[derive(Debug, Clone)]
+pub struct PermissionRequest {
+    /// Id of the pending tool call (the LLM's tool call id).
+    pub call_id: String,
+    /// Tool name, e.g. `edit` or `shell`.
+    pub tool: String,
+    /// The tool's parsed input.
+    pub input: serde_json::Value,
+    /// Permission action the ruleset was evaluated with (the tool name).
+    pub action: String,
+    /// Permission resource: the tool's path / command / url, else `*`.
+    pub resource: String,
+}
 
 /// Options for one turn of the runner.
 #[derive(Clone)]
@@ -640,6 +659,7 @@ async fn settle_step(
             tool_inputs.push((call.id.clone(), parsed.unwrap_or_default()));
         } else if let Some(message) = failure {
             observer(RunEvent::ToolCallFinished {
+                call_id: call.id.clone(),
                 name: call.name.clone(),
                 ok: false,
                 preview: message.into(),
@@ -674,6 +694,7 @@ async fn settle_step(
             .unwrap_or("*")
             .to_string();
         observer(RunEvent::ToolCallStarted {
+            call_id: call_id.clone(),
             name: call.name.clone(),
             input: input.clone(),
         });
@@ -682,7 +703,14 @@ async fn settle_step(
             "tool.start",
             serde_json::json!({"call_id": call_id, "name": call.name}),
         );
-        let decision = opts_permissions_check(permissions, &call.name, &resource, permission_ask);
+        let permission_request = PermissionRequest {
+            call_id: call_id.clone(),
+            tool: call.name.clone(),
+            input: input.clone(),
+            action: call.name.clone(),
+            resource: resource.clone(),
+        };
+        let decision = opts_permissions_check(permissions, &permission_request, permission_ask);
         let permission_ms = trace::ms(tool_started.elapsed());
         let executed = match decision {
             // Dropping a shell call kills its process group.
@@ -696,6 +724,7 @@ async fn settle_step(
             Err(error) => (false, error.to_string()),
         };
         observer(RunEvent::ToolCallFinished {
+            call_id: call_id.clone(),
             name: call.name.clone(),
             ok,
             preview,
@@ -842,17 +871,18 @@ fn record_provider_failure(
 /// human surface the runner does not have), with the reason sent to the model.
 fn opts_permissions_check(
     permissions: &oc_permission::Ruleset,
-    action: &str,
-    resource: &str,
+    request: &PermissionRequest,
     ask: Option<&PermissionAsk>,
 ) -> Result<(), String> {
+    let action = &request.action;
+    let resource = &request.resource;
     match permissions.decide(action, resource) {
         oc_permission::Effect::Allow => Ok(()),
         oc_permission::Effect::Deny => {
             Err(format!("permission denied by ruleset: {action} {resource}"))
         }
         oc_permission::Effect::Ask => match ask {
-            Some(ask) if ask(action, resource) => Ok(()),
+            Some(ask) if ask(request) => Ok(()),
             Some(_) => Err(format!("permission denied by the user: {action} {resource}")),
             None => Err(format!(
                 "permission requires interactive approval, which this runner cannot ask for: {action} {resource}"
@@ -1410,7 +1440,7 @@ mod tests {
         }));
         assert!(events.iter().any(|event| matches!(
             event,
-            RunEvent::ToolCallStarted { name, input }
+            RunEvent::ToolCallStarted { name, input, .. }
                 if name == "write" && input["path"] == "note.txt" && input["content"] == "hi"
         )));
         assert!(events.iter().any(|event| matches!(

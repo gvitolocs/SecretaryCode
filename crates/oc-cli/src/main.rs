@@ -34,6 +34,8 @@ use oc_schema::Outcome;
 use oc_store::{CreateInput, Store};
 use oc_tools::Registry;
 
+mod acp;
+
 const DEFAULT_BASE: &str = "http://127.0.0.1:18212";
 
 fn main() {
@@ -41,6 +43,11 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().map(String::as_str) == Some("tunnel") {
         std::process::exit(oc_tunnel::main_with(&args[1..]));
+    }
+    // `acp` speaks JSON-RPC on stdio and makes its own multi-threaded runtime
+    // (a synchronous permission ask blocks a worker while stdin is read elsewhere).
+    if args.first().map(String::as_str) == Some("acp") {
+        std::process::exit(acp::run());
     }
     run(args);
 }
@@ -267,7 +274,7 @@ impl Renderer {
                     state.thinking_marker = true;
                 }
             }
-            RunEvent::ToolCallStarted { name, input } => {
+            RunEvent::ToolCallStarted { name, input, .. } => {
                 eprintln!("> {name}: {}", summarize_input(&input));
             }
             RunEvent::ToolCallFinished { ok, preview, .. } => {
@@ -612,8 +619,11 @@ async fn drive_turn<F: std::future::Future>(
     }
 }
 
-fn ask_on_terminal(action: &str, resource: &str) -> bool {
-    eprint!("permission requested: {action} ({resource}); allow? [y/N] ");
+fn ask_on_terminal(request: &oc_agent::PermissionRequest) -> bool {
+    eprint!(
+        "permission requested: {} ({}); allow? [y/N] ",
+        request.action, request.resource
+    );
     let _ = std::io::stderr().flush();
     let mut line = String::new();
     if std::io::stdin().read_line(&mut line).is_err() {
