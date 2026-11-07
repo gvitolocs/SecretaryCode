@@ -228,6 +228,28 @@ pub fn with_task_tool(
     builtins.clone().with_tools(vec![Arc::new(task)])
 }
 
+/// [`with_task_tool`] plus named subagents the model can pick.
+pub fn with_task_tool_profiles(
+    builtins: &Registry,
+    store: Arc<Store>,
+    client: Arc<Client>,
+    model: ModelRef,
+    opts: &RunOptions,
+    profiles: Vec<task::AgentProfile>,
+) -> Registry {
+    let task = task::TaskTool::new(
+        store,
+        client,
+        Arc::new(builtins.clone()),
+        model,
+        opts.agent.clone(),
+        opts.max_steps,
+    )
+    .with_options(opts)
+    .with_profiles(profiles);
+    builtins.clone().with_tools(vec![Arc::new(task)])
+}
+
 /// Append the user turn, then run the loop. (`session.prompt`'s handler.)
 pub async fn prompt(
     store: &Store,

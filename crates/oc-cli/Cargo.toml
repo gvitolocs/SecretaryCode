@@ -15,6 +15,8 @@ oc-provider = { workspace = true }
 oc-agent = { workspace = true }
 oc-permission = { workspace = true }
 oc-tunnel = { workspace = true }
+oc-claude = { workspace = true }
+oc-mcp = { workspace = true }
 tokio = { workspace = true }
 reqwest = { workspace = true }
 serde_json = { workspace = true }

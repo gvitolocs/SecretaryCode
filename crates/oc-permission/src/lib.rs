@@ -3,6 +3,7 @@
 //! plus `util/wildcard.ts`'s matcher. Upstream: "Evaluated after the agent's
 //! rules; the last matching rule wins."
 
+pub mod claude;
 pub mod claude_bash;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
