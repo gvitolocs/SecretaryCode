@@ -28,6 +28,9 @@ async fn ask_runs_the_turn_in_process_against_a_mock_stream() {
 
     let data = tempfile::tempdir().unwrap();
     let out = tokio::process::Command::new(env!("CARGO_BIN_EXE_oc-cli"))
+        // keep the host's Claude Code config (~/.claude, MCP servers, hooks) out of tests
+        .env("CLAUDE_CONFIG_DIR", "/nonexistent/oc-cli-test-claude")
+        .env("OC_CLAUDE_MANAGED_DIR", "")
         .args(["ask", "say hello"])
         .current_dir(data.path())
         .env_remove("OC_BASE")
@@ -104,6 +107,9 @@ async fn mistral_uses_its_key_and_default_model_with_openai_chat_transport() {
     });
     let dir = tempfile::tempdir().unwrap();
     let out = tokio::process::Command::new(env!("CARGO_BIN_EXE_oc-cli"))
+        // keep the host's Claude Code config (~/.claude, MCP servers, hooks) out of tests
+        .env("CLAUDE_CONFIG_DIR", "/nonexistent/oc-cli-test-claude")
+        .env("OC_CLAUDE_MANAGED_DIR", "")
         .args(["ask", "say hello"])
         .current_dir(dir.path())
         .env_remove("OC_BASE")
@@ -148,6 +154,9 @@ async fn trace_can_be_disabled_or_redirected_and_io_errors_do_not_stop_the_agent
             _ => dir.path().to_string_lossy().into_owned(),
         };
         let out = tokio::process::Command::new(env!("CARGO_BIN_EXE_oc-cli"))
+        // keep the host's Claude Code config (~/.claude, MCP servers, hooks) out of tests
+        .env("CLAUDE_CONFIG_DIR", "/nonexistent/oc-cli-test-claude")
+        .env("OC_CLAUDE_MANAGED_DIR", "")
             .args(["ask", "say hello"])
             .current_dir(dir.path())
             .env_remove("OC_BASE")
@@ -227,6 +236,9 @@ async fn ask_auto_rejects_actions_that_need_permission() {
 
     let data = tempfile::tempdir().unwrap();
     let out = tokio::process::Command::new(env!("CARGO_BIN_EXE_oc-cli"))
+        // keep the host's Claude Code config (~/.claude, MCP servers, hooks) out of tests
+        .env("CLAUDE_CONFIG_DIR", "/nonexistent/oc-cli-test-claude")
+        .env("OC_CLAUDE_MANAGED_DIR", "")
         .args(["ask", "try to escape"])
         .current_dir(data.path())
         .env_remove("OC_BASE")
@@ -335,6 +347,9 @@ async fn ask_edits_a_file_and_runs_a_command_in_its_directory() {
     ])
     .await;
     let out = tokio::process::Command::new(env!("CARGO_BIN_EXE_oc-cli"))
+        // keep the host's Claude Code config (~/.claude, MCP servers, hooks) out of tests
+        .env("CLAUDE_CONFIG_DIR", "/nonexistent/oc-cli-test-claude")
+        .env("OC_CLAUDE_MANAGED_DIR", "")
         .args(["ask", "fix it"])
         .arg(dir.path())
         .env_remove("OC_BASE")
@@ -376,6 +391,9 @@ async fn ctrl_c_stops_a_running_command_with_its_children() {
     ])
     .await;
     let child = tokio::process::Command::new(env!("CARGO_BIN_EXE_oc-cli"))
+        // keep the host's Claude Code config (~/.claude, MCP servers, hooks) out of tests
+        .env("CLAUDE_CONFIG_DIR", "/nonexistent/oc-cli-test-claude")
+        .env("OC_CLAUDE_MANAGED_DIR", "")
         .args(["ask", "wait"])
         .arg(dir.path())
         .env_remove("OC_BASE")
@@ -429,6 +447,9 @@ async fn a_stream_cut_short_is_requested_again() {
         .to_string();
     let (url, server) = serve_steps(vec![cut, text_step("whole answer")]).await;
     let out = tokio::process::Command::new(env!("CARGO_BIN_EXE_oc-cli"))
+        // keep the host's Claude Code config (~/.claude, MCP servers, hooks) out of tests
+        .env("CLAUDE_CONFIG_DIR", "/nonexistent/oc-cli-test-claude")
+        .env("OC_CLAUDE_MANAGED_DIR", "")
         .args(["ask", "go"])
         .arg(dir.path())
         .env_remove("OC_BASE")
@@ -493,6 +514,9 @@ async fn a_context_past_the_ceiling_is_summarized_and_the_turn_goes_on() {
         axum::serve(listener, app).await.unwrap();
     });
     let out = tokio::process::Command::new(env!("CARGO_BIN_EXE_oc-cli"))
+        // keep the host's Claude Code config (~/.claude, MCP servers, hooks) out of tests
+        .env("CLAUDE_CONFIG_DIR", "/nonexistent/oc-cli-test-claude")
+        .env("OC_CLAUDE_MANAGED_DIR", "")
         .args(["ask", "go"])
         .arg(dir.path())
         .env_remove("OC_BASE")
@@ -545,6 +569,9 @@ async fn a_request_the_endpoint_refuses_fails_at_once_and_says_why() {
     let dir = tempfile::tempdir().unwrap();
     let started = std::time::Instant::now();
     let out = tokio::process::Command::new(env!("CARGO_BIN_EXE_oc-cli"))
+        // keep the host's Claude Code config (~/.claude, MCP servers, hooks) out of tests
+        .env("CLAUDE_CONFIG_DIR", "/nonexistent/oc-cli-test-claude")
+        .env("OC_CLAUDE_MANAGED_DIR", "")
         .args(["ask", "go"])
         .arg(dir.path())
         .env_remove("OC_BASE")
@@ -561,6 +588,9 @@ async fn a_request_the_endpoint_refuses_fails_at_once_and_says_why() {
     assert!(started.elapsed() < std::time::Duration::from_secs(2));
     // What it wrote can be read back: the next start opens the same store.
     let mut again = tokio::process::Command::new(env!("CARGO_BIN_EXE_oc-cli"))
+        // keep the host's Claude Code config (~/.claude, MCP servers, hooks) out of tests
+        .env("CLAUDE_CONFIG_DIR", "/nonexistent/oc-cli-test-claude")
+        .env("OC_CLAUDE_MANAGED_DIR", "")
         .args(["ask", "go"])
         .arg(dir.path())
         .env_remove("OC_BASE")
@@ -617,6 +647,9 @@ async fn chat_keeps_the_session_asks_before_acting_and_ends_on_exit() {
         axum::serve(listener, app).await.unwrap();
     });
     let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_oc-cli"))
+        // keep the host's Claude Code config (~/.claude, MCP servers, hooks) out of tests
+        .env("CLAUDE_CONFIG_DIR", "/nonexistent/oc-cli-test-claude")
+        .env("OC_CLAUDE_MANAGED_DIR", "")
         .arg("chat")
         .arg(dir.path())
         .env_remove("OC_BASE")

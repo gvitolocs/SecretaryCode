@@ -20,7 +20,12 @@
 //! Env: OC_BASE (server), OC_BASE_URL/OC_PROVIDER/OC_MODEL/OC_API_KEY,
 //! OC_API_KEY_FILE, OC_EXTRA_BODY, OC_DATA, OC_PERMISSIONS, OC_SHOW_THINKING,
 //! OC_VERBOSE, OC_MAX_STEPS, OC_CWD, OC_CONTEXT_WINDOW, OC_COMPACT_BUFFER,
-//! OC_COMPACT_KEEP.
+//! OC_COMPACT_KEEP, OC_CLAUDE_COMPAT, OC_CLAUDE_PLUGIN_DIRS.
+//!
+//! Embedded mode also runs Claude Code projects as they are (oc-claude):
+//! CLAUDE.md, .claude/settings*.json, hooks, skills, commands, agents,
+//! .mcp.json and `--plugin-dir` plugins. Flags: --settings, --plugin-dir,
+//! --permission-mode, --allowedTools, --disallowedTools, --no-claude.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -32,7 +37,8 @@ use oc_agent::compaction::{Compacted, Settings};
 use oc_agent::{Observer, RunEvent, RunOptions};
 use oc_schema::Outcome;
 use oc_store::{CreateInput, Store};
-use oc_tools::Registry;
+
+mod claude;
 
 mod acp;
 
@@ -64,6 +70,8 @@ async fn run(mut args: Vec<String>) {
         }
     });
 
+    let claude_flags = claude::take_flags(&mut args);
+
     let base = non_empty_env("OC_BASE");
     let base_url = non_empty_env("OC_BASE_URL");
     let embedded = local
@@ -73,8 +81,8 @@ async fn run(mut args: Vec<String>) {
                 || non_empty_env("OC_PROVIDER").as_deref() == Some("mistral")));
     if embedded {
         let code = match args.first().map(String::as_str) {
-            Some("ask") => embedded_ask(&args).await,
-            Some("chat") => embedded_chat(&args).await,
+            Some("ask") => embedded_ask(&args, &claude_flags).await,
+            Some("chat") => embedded_chat(&args, &claude_flags).await,
             _ => usage("embedded mode supports ask and chat"),
         };
         // Return from the embedded runner first so registry drop stops jobs.
@@ -389,7 +397,7 @@ fn turn_summary(
     );
 }
 
-async fn embedded_ask(args: &[String]) -> i32 {
+async fn embedded_ask(args: &[String], flags: &claude::Flags) -> i32 {
     let Some(text) = args.get(1).cloned() else {
         usage("ask needs a prompt")
     };
@@ -397,6 +405,9 @@ async fn embedded_ask(args: &[String]) -> i32 {
         Ok(dir) => dir,
         Err(e) => fail(2, &e),
     };
+    // Claude Code project files first: their `env` and `model` settings
+    // shape the provider and model below.
+    let cc = claude::load(&dir, flags);
     let store = match embedded_store() {
         Ok(store) => Arc::new(store),
         Err(e) => fail(2, &e),
@@ -406,13 +417,22 @@ async fn embedded_ask(args: &[String]) -> i32 {
         Err(e) => fail(2, &e),
     };
     eprintln!("session {session}");
+    claude::session_start(cc.as_ref(), &session, "startup").await;
+    let text = match claude::prepare_prompt(cc.as_ref(), &session, &text).await {
+        Ok(text) => text,
+        Err(reason) => {
+            eprintln!("prompt blocked: {reason}");
+            claude::session_end(cc.as_ref(), &session, "other").await;
+            return 1;
+        }
+    };
     let before = match store.get_session(&session) {
         Ok(info) => info.tokens,
         Err(e) => fail(2, &e.to_string()),
     };
     let renderer = Renderer::from_env();
     let abort = Arc::new(AtomicBool::new(false));
-    let opts = RunOptions {
+    let mut opts = RunOptions {
         agent: "build".into(),
         max_steps: oc_agent::max_steps_from_env(),
         abort: abort.clone(),
@@ -422,17 +442,13 @@ async fn embedded_ask(args: &[String]) -> i32 {
         compaction: Settings::from_env(),
         retries: &oc_agent::RETRY_SCHEDULE,
         replay_reasoning: oc_agent::reasoning_replay_from_env(),
+        ..RunOptions::default()
     };
-    let registry = Registry::builtin(&dir);
+    claude::apply(&mut opts, cc.as_ref());
+    let registry = claude::registry(&dir, cc.as_ref()).await;
     let client = Arc::new(oc_agent::client_from_env());
     let model = oc_agent::model_from_env();
-    let registry = oc_agent::with_task_tool(
-        &registry,
-        store.clone(),
-        client.clone(),
-        model.clone(),
-        &opts,
-    );
+    let registry = claude::with_task(&registry, cc.as_ref(), store.clone(), client.clone(), model.clone(), &opts);
     let started = Instant::now();
     let mut signals = match Signals::new() {
         Ok(signals) => signals,
@@ -456,19 +472,21 @@ async fn embedded_ask(args: &[String]) -> i32 {
         &after,
         started.elapsed(),
     );
+    claude::session_end(cc.as_ref(), &session, "other").await;
     outcome_code(output.outcome)
 }
 
-async fn embedded_chat(args: &[String]) -> i32 {
+async fn embedded_chat(args: &[String], flags: &claude::Flags) -> i32 {
     let dir = match embedded_dir(args.get(1)) {
         Ok(dir) => dir,
         Err(e) => fail(2, &e),
     };
+    let cc = claude::load(&dir, flags);
     let store = match embedded_store() {
         Ok(store) => Arc::new(store),
         Err(e) => fail(2, &e),
     };
-    let registry = Registry::builtin(&dir);
+    let registry = claude::registry(&dir, cc.as_ref()).await;
     let client = Arc::new(oc_agent::client_from_env());
     let model = oc_agent::model_from_env();
     let permissions = oc_agent::embedded_permissions_from_env();
@@ -477,10 +495,12 @@ async fn embedded_chat(args: &[String]) -> i32 {
         Err(e) => fail(2, &e),
     };
     eprintln!("session {session} in {}", dir.display());
+    claude::session_start(cc.as_ref(), &session, "startup").await;
     let mut signals = match Signals::new() {
         Ok(signals) => signals,
         Err(e) => fail(2, &format!("signals: {e}")),
     };
+    let mut end_reason = "other";
     loop {
         eprint!("> ");
         let _ = std::io::stderr().flush();
@@ -496,24 +516,36 @@ async fn embedded_chat(args: &[String]) -> i32 {
         let text = line.trim();
         match text {
             "" => continue,
-            "/exit" => break,
-            "/new" => {
+            "/exit" => {
+                end_reason = "prompt_input_exit";
+                break;
+            }
+            "/new" | "/clear" => {
+                claude::session_end(cc.as_ref(), &session, "clear").await;
                 session = match create_session(&store, &dir, "chat") {
                     Ok(id) => id,
                     Err(e) => fail(2, &e),
                 };
                 eprintln!("session {session}");
+                claude::session_start(cc.as_ref(), &session, "clear").await;
                 continue;
             }
             _ => {}
         }
+        let text = match claude::prepare_prompt(cc.as_ref(), &session, text).await {
+            Ok(text) => text,
+            Err(reason) => {
+                eprintln!("prompt blocked: {reason}");
+                continue;
+            }
+        };
         let before = match store.get_session(&session) {
             Ok(info) => info.tokens,
             Err(e) => fail(2, &e.to_string()),
         };
         let renderer = Renderer::from_env();
         let abort = Arc::new(AtomicBool::new(false));
-        let opts = RunOptions {
+        let mut opts = RunOptions {
             agent: "build".into(),
             max_steps: oc_agent::max_steps_from_env(),
             abort: abort.clone(),
@@ -523,14 +555,10 @@ async fn embedded_chat(args: &[String]) -> i32 {
             compaction: Settings::from_env(),
             retries: &oc_agent::RETRY_SCHEDULE,
             replay_reasoning: oc_agent::reasoning_replay_from_env(),
+            ..RunOptions::default()
         };
-        let turn_registry = oc_agent::with_task_tool(
-            &registry,
-            store.clone(),
-            client.clone(),
-            model.clone(),
-            &opts,
-        );
+        claude::apply(&mut opts, cc.as_ref());
+        let turn_registry = claude::with_task(&registry, cc.as_ref(), store.clone(), client.clone(), model.clone(), &opts);
         let started = Instant::now();
         let turn = oc_agent::prompt(
             &store,
@@ -538,11 +566,12 @@ async fn embedded_chat(args: &[String]) -> i32 {
             &client,
             &session,
             model.clone(),
-            text,
+            &text,
             &opts,
         );
         let (output, stopped) = drive_turn(turn, &abort, &mut signals).await;
         if stopped == Some(Stop::Terminate) {
+            claude::session_end(cc.as_ref(), &session, "other").await;
             return 143;
         }
         let output = match output {
@@ -565,6 +594,7 @@ async fn embedded_chat(args: &[String]) -> i32 {
             started.elapsed(),
         );
     }
+    claude::session_end(cc.as_ref(), &session, end_reason).await;
     0
 }
 

@@ -101,6 +101,16 @@ impl Registry {
         self
     }
 
+    /// Keep only the tools whose name passes `keep` (a subagent's tool list).
+    pub fn retain(mut self, keep: impl Fn(&str) -> bool) -> Self {
+        self.tools.retain(|t| keep(&t.def().name));
+        self
+    }
+
+    pub fn names(&self) -> Vec<String> {
+        self.tools.iter().map(|t| t.def().name).collect()
+    }
+
     pub fn defs(&self) -> Vec<ToolDef> {
         self.tools.iter().map(|t| t.def()).collect()
     }

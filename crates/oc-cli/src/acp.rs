@@ -456,6 +456,7 @@ impl Agent {
             compaction: Settings::from_env(),
             retries: &oc_agent::RETRY_SCHEDULE,
             replay_reasoning: oc_agent::reasoning_replay_from_env(),
+            ..RunOptions::default()
         };
         let registry = Registry::builtin(&cwd);
         let client = Arc::new(oc_agent::client_from_env());

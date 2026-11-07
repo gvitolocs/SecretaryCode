@@ -15,7 +15,7 @@ so.
 
 ## Status
 
-- `cargo test --workspace`: **153 passed, 0 failed**. The CLI's 8 run whole
+- `cargo test --workspace`: **245 passed, 0 failed** (153 before oc-claude). The CLI's 8 run whole
   turns against in-process mock streams: tool calls split across deltas,
   reasoning kept out of the text, `edit` + `shell`, Ctrl+C killing a running
   command's process group, a stream cut short and retried, a refused request
@@ -62,6 +62,20 @@ Use this branch's code and the pinned Juno package, not those older snapshots.
   succeeded on the live laptop with normal edit/shell approval prompts.
 
 For measurements, methodology and limitations, see [bench/README.md](bench/README.md).
+
+## Claude Code projects (oc-claude, 2026-11-07)
+
+Embedded `oc-cli --local ask|chat` runs Claude Code projects as they are: the
+CLAUDE.md hierarchy (rules, `@imports`, AGENTS.md fallback), `settings.json`
+precedence with `env`, `model` and `permissions` (Claude Code's rule syntax,
+deny → ask → allow, modes), hooks (PreToolUse, PostToolUse, UserPromptSubmit,
+Stop, SubagentStop, SessionStart, SessionEnd, PreCompact, Notification),
+skills and `.claude/commands` (the `skill` tool and `/name args`), subagents
+in `.claude/agents` (through the `task` tool), MCP servers from `.mcp.json` and
+`~/.claude.json`, and `--plugin-dir` plugins. It is a clean-room build from
+Claude Code's public docs; [docs/claude-code-compat.md](docs/claude-code-compat.md)
+is the fidelity matrix (behaviour, doc page, status, test).
+`OC_CLAUDE_COMPAT=off` or `--no-claude` turns it off.
 
 ## What v0.2 ports (the agent runtime)
 
