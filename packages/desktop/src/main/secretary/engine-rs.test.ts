@@ -170,63 +170,57 @@ describe("lane plan", () => {
     baseURL: "https://api.example.test/v1",
     apiKey: SECRET,
   }
-  const plan = () =>
+  const plan = (prompt = "Review; $(id) and `whoami`") =>
     rustLanePlan({
-      server: "/Applications/Secretary Code.app/Contents/Resources/engine-rs/oc-server",
       cli: "/Applications/Secretary Code.app/Contents/Resources/engine-rs/oc-cli",
       project: "/Users/giuseppe/Projects/My Project",
-      prompt: "--review; $(id) and `whoami`",
-      data: "/Users/giuseppe/Library/Application Support/app.secretary.code/engine-rs/data",
-      port: 43_219,
+      prompt,
+      data: "/Users/giuseppe/Library/Application Support/app.secretary.code/engine-rs/data/lane",
       provider,
     })
 
-  test("oc-cli ask receives the prompt and project as argv, with no shell", () => {
+  test("oc-cli --local ask receives the prompt and project as argv, with no shell", () => {
     const value = plan()
-    expect(value.cli.args).toEqual(["ask", "--review; $(id) and `whoami`", "/Users/giuseppe/Projects/My Project"])
-    expect(value.server.args).toEqual([])
-    expect(value.url).toBe("http://127.0.0.1:43219")
-    expect(value.cli.env.OC_BASE).toBe("http://127.0.0.1:43219")
+    expect(value.cli.executable).toBe("/Applications/Secretary Code.app/Contents/Resources/engine-rs/oc-cli")
+    expect(value.cli.args).toEqual(["--local", "ask", "Review; $(id) and `whoami`", "/Users/giuseppe/Projects/My Project"])
+    // Embedded mode: no server endpoint, so oc-cli runs the turn (and the Claude Code layer) itself.
+    expect(value.cli.env.OC_BASE).toBeUndefined()
+    expect(value.cli.env.OC_CWD).toBe("/Users/giuseppe/Projects/My Project")
   })
 
-  test("the key reaches only the server environment, never argv or the CLI environment", () => {
+  test("a prompt that starts with a dash can never be read as an oc-cli or Claude Code flag", () => {
+    for (const prompt of ["--review the diff", "--local", "--no-claude", "--settings={}", "--permission-mode=plan", "-x"]) {
+      const args = plan(prompt).cli.args
+      expect(args.slice(0, 2)).toEqual(["--local", "ask"])
+      expect(args[2]).toBe(` ${prompt}`)
+      expect(args).toHaveLength(4)
+    }
+  })
+
+  test("the provider and its key reach the CLI environment only, never argv", () => {
     const value = plan()
-    expect(value.server.env).toMatchObject({
-      OC_BIND: "127.0.0.1:43219",
-      OC_WORKTREE: "/Users/giuseppe/Projects/My Project",
+    expect(value.cli.env).toMatchObject({
       OC_PROVIDER: "openai",
       OC_MODEL: "openai/gpt-4o-mini",
       OC_BASE_URL: "https://api.example.test/v1",
       OC_API_KEY: SECRET,
-      OC_DATA: "/Users/giuseppe/Library/Application Support/app.secretary.code/engine-rs/data",
+      OC_DATA: "/Users/giuseppe/Library/Application Support/app.secretary.code/engine-rs/data/lane",
     })
     expect(JSON.stringify(value.cli.args)).not.toContain(SECRET)
-    expect(JSON.stringify(value.server.args)).not.toContain(SECRET)
-    expect(JSON.stringify(value.cli.env)).not.toContain(SECRET)
-    expect(JSON.stringify(value.cli)).not.toContain(SECRET)
     // Anything that does reach a lane log is redacted.
     expect(redactLaneOutput(`provider rejected ${SECRET}`)).not.toContain(SECRET)
   })
 
-  test("a missing provider still yields a health-checkable server", () => {
-    const value = rustLanePlan({
-      server: "/srv/oc-server",
-      cli: "/srv/oc-cli",
-      project: "/p",
-      prompt: "Review",
-      data: "/d",
-      port: 1024,
-    })
-    expect(value.server.env.OC_API_KEY).toBeUndefined()
-    expect(value.server.env.OC_WORKTREE).toBe("/p")
+  test("unmatched tools are allowed as in 2.1.4, through a ruleset the engine parses", () => {
+    const rules = JSON.parse(plan().cli.env.OC_PERMISSIONS ?? "null")
+    expect(rules).toEqual([{ action: "*", resource: "*", effect: "allow" }])
   })
 
-  test("rejects ports that cannot name a loopback listener", () => {
-    for (const port of [0, -1, 65_536, 1.5]) {
-      expect(
-        code(() => rustLanePlan({ server: "/s", cli: "/c", project: "/p", prompt: "Review", data: "/d", port, provider })),
-      ).toBe("invalid_port")
-    }
+  test("a missing provider leaves the provider variables unset", () => {
+    const value = rustLanePlan({ cli: "/srv/oc-cli", project: "/p", prompt: "Review", data: "/d" })
+    expect(value.cli.env.OC_API_KEY).toBeUndefined()
+    expect(value.cli.env.OC_PROVIDER).toBeUndefined()
+    expect(value.cli.env.OC_CWD).toBe("/p")
   })
 
   test("the bundled binaries come from the shipped directory or fail clearly", () => {
