@@ -88,7 +88,7 @@ pub fn parse(file: &Path, source: AgentSource, plugin: Option<&str>) -> Option<A
 /// Every subagent, highest priority first, one per name.
 pub fn load(env: &ClaudeEnv, plugins: &[Plugin]) -> Vec<AgentDef> {
     let mut out: Vec<AgentDef> = Vec::new();
-    let mut push = |def: AgentDef, out: &mut Vec<AgentDef>| {
+    let push = |def: AgentDef, out: &mut Vec<AgentDef>| {
         if !out.iter().any(|d| d.name == def.name) {
             out.push(def);
         }

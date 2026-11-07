@@ -110,7 +110,26 @@ pub async fn registry(dir: &Path, rt: Option<&Arc<ClaudeRuntime>>) -> Registry {
         extra.extend(rt.skill_tool());
     }
     if !servers.is_empty() {
-        extra.extend(oc_mcp::registry_tools(servers).await);
+        // Start every server at once; one slow server must not hold the
+        // others up. `MCP_TIMEOUT` (ms) bounds each startup, as in Claude Code.
+        let limit = std::env::var("MCP_TIMEOUT")
+            .ok()
+            .and_then(|v| v.trim().parse::<u64>().ok())
+            .map(std::time::Duration::from_millis)
+            .unwrap_or(std::time::Duration::from_secs(30));
+        let starts = servers.into_iter().map(|server| async move {
+            let name = server.name.clone();
+            match tokio::time::timeout(limit, oc_mcp::registry_tools(vec![server])).await {
+                Ok(tools) => tools,
+                Err(_) => {
+                    eprintln!("claude: MCP server {name} did not start within {} ms; skipped", limit.as_millis());
+                    Vec::new()
+                }
+            }
+        });
+        for tools in futures_util::future::join_all(starts).await {
+            extra.extend(tools);
+        }
     }
     Registry::builtin(dir).with_tools(extra)
 }

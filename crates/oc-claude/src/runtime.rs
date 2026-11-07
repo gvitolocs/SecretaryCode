@@ -423,7 +423,8 @@ impl ClaudeRuntime {
         input.insert("reason".into(), json!(reason));
         let ctx = RunContext { cwd: cwd.clone(), project_dir: self.env.project_dir.clone() };
         let default = env_ms.map(Duration::from_millis).unwrap_or(Duration::from_millis(1500));
-        let run = hooks::run_all(&handlers, "SessionEnd", &Value::Object(input), None, default, &ctx);
+        let input = Value::Object(input);
+        let run = hooks::run_all(&handlers, "SessionEnd", &input, None, default, &ctx);
         let _ = tokio::time::timeout(budget, run).await;
     }
 
@@ -794,7 +795,7 @@ impl TurnHooks for ClaudeRuntime {
             Some(HookDecision::Allow) => 0,
             None => -1,
         };
-        let mut decide = |pre: &mut PreTool, d: HookDecision, reason: Option<String>| {
+        let decide = |pre: &mut PreTool, d: HookDecision, reason: Option<String>| {
             if rank(Some(d)) > rank(pre.decision) {
                 pre.decision = Some(d);
                 pre.reason = reason;

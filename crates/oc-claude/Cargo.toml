@@ -25,3 +25,5 @@ libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3"
+oc-provider = { workspace = true }
+oc-store = { workspace = true, default-features = false }
