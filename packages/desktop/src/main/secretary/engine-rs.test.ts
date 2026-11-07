@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
-import { tmpdir } from "node:os"
+import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
 import {
   createRustEnginePreview,
@@ -151,6 +151,32 @@ describe("provider selection", () => {
     } finally {
       await rm(root, { recursive: true, force: true })
     }
+  })
+
+  test("a provider's apiKey option is used as the TypeScript engine substitutes it, after auth.json", () => {
+    const withKey = (apiKey: string) => ({
+      model: "ollama/qwen3.8:27b-q4-72k",
+      provider: { ollama: { npm: "@ai-sdk/openai-compatible", options: { baseURL: "http://127.0.0.1:11436/v1", apiKey } } },
+    })
+    const resolve = (apiKey: string, auth: unknown = {}) =>
+      resolveRustProvider(withKey(apiKey), auth, { configDir: "/cfg/opencode", env: { QWEN_KEY: " from-env " } })
+    // A key file is handed to the engine by path, so the app never reads the secret itself.
+    expect(resolve("{file:/Users/me/secrets/qwen.key}")).toMatchObject({ apiKeyFile: "/Users/me/secrets/qwen.key" })
+    expect(resolve("{file:~/secrets/qwen.key}").apiKeyFile).toBe(join(homedir(), "secrets/qwen.key"))
+    expect(resolve("{file:keys/qwen.key}").apiKeyFile).toBe("/cfg/opencode/keys/qwen.key")
+    expect(resolve("{env:QWEN_KEY}")).toMatchObject({ apiKey: "from-env" })
+    expect(resolve("{env:MISSING_KEY}").apiKey).toBeUndefined()
+    expect(resolve("sk-literal")).toMatchObject({ apiKey: "sk-literal" })
+    // A partial substitution is not a key the engine can send; nothing is better than the raw template.
+    expect(resolve("Bearer {env:QWEN_KEY}").apiKey).toBeUndefined()
+    // auth.json still wins, and then no file reference is passed beside it.
+    const stored = resolve("{file:/k}", { ollama: { type: "api", key: SECRET } })
+    expect(stored).toMatchObject({ apiKey: SECRET })
+    expect(stored.apiKeyFile).toBeUndefined()
+
+    const plan = rustLanePlan({ cli: "/c", project: "/p", prompt: "Review", data: "/d", provider: resolve("{file:/k}") })
+    expect(plan.cli.env.OC_API_KEY_FILE).toBe("/k")
+    expect(plan.cli.env.OC_API_KEY).toBeUndefined()
   })
 
   test("engineConfigPaths follows the app's XDG roots and the default macOS layout", () => {

@@ -12,7 +12,7 @@ import type { ChildProcess } from "node:child_process"
 import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { createServer } from "node:net"
 import { homedir } from "node:os"
-import { dirname, join } from "node:path"
+import { dirname, isAbsolute, join, resolve } from "node:path"
 import { setTimeout as sleep } from "node:timers/promises"
 import type { RustEngineLatency, RustEngineStatus } from "../../shared/ipc-rpc/engine-rs"
 import { routeCoverage } from "./engine-rs-routes"
@@ -29,6 +29,8 @@ export interface RustProvider {
   model: string
   baseURL?: string
   apiKey?: string
+  /** A `{file:...}` key reference, handed to the engine as `OC_API_KEY_FILE` so the app never reads the key. */
+  apiKeyFile?: string
 }
 
 export interface RustEnginePlan {
@@ -81,7 +83,11 @@ export function rustEngineExecutable(name: "oc-server" | "oc-cli", env: NodeJS.P
  * Reads the model the TypeScript engine would use and classifies its provider. Never includes the key in an
  * error message, and never returns it to a caller that puts it in argv.
  */
-export function resolveRustProvider(config: unknown, auth: unknown): RustProvider {
+export function resolveRustProvider(
+  config: unknown,
+  auth: unknown,
+  context: { configDir?: string; env?: NodeJS.ProcessEnv } = {},
+): RustProvider {
   const settings = object(config)
   const selection = modelSelection(settings?.model)
   if (!selection) throw new LaneError("unsupported_provider", "Select a model in Secretary Code before using the Rust engine: its provider and base URL come from the engine config.")
@@ -90,14 +96,43 @@ export function resolveRustProvider(config: unknown, auth: unknown): RustProvide
   if (!protocol)
     throw new LaneError("unsupported_provider", `The Rust engine speaks the OpenAI-compatible and Anthropic protocols; ${selection.providerID} is neither.`)
   const baseURL = baseURLFor(providerConfig)
-  const apiKey = apiKeyFor(auth, selection.providerID)
+  // auth.json first, as before; then the provider's own `apiKey` option, which is where a config that points
+  // at a key file (`{file:~/secrets/...}`) or a variable (`{env:NAME}`) keeps it.
+  const stored = apiKeyFor(auth, selection.providerID)
+  const configured = stored ? undefined : configuredKey(providerConfig, context.configDir, context.env ?? process.env)
   return {
     providerID: selection.providerID,
     protocol,
     model: selection.model,
     ...(baseURL ? { baseURL } : {}),
-    ...(apiKey ? { apiKey } : {}),
+    ...(stored ? { apiKey: stored } : {}),
+    ...(configured ?? {}),
   }
+}
+
+/**
+ * The `apiKey` option as the TypeScript engine substitutes it: a literal, a whole `{env:NAME}` or a whole
+ * `{file:path}` (`~/` expanded, relative paths from the config's directory). Anything else is not a key the
+ * Rust engine can use, so it is left unset rather than sent verbatim.
+ */
+function configuredKey(config: Record<string, unknown> | undefined, configDir: string | undefined, env: NodeJS.ProcessEnv) {
+  for (const candidate of [object(config?.settings)?.apiKey, object(config?.options)?.apiKey]) {
+    if (typeof candidate !== "string" || !candidate.trim()) continue
+    const value = candidate.trim()
+    const file = /^\{file:([^}]+)\}$/u.exec(value)?.[1]
+    if (file) {
+      const expanded = file.startsWith("~/") ? join(homedir(), file.slice(2)) : file
+      if (isAbsolute(expanded)) return { apiKeyFile: expanded }
+      return configDir ? { apiKeyFile: resolve(configDir, expanded) } : undefined
+    }
+    const variable = /^\{env:([^}]+)\}$/u.exec(value)?.[1]
+    if (variable) {
+      const resolved = env[variable]?.trim()
+      return resolved ? { apiKey: resolved } : undefined
+    }
+    return value.includes("{env:") || value.includes("{file:") ? undefined : { apiKey: value }
+  }
+  return undefined
 }
 
 function protocolFor(providerID: string, config: Record<string, unknown> | undefined): RustProtocol | undefined {
@@ -162,7 +197,7 @@ export async function readRustProvider(paths = engineConfigPaths()) {
     }
   }
   const [config, auth] = await Promise.all([read(paths.config), read(paths.auth)])
-  return resolveRustProvider(config, auth)
+  return resolveRustProvider(config, auth, { configDir: dirname(paths.config) })
 }
 
 function providerEnvironment(provider: RustProvider) {
@@ -171,6 +206,7 @@ function providerEnvironment(provider: RustProvider) {
     OC_MODEL: provider.model,
     ...(provider.baseURL ? { OC_BASE_URL: provider.baseURL } : {}),
     ...(provider.apiKey ? { OC_API_KEY: provider.apiKey } : {}),
+    ...(provider.apiKeyFile && !provider.apiKey ? { OC_API_KEY_FILE: provider.apiKeyFile } : {}),
   }
 }
 
