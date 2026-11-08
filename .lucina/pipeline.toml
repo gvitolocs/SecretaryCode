@@ -1,0 +1,27 @@
+# lagent merge gates for SecretaryCode (format: SecretaryIOS crates/lucina-agentd/src/pipeline/repo.rs).
+#
+# engine-rs/ is its own Cargo workspace with a virtual root manifest (no [package]), and the repo root has
+# no Cargo.toml. lagent counts a nested workspace as standalone (tested with --manifest-path) only when its
+# root manifest is a package, so it would run `cargo test -p oc-...` at the repo root and fail. Its crates are
+# skipped here and tested by the gate below instead. Add a new engine-rs crate to `skip` as well.
+[merge]
+skip = [
+  "engine-rs/crates/oc-agent",
+  "engine-rs/crates/oc-bus",
+  "engine-rs/crates/oc-claude",
+  "engine-rs/crates/oc-cli",
+  "engine-rs/crates/oc-mcp",
+  "engine-rs/crates/oc-permission",
+  "engine-rs/crates/oc-provider",
+  "engine-rs/crates/oc-schema",
+  "engine-rs/crates/oc-server",
+  "engine-rs/crates/oc-store",
+  "engine-rs/crates/oc-tools",
+  "engine-rs/crates/oc-tunnel",
+]
+
+# The whole engine workspace. CLAUDE_CONFIG_DIR keeps the Claude Code layer away from the host ~/.claude.
+[[gate]]
+name = "engine-rs tests"
+paths = ["engine-rs/"]
+run = "CLAUDE_CONFIG_DIR=/nonexistent-claude-config cargo test --quiet --manifest-path engine-rs/Cargo.toml --workspace"
