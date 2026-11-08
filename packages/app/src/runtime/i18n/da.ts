@@ -1,4 +1,5 @@
 export const dict = {
+  "shell.view.calendar": "Kalender",
   "desktop.menu.computer": "Computer",
   "common.color.orange": "orange",
   "common.color.yellow": "gul",

@@ -28,6 +28,7 @@ export type CompanionRect = { x: number; y: number; width: number; height: numbe
 /** A plugin on the Lucina-first shell rail. Every view but "code" is one of Lucina's native web views. */
 export type ShellView =
   | "lucina"
+  | "calendar"
   | "keep"
   | "code"
   | "agents"

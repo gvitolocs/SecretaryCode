@@ -112,6 +112,18 @@ export function allowMicrophone(contents: WebContents) {
   microphone.add(contents)
 }
 
+// Her views that may read the clipboard (her chat: Instagram's Paste, 2026-11-01): their top frame, on her origin.
+const clipboardReaders = new WeakSet<WebContents>()
+
+export function allowClipboardRead(contents: WebContents) {
+  clipboardReaders.add(contents)
+}
+
+/** Whether a clipboard-read of the partition is one of those views' top page on her origin. */
+export function clipboardReadGranted(contents: unknown, url: string, mainFrame: boolean) {
+  return mainFrame && isLucinaUrl(url) && clipboardReaders.has(contents as WebContents)
+}
+
 /** Whether a media permission of the partition is one of those views asking for the microphone alone. */
 export function microphoneGranted(contents: unknown, mediaTypes: readonly unknown[] | undefined, url: string, mainFrame: boolean) {
   return mainFrame && isLucinaUrl(url) && microphone.has(contents as WebContents) && audioOnly(mediaTypes)
@@ -127,6 +139,21 @@ const firstLoad = new WeakMap<WebContents, { path: string; started: boolean; she
  * (applyWebLanguage). Links elsewhere open in the default browser.
  * `preload` is the sandboxed script that gives her page `window.secretaryShell`.
  */
+/**
+ * The Mac's own context menu (Cut, Copy, Paste, Copy Image, Save Image As) in one of her views. electron-context-menu
+ * attaches itself to windows only (lifecycle/environment.ts), so her views had no menu at all. Her page's own menus
+ * (pictures, the Gallery) cancel the contextmenu event, and Chromium then sends the shell none.
+ */
+export function attachContextMenu(contents: WebContents) {
+  void import("electron-context-menu")
+    .then(({ default: contextMenu }) => {
+      if (contents.isDestroyed()) return
+      const dispose = contextMenu({ window: contents, showSaveImageAs: true, showLookUpSelection: false, showSearchWithGoogle: false })
+      contents.once("destroyed", dispose)
+    })
+    .catch(() => {})
+}
+
 export function lucinaWebView(path: string, beforeLoad?: () => Promise<unknown>, options: { preload?: string } = {}) {
   const view = new WebContentsView({
     webPreferences: {
@@ -159,6 +186,7 @@ export function lucinaWebView(path: string, beforeLoad?: () => Promise<unknown>,
     void view.webContents.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`).catch(() => {})
   })
   applyWebLanguage(view.webContents)
+  attachContextMenu(view.webContents)
   void Promise.resolve()
     .then(beforeLoad)
     .catch(() => {})

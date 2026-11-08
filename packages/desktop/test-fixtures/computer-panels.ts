@@ -218,6 +218,22 @@ for (const [contents, url, isMainFrame, allowed, label] of [
   partition.request?.(contents as WebContents, "clipboard-read", callback, { requestingUrl: url, isMainFrame })
   assert.deepEqual(callback.mock.calls, [[allowed]], `request: ${label}`)
 }
+// Her chat view, once allowed (Instagram's Paste), reads it too: its top page on her origin only.
+const { allowClipboardRead } = await import("../src/main/secretary/lucina-web")
+const chat = new Contents() as unknown as WebContents
+allowClipboardRead(chat)
+for (const [url, isMainFrame, allowed, label] of [
+  ["https://getsecretary.tech/instagram", true, true, "her chat's top page"],
+  ["https://getsecretary.tech/instagram", false, false, "a frame in her chat"],
+  ["https://evil.test/instagram", true, false, "her chat on another origin"],
+] as const) {
+  assert.equal(partition.check?.(chat, "clipboard-read", url, { isMainFrame }), allowed, `check: ${label}`)
+  const callback = mock((_allowed: boolean) => {})
+  partition.request?.(chat, "clipboard-read", callback, { requestingUrl: url, isMainFrame })
+  assert.deepEqual(callback.mock.calls, [[allowed]], `request: ${label}`)
+}
+// A view that was not allowed still cannot.
+assert.equal(partition.check?.(otherView, "clipboard-read", "https://getsecretary.tech/", { isMainFrame: true }), false)
 // The top page gets nothing else beyond what every view of her origin has.
 for (const permission of ["media", "display-capture", "notifications", "keyboardLock", "unknown"] as const)
   assert.equal(partition.check?.(viewerContents, permission, "https://getsecretary.tech/computer", { isMainFrame: true }), false, permission)

@@ -53,3 +53,8 @@
     animation: none;
   }
 }
+
+/* Focus mode is full tab (app shell.tsx sets data-full-tab): no titlebar and no Record button over her page. */
+html[data-full-tab] .secretary-record-button.floating {
+  display: none;
+}

@@ -131,6 +131,14 @@ if (location.origin === LUCINA_ORIGIN && window.top === window) {
         if (typeof loginUrl !== "string") throw new TypeError("loginUrl must be a string")
         return ipcRenderer.invoke("secretary:pixiv-login", loginUrl)
       },
+      /**
+       * Copy image (her media menu): the picture, as a data: URL of a PNG, JPEG, WebP or GIF, or the address of one of
+       * her pictures, on the Mac's clipboard. Settles with whether it is there.
+       */
+      copyImage(source: string): Promise<boolean> {
+        if (typeof source !== "string") throw new TypeError("source must be a string")
+        return ipcRenderer.invoke("secretary:copy-image", source) as Promise<boolean>
+      },
       /** The shell's focus mode as it changes, including when the shell itself leaves it. Returns the unsubscribe. */
       onFocusModeChange(listener: (on: boolean) => void) {
         if (typeof listener !== "function") throw new TypeError("listener must be a function")

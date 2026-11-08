@@ -18,6 +18,7 @@ import { setupApprover } from "./secretary/approver"
 import { setupAttention } from "./secretary/attention"
 import { setupPrompterOverlay } from "./secretary/prompter-overlay"
 import { setupPixivLogin } from "./secretary/pixiv-login"
+import { setupCopyImage } from "./secretary/copy-image"
 
 import { ImageOpenQueue, imageArguments } from "./secretary/image-viewer/queue"
 
@@ -45,6 +46,7 @@ setupApprover()
 setupAttention()
 setupPrompterOverlay()
 setupPixivLogin()
+setupCopyImage()
 setupAgentsMirror()
 
 if (acquireApplicationLock()) {
