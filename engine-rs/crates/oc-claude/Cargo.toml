@@ -1,0 +1,29 @@
+[package]
+name = "oc-claude"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Run Claude Code projects as they are: CLAUDE.md memory, settings.json, permissions, hooks, skills, commands, subagents, MCP and plugins, from Claude Code's public documentation"
+
+[dependencies]
+oc-schema = { workspace = true }
+oc-tools = { workspace = true }
+oc-agent = { workspace = true }
+oc-mcp = { workspace = true }
+oc-permission = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = "0.9"
+globset = "0.4"
+regex = { workspace = true }
+async-trait = { workspace = true }
+tracing = { workspace = true }
+reqwest = { workspace = true }
+futures-util = { workspace = true }
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = "3"
+oc-provider = { workspace = true }
+oc-store = { workspace = true, default-features = false }

@@ -1,0 +1,7 @@
+[target.aarch64-unknown-linux-musl]
+linker = "rust-lld"
+rustflags = ["-C", "linker-flavor=ld.lld", "-C", "link-self-contained=yes", "-C", "target-feature=+crt-static"]
+[env]
+CC_aarch64_unknown_linux_musl = "clang"
+CFLAGS_aarch64_unknown_linux_musl = "--target=aarch64-unknown-linux-musl"
+AR_aarch64_unknown_linux_musl = "llvm-ar-18"

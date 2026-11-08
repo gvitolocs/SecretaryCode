@@ -16,9 +16,8 @@
 //!   non-streaming parse always leaves `None`.
 //! - OpenAI usage is honored on the top-level `usage` field and, like
 //!   upstream, on `choices[0].usage` (Moonshot-style compatible providers).
-//! - An OpenAI stream that ends without `[DONE]` or a `finish_reason` still
-//!   produces a response; the missing reason maps to `FinishReason::Unknown`
-//!   (upstream raises an `AIError`).
+//! - An OpenAI stream that ends without a `finish_reason` is a provider
+//!   failure, like a dropped stream (upstream raises an `AIError`).
 //! - Anthropic usage is right-biased merged per field (non-zero wins) across
 //!   `message_start` and `message_delta`, mirroring upstream `mergeUsage`.
 //! - Anthropic `signature_delta` deltas and `compaction_delta` are ignored
@@ -46,6 +45,9 @@ pub enum StreamEvent {
     Reasoning { delta: String },
     ToolCallStarted { index: usize, id: String, name: String },
     ToolCallDelta { index: usize, arguments_delta: String },
+    RequestPrepared { metadata: Value },
+    ResponseStarted,
+    ProviderTimings { timings: Value },
     Finished, // terminal SSE event received
 }
 
@@ -159,14 +161,39 @@ pub struct OpenAiStreamState {
 /// produced in order. Unknown chunk shapes are ignored.
 pub fn parse_openai_sse_frame(chunk: &Value, state: &mut OpenAiStreamState) -> Result<Vec<StreamEvent>, ProviderError> {
     let mut events = Vec::new();
+    if let Some(raw) = chunk.get("timings").and_then(Value::as_object) {
+        let safe: serde_json::Map<String, Value> = [
+            "prompt_n",
+            "prompt_ms",
+            "prompt_per_second",
+            "predicted_n",
+            "predicted_ms",
+            "predicted_per_second",
+            "cache_n",
+        ]
+        .iter()
+        .filter_map(|key| {
+            raw.get(*key)
+                .filter(|v| v.is_number())
+                .map(|v| ((*key).into(), v.clone()))
+        })
+        .collect();
+        if !safe.is_empty() {
+            events.push(StreamEvent::ProviderTimings {
+                timings: Value::Object(safe),
+            });
+        }
+    }
+
+
 
     // Trailing usage chunk (with `stream_options.include_usage`), plus the
     // Moonshot-style `choices[0].usage` fallback.
-    if let Some(u) = non_null(chunk.get("usage")) {
+    if let Some(u) = chunk.get("usage").and_then(non_null) {
         state.usage = Some(openai_usage(u));
     }
     let choice = chunk.pointer("/choices/0");
-    if let Some(u) = choice.and_then(|c| non_null(c.get("usage"))) {
+    if let Some(u) = choice.and_then(|c| c.get("usage")).and_then(non_null) {
         state.usage = Some(openai_usage(u));
     }
 
@@ -258,7 +285,9 @@ impl OpenAiStreamState {
                 Ok(LlmToolCall { id, name, arguments })
             })
             .collect::<Result<Vec<_>, ProviderError>>()?;
-        let (finish, raw_finish) = self.finish.unwrap_or((FinishReason::Unknown, None));
+        let (finish, raw_finish) = self
+            .finish
+            .ok_or_else(|| ProviderError::Malformed("stream ended without a finish_reason".into()))?;
         Ok(LlmResponse {
             text: collapse(self.text),
             reasoning: collapse(self.reasoning),
@@ -305,7 +334,7 @@ pub fn parse_anthropic_sse_frame(
     let mut events = Vec::new();
     match event.get("type").and_then(Value::as_str) {
         Some("message_start") => {
-            if let Some(u) = non_null(event.pointer("/message/usage")) {
+            if let Some(u) = event.pointer("/message/usage").and_then(non_null) {
                 state.usage = Some(anthropic_usage(u));
             }
         }
@@ -378,7 +407,7 @@ pub fn parse_anthropic_sse_frame(
         Some("message_delta") => {
             // The final delta carries the authoritative totals; right-biased
             // merge per field (upstream `mergeUsage`).
-            if let Some(u) = non_null(event.get("usage")) {
+            if let Some(u) = event.get("usage").and_then(non_null) {
                 let next = anthropic_usage(u);
                 match &mut state.usage {
                     None => state.usage = Some(next),
@@ -437,7 +466,9 @@ impl AnthropicStreamState {
                 arguments: if pending.arguments.is_empty() { "{}".to_owned() } else { pending.arguments },
             })
             .collect();
-        let (finish, raw_finish) = self.finish.unwrap_or((FinishReason::Unknown, None));
+        let (finish, raw_finish) = self
+            .finish
+            .ok_or_else(|| ProviderError::Malformed("stream ended without a stop_reason".into()))?;
         Ok(LlmResponse {
             text: join_blocks(self.text_blocks),
             reasoning: join_blocks(self.thinking_blocks),
@@ -527,8 +558,8 @@ fn handle_frame(
     }
 }
 
-fn non_null(v: Option<&Value>) -> Option<&Value> {
-    v.filter(|v| !v.is_null())
+fn non_null(v: &Value) -> Option<&Value> {
+    if v.is_null() { None } else { Some(v) }
 }
 
 /// Blank text collapses to `None` (same rule as the non-streaming parsers).

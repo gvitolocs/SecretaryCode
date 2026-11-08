@@ -24,13 +24,16 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+#[cfg(feature = "sqlite")]
 use std::sync::Mutex;
+use std::sync::RwLock;
 
 use oc_schema::{
     message_id, session_id, IdleMessage, Message, MessageBase, MessageTime, ModelRef, Order,
     Outcome, SessionErrorValue, SessionInfo, SessionListFilter, SessionTime, SystemMessage,
 };
 
+#[cfg(feature = "sqlite")]
 mod sqlite;
 
 #[derive(Debug, thiserror::Error)]
@@ -53,14 +56,23 @@ enum Backend {
     #[default]
     Memory,
     Files(PathBuf),
+    #[cfg(feature = "sqlite")]
     Db(Mutex<rusqlite::Connection>),
 }
 
 #[derive(Default)]
-pub struct Store {
+struct Inner {
     sessions: HashMap<String, SessionInfo>,
     messages: HashMap<String, Vec<Message>>,
     backend: Backend,
+}
+
+/// Session state is synchronized internally, so a `Store` can be shared as
+/// `Arc<Store>` by the runner, subagent tool and HTTP handlers without holding
+/// an outer lock across a whole turn.
+#[derive(Default)]
+pub struct Store {
+    inner: RwLock<Inner>,
 }
 
 /// One page of the session list, mirroring `session.list`'s data+optional
@@ -87,9 +99,9 @@ impl Store {
     /// Open (or create) a file-backed store. Existing sessions and messages
     /// under `data_dir` are loaded; files missing means a fresh store.
     pub fn open(data_dir: &Path) -> Result<Self, StoreError> {
-        let mut store = Self {
+        let mut inner = Inner {
             backend: Backend::Files(data_dir.to_path_buf()),
-            ..Self::default()
+            ..Inner::default()
         };
         let sessions_path = data_dir.join("session").join("sessions.json");
         if sessions_path.exists() {
@@ -98,13 +110,12 @@ impl Store {
             let list: Vec<SessionInfo> =
                 serde_json::from_str(&raw).map_err(|e| StoreError::Io(e.to_string()))?;
             for s in list {
-                store.sessions.insert(s.id.clone(), s);
+                inner.sessions.insert(s.id.clone(), s);
             }
         }
         let msg_dir = data_dir.join("session").join("message");
         if msg_dir.is_dir() {
-            let entries =
-                std::fs::read_dir(&msg_dir).map_err(|e| StoreError::Io(e.to_string()))?;
+            let entries = std::fs::read_dir(&msg_dir).map_err(|e| StoreError::Io(e.to_string()))?;
             for entry in entries.flatten() {
                 let path = entry.path();
                 if path.extension().and_then(|e| e.to_str()) != Some("json") {
@@ -113,17 +124,19 @@ impl Store {
                 let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
                     continue;
                 };
-                if !store.sessions.contains_key(stem) {
+                if !inner.sessions.contains_key(stem) {
                     continue;
                 }
                 let raw =
                     std::fs::read_to_string(&path).map_err(|e| StoreError::Io(e.to_string()))?;
                 let list: Vec<Message> =
                     serde_json::from_str(&raw).map_err(|e| StoreError::Io(e.to_string()))?;
-                store.messages.insert(stem.to_string(), list);
+                inner.messages.insert(stem.to_string(), list);
             }
         }
-        Ok(store)
+        Ok(Self {
+            inner: RwLock::new(inner),
+        })
     }
 
     fn write_atomic(path: &Path, body: &str) -> Result<(), StoreError> {
@@ -136,22 +149,23 @@ impl Store {
         Ok(())
     }
 
-    fn persist_sessions(&self) -> Result<(), StoreError> {
-        match &self.backend {
+    fn persist_sessions(inner: &Inner) -> Result<(), StoreError> {
+        match &inner.backend {
             Backend::Memory => Ok(()),
             Backend::Files(dir) => {
-                let mut list: Vec<&SessionInfo> = self.sessions.values().collect();
+                let mut list: Vec<&SessionInfo> = inner.sessions.values().collect();
                 list.sort_by(|a, b| a.id.cmp(&b.id));
                 let body =
                     serde_json::to_string(&list).map_err(|e| StoreError::Io(e.to_string()))?;
                 Self::write_atomic(&dir.join("session").join("sessions.json"), &body)
             }
+            #[cfg(feature = "sqlite")]
             Backend::Db(conn) => {
                 // The in-memory map is the source of truth and this runs right
                 // after every session mutation, so upserting every document
                 // keeps the table in lockstep (remove_session deletes below).
                 let conn = sqlite::lock(conn)?;
-                for s in self.sessions.values() {
+                for s in inner.sessions.values() {
                     sqlite::upsert_session(&conn, s)?;
                 }
                 Ok(())
@@ -161,24 +175,27 @@ impl Store {
 
     /// Files backend: rewrite the session's message file atomically. (The
     /// SQLite backend writes rows directly at the mutation sites.)
-    fn persist_messages(&self, session_id: &str) -> Result<(), StoreError> {
-        let Backend::Files(dir) = &self.backend else {
+    fn persist_messages(inner: &Inner, session_id: &str) -> Result<(), StoreError> {
+        let Backend::Files(dir) = &inner.backend else {
             return Ok(());
         };
         let empty = Vec::new();
-        let list = self.messages.get(session_id).unwrap_or(&empty);
+        let list = inner.messages.get(session_id).unwrap_or(&empty);
         let body = serde_json::to_string(list).map_err(|e| StoreError::Io(e.to_string()))?;
         Self::write_atomic(
-            &dir.join("session").join("message").join(format!("{session_id}.json")),
+            &dir.join("session")
+                .join("message")
+                .join(format!("{session_id}.json")),
             &body,
         )
     }
 
     /// `session.create` — ID generated with the upstream scheme, times
     /// stamped, cost/tokens zeroed.
-    pub fn create_session(&mut self, input: CreateInput) -> Result<SessionInfo, StoreError> {
+    pub fn create_session(&self, input: CreateInput) -> Result<SessionInfo, StoreError> {
+        let mut inner = self.inner.write().unwrap();
         if let Some(parent) = &input.parent_id {
-            if !self.sessions.contains_key(parent) {
+            if !inner.sessions.contains_key(parent) {
                 return Err(StoreError::InvalidParent(parent.clone()));
             }
         }
@@ -192,13 +209,22 @@ impl Store {
             cost: 0.0,
             tokens: Default::default(),
             outcome: None,
-            time: SessionTime { created: now, updated: now, idle: None, viewed: None, archived: None },
+            time: SessionTime {
+                created: now,
+                updated: now,
+                idle: None,
+                viewed: None,
+                archived: None,
+            },
             title: input.title,
-            location: oc_schema::LocationRef { directory: input.directory, workspace_id: None },
+            location: oc_schema::LocationRef {
+                directory: input.directory,
+                workspace_id: None,
+            },
             subpath: None,
         };
-        self.sessions.insert(info.id.clone(), info.clone());
-        self.persist_sessions()?;
+        inner.sessions.insert(info.id.clone(), info.clone());
+        Self::persist_sessions(&inner)?;
         Ok(info)
     }
 
@@ -210,7 +236,8 @@ impl Store {
     /// - `parentID`: exact parent match; JSON `null` (None here) = roots only
     /// - `archived`: `true` → only archived, `false`/absent → only active
     pub fn list_sessions(&self, filter: &SessionListFilter) -> SessionPage {
-        let mut sessions: Vec<SessionInfo> = self.sessions.values().cloned().collect();
+        let inner = self.inner.read().unwrap();
+        let mut sessions: Vec<SessionInfo> = inner.sessions.values().cloned().collect();
         if let Some(parent) = &filter.parent_id {
             sessions.retain(|s| s.parent_id.as_ref() == parent.as_ref());
         }
@@ -234,18 +261,28 @@ impl Store {
     }
 
     pub fn get_session(&self, id: &str) -> Result<SessionInfo, StoreError> {
-        self.sessions.get(id).cloned().ok_or_else(|| StoreError::NotFound(id.into()))
+        self.inner
+            .read()
+            .unwrap()
+            .sessions
+            .get(id)
+            .cloned()
+            .ok_or_else(|| StoreError::NotFound(id.into()))
     }
 
     /// `session.update` (PATCH) — title and archive transitions; touches
     /// `time.updated`.
     pub fn update_session(
-        &mut self,
+        &self,
         id: &str,
         title: Option<String>,
         archived: Option<bool>,
     ) -> Result<SessionInfo, StoreError> {
-        let s = self.sessions.get_mut(id).ok_or_else(|| StoreError::NotFound(id.into()))?;
+        let mut inner = self.inner.write().unwrap();
+        let s = inner
+            .sessions
+            .get_mut(id)
+            .ok_or_else(|| StoreError::NotFound(id.into()))?;
         if let Some(t) = title {
             s.title = Some(t);
         }
@@ -254,21 +291,29 @@ impl Store {
         }
         s.time.updated = now_ms();
         let out = s.clone();
-        self.persist_sessions()?;
+        Self::persist_sessions(&inner)?;
         Ok(out)
     }
 
     /// `session.remove`.
-    pub fn remove_session(&mut self, id: &str) -> Result<SessionInfo, StoreError> {
-        self.messages.remove(id);
-        let out = self.sessions.remove(id).ok_or_else(|| StoreError::NotFound(id.into()))?;
-        match &self.backend {
+    pub fn remove_session(&self, id: &str) -> Result<SessionInfo, StoreError> {
+        let mut inner = self.inner.write().unwrap();
+        inner.messages.remove(id);
+        let out = inner
+            .sessions
+            .remove(id)
+            .ok_or_else(|| StoreError::NotFound(id.into()))?;
+        match &inner.backend {
             Backend::Memory => {}
             Backend::Files(dir) => {
-                self.persist_sessions()?;
-                let path = dir.join("session").join("message").join(format!("{id}.json"));
+                Self::persist_sessions(&inner)?;
+                let path = dir
+                    .join("session")
+                    .join("message")
+                    .join(format!("{id}.json"));
                 let _ = std::fs::remove_file(path);
             }
+            #[cfg(feature = "sqlite")]
             Backend::Db(conn) => {
                 let conn = sqlite::lock(conn)?;
                 sqlite::delete_session(&conn, id)?;
@@ -278,25 +323,33 @@ impl Store {
     }
 
     /// Mark a run's terminal outcome (`outcome` + `time.idle`).
-    pub fn set_outcome(&mut self, id: &str, outcome: Outcome) -> Result<SessionInfo, StoreError> {
-        let s = self.sessions.get_mut(id).ok_or_else(|| StoreError::NotFound(id.into()))?;
+    pub fn set_outcome(&self, id: &str, outcome: Outcome) -> Result<SessionInfo, StoreError> {
+        let mut inner = self.inner.write().unwrap();
+        let s = inner
+            .sessions
+            .get_mut(id)
+            .ok_or_else(|| StoreError::NotFound(id.into()))?;
         s.outcome = Some(outcome);
         let now = now_ms();
         s.time.idle = Some(now);
         s.time.updated = now;
         let out = s.clone();
-        self.persist_sessions()?;
+        Self::persist_sessions(&inner)?;
         Ok(out)
     }
 
     /// Fold a completed assistant step's cost/tokens into the session total.
     pub fn add_usage(
-        &mut self,
+        &self,
         id: &str,
         cost: f64,
         usage: &oc_schema::LlmUsage,
     ) -> Result<SessionInfo, StoreError> {
-        let s = self.sessions.get_mut(id).ok_or_else(|| StoreError::NotFound(id.into()))?;
+        let mut inner = self.inner.write().unwrap();
+        let s = inner
+            .sessions
+            .get_mut(id)
+            .ok_or_else(|| StoreError::NotFound(id.into()))?;
         s.cost += cost;
         s.tokens.input += usage.input;
         s.tokens.output += usage.output;
@@ -304,14 +357,15 @@ impl Store {
         s.tokens.cache.read += usage.cache_read;
         s.tokens.cache.write += usage.cache_write;
         let out = s.clone();
-        self.persist_sessions()?;
+        Self::persist_sessions(&inner)?;
         Ok(out)
     }
 
     /// `session.active` — sessions with no idle time and not archived,
     /// newest first.
     pub fn active_sessions(&self) -> Vec<SessionInfo> {
-        let mut v: Vec<SessionInfo> = self
+        let inner = self.inner.read().unwrap();
+        let mut v: Vec<SessionInfo> = inner
             .sessions
             .values()
             .filter(|s| s.time.idle.is_none() && s.time.archived.is_none())
@@ -324,18 +378,24 @@ impl Store {
     /// Append a message to a session (`session.synthetic`, `session.prompt`
     /// land here after their handlers build the message).
     pub fn append_message(
-        &mut self,
+        &self,
         session_id: &str,
         build: impl FnOnce(String, u64) -> Message,
     ) -> Result<Message, StoreError> {
-        if !self.sessions.contains_key(session_id) {
+        let mut inner = self.inner.write().unwrap();
+        if !inner.sessions.contains_key(session_id) {
             return Err(StoreError::NotFound(session_id.into()));
         }
         let msg = build(message_id::create(), now_ms());
-        self.messages.entry(session_id.to_string()).or_default().push(msg.clone());
-        match &self.backend {
+        inner
+            .messages
+            .entry(session_id.to_string())
+            .or_default()
+            .push(msg.clone());
+        match &inner.backend {
             Backend::Memory => {}
-            Backend::Files(_) => self.persist_messages(session_id)?,
+            Backend::Files(_) => Self::persist_messages(&inner, session_id)?,
+            #[cfg(feature = "sqlite")]
             Backend::Db(conn) => {
                 let conn = sqlite::lock(conn)?;
                 sqlite::append_message_row(&conn, session_id, &msg)?;
@@ -346,19 +406,21 @@ impl Store {
 
     /// Replace a stored message in place — the agent loop mutates a tool
     /// part's state from running to completed/error after execution.
-    pub fn replace_message(&mut self, session_id: &str, msg: Message) -> Result<(), StoreError> {
-        let list = self
+    pub fn replace_message(&self, session_id: &str, msg: Message) -> Result<(), StoreError> {
+        let mut inner = self.inner.write().unwrap();
+        let list = inner
             .messages
             .get_mut(session_id)
             .ok_or_else(|| StoreError::NotFound(session_id.into()))?;
-        let id = message_key(&msg).to_string();
-        match list.iter_mut().find(|m| message_key(m) == id) {
+        let id = message_base(&msg).id.clone();
+        match list.iter_mut().find(|m| message_base(m).id == id) {
             Some(slot) => *slot = msg.clone(),
             None => return Err(StoreError::NotFound(id)),
         }
-        match &self.backend {
+        match &inner.backend {
             Backend::Memory => {}
-            Backend::Files(_) => self.persist_messages(session_id)?,
+            Backend::Files(_) => Self::persist_messages(&inner, session_id)?,
+            #[cfg(feature = "sqlite")]
             Backend::Db(conn) => {
                 let conn = sqlite::lock(conn)?;
                 sqlite::replace_message_row(&conn, session_id, &msg)?;
@@ -367,27 +429,48 @@ impl Store {
         Ok(())
     }
 
+    /// Replace a session's whole history: compaction's summary and what it kept.
+    pub fn replace_history(&self, session_id: &str, messages: Vec<Message>) -> Result<(), StoreError> {
+        let mut inner = self.inner.write().unwrap();
+        let list = inner
+            .messages
+            .get_mut(session_id)
+            .ok_or_else(|| StoreError::NotFound(session_id.into()))?;
+        *list = messages;
+        match &inner.backend {
+            Backend::Memory => {}
+            Backend::Files(_) => Self::persist_messages(&inner, session_id)?,
+            #[cfg(feature = "sqlite")]
+            Backend::Db(conn) => {
+                let conn = sqlite::lock(conn)?;
+                sqlite::replace_history_rows(&conn, session_id, &inner.messages[session_id])?;
+            }
+        }
+        Ok(())
+    }
+
     /// Messages of a session, oldest first (ascending `msg_` IDs).
     pub fn messages(&self, session_id: &str) -> Result<Vec<Message>, StoreError> {
-        let mut v = self
+        let inner = self.inner.read().unwrap();
+        let mut v = inner
             .messages
             .get(session_id)
             .cloned()
             .ok_or_else(|| StoreError::NotFound(session_id.into()))?;
-        v.sort_by(|a, b| message_key(a).cmp(message_key(b)));
+        v.sort_by(|a, b| message_base(a).id.cmp(&message_base(b).id));
         Ok(v)
     }
 }
 
-fn message_key(m: &Message) -> &str {
+fn message_base(m: &Message) -> &MessageBase {
     match m {
-        Message::User(u) => &u.base.id,
-        Message::Assistant(a) => &a.base.id,
-        Message::Synthetic(s) => &s.base.id,
-        Message::System(s) => &s.base.id,
-        Message::AgentSwitched(a) => &a.base.id,
-        Message::ModelSwitched(m) => &m.base.id,
-        Message::Idle(i) => &i.base.id,
+        Message::User(u) => &u.base,
+        Message::Assistant(a) => &a.base,
+        Message::Synthetic(s) => &s.base,
+        Message::System(s) => &s.base,
+        Message::AgentSwitched(a) => &a.base,
+        Message::ModelSwitched(m) => &m.base,
+        Message::Idle(i) => &i.base,
     }
 }
 
@@ -395,7 +478,11 @@ fn message_key(m: &Message) -> &str {
 /// so call sites stay declarative).
 pub fn user_message(text: String, files: Vec<String>, id: String, created: u64) -> Message {
     Message::User(oc_schema::UserMessage {
-        base: MessageBase { id, metadata: None, time: MessageTime { created } },
+        base: MessageBase {
+            id,
+            metadata: None,
+            time: MessageTime { created },
+        },
         text,
         files,
         agents: Vec::new(),
@@ -410,7 +497,11 @@ pub fn assistant_message(
     created: u64,
 ) -> Message {
     Message::Assistant(oc_schema::AssistantMessage {
-        base: MessageBase { id, metadata: None, time: oc_schema::AssistantTime { created, streamed: None, completed: None } },
+        base: MessageBase {
+            id,
+            metadata: None,
+            time: MessageTime { created },
+        },
         agent: agent.to_string(),
         model,
         content,
@@ -419,12 +510,21 @@ pub fn assistant_message(
         cost: None,
         tokens: None,
         error: None,
+        time: oc_schema::AssistantTime {
+            created,
+            streamed: None,
+            completed: None,
+        },
     })
 }
 
 pub fn system_message(text: &str, description: &str, id: String, created: u64) -> Message {
     Message::System(SystemMessage {
-        base: MessageBase { id, metadata: None, time: MessageTime { created } },
+        base: MessageBase {
+            id,
+            metadata: None,
+            time: MessageTime { created },
+        },
         text: text.to_string(),
         description: Some(description.to_string()),
     })
@@ -432,7 +532,11 @@ pub fn system_message(text: &str, description: &str, id: String, created: u64) -
 
 pub fn idle_message(outcome: Outcome, id: String, created: u64) -> Message {
     Message::Idle(IdleMessage {
-        base: MessageBase { id, metadata: None, time: MessageTime { created } },
+        base: MessageBase {
+            id,
+            metadata: None,
+            time: MessageTime { created },
+        },
         outcome,
         error: None,
     })
@@ -440,14 +544,22 @@ pub fn idle_message(outcome: Outcome, id: String, created: u64) -> Message {
 
 pub fn synthetic_message(text: &str, id: String, created: u64) -> Message {
     Message::Synthetic(oc_schema::SyntheticMessage {
-        base: MessageBase { id, metadata: None, time: MessageTime { created } },
+        base: MessageBase {
+            id,
+            metadata: None,
+            time: MessageTime { created },
+        },
         text: text.to_string(),
         description: None,
     })
 }
 
 pub fn session_error(name: &str, message: &str) -> SessionErrorValue {
-    SessionErrorValue { name: name.to_string(), message: Some(message.to_string()), data: None }
+    SessionErrorValue {
+        name: name.to_string(),
+        message: Some(message.to_string()),
+        data: None,
+    }
 }
 
 pub(crate) fn now_ms() -> u64 {
@@ -475,7 +587,7 @@ mod tests {
 
     #[test]
     fn create_then_list_newest_first() {
-        let mut store = Store::new();
+        let store = Store::new();
         let a = store.create_session(mk("/tmp/a")).unwrap();
         std::thread::sleep(std::time::Duration::from_millis(2));
         let b = store.create_session(mk("/tmp/b")).unwrap();
@@ -486,10 +598,13 @@ mod tests {
 
     #[test]
     fn order_asc_reverses() {
-        let mut store = Store::new();
+        let store = Store::new();
         store.create_session(mk("/a")).unwrap();
         store.create_session(mk("/b")).unwrap();
-        let page = store.list_sessions(&SessionListFilter { order: Some(Order::Asc), ..Default::default() });
+        let page = store.list_sessions(&SessionListFilter {
+            order: Some(Order::Asc),
+            ..Default::default()
+        });
         assert_eq!(page.sessions.len(), 2);
         // asc = oldest first; oldest carries the largest inverted key.
         assert!(page.sessions[0].id > page.sessions[1].id);
@@ -497,7 +612,7 @@ mod tests {
 
     #[test]
     fn search_filters_by_title_substring() {
-        let mut store = Store::new();
+        let store = Store::new();
         let mut a = mk("/a");
         a.title = Some("Fix the login bug".into());
         let mut b = mk("/b");
@@ -514,7 +629,7 @@ mod tests {
 
     #[test]
     fn parent_filter_roots_only_with_null() {
-        let mut store = Store::new();
+        let store = Store::new();
         let root = store.create_session(mk("/a")).unwrap();
         let mut child = mk("/a");
         child.parent_id = Some(root.id.clone());
@@ -531,21 +646,36 @@ mod tests {
             ..Default::default()
         });
         assert_eq!(page.sessions.len(), 1);
-        assert_eq!(page.sessions[0].parent_id.as_deref(), Some(root.id.as_str()));
+        assert_eq!(
+            page.sessions[0].parent_id.as_deref(),
+            Some(root.id.as_str())
+        );
     }
 
     #[test]
     fn archive_transition_and_filter() {
-        let mut store = Store::new();
+        let store = Store::new();
         let s = store.create_session(mk("/a")).unwrap();
         store.update_session(&s.id, None, Some(true)).unwrap();
-        assert!(store.list_sessions(&SessionListFilter::default()).sessions.is_empty());
-        assert_eq!(store.list_sessions(&SessionListFilter { archived: Some(true), ..Default::default() }).sessions.len(), 1);
+        assert!(store
+            .list_sessions(&SessionListFilter::default())
+            .sessions
+            .is_empty());
+        assert_eq!(
+            store
+                .list_sessions(&SessionListFilter {
+                    archived: Some(true),
+                    ..Default::default()
+                })
+                .sessions
+                .len(),
+            1
+        );
     }
 
     #[test]
     fn create_rejects_unknown_parent() {
-        let mut store = Store::new();
+        let store = Store::new();
         let mut c = mk("/a");
         c.parent_id = Some("ses_doesnotexist0123456789abcdef".into());
         assert!(matches!(
@@ -556,12 +686,16 @@ mod tests {
 
     #[test]
     fn messages_append_and_sort_oldest_first() {
-        let mut store = Store::new();
+        let store = Store::new();
         let s = store.create_session(mk("/a")).unwrap();
         let m1 = store
             .append_message(&s.id, |id, t| {
                 Message::Synthetic(oc_schema::SyntheticMessage {
-                    base: MessageBase { id, metadata: None, time: MessageTime { created: t } },
+                    base: MessageBase {
+                        id,
+                        metadata: None,
+                        time: MessageTime { created: t },
+                    },
                     text: "first".into(),
                     description: None,
                 })
@@ -571,26 +705,33 @@ mod tests {
         let m2 = store
             .append_message(&s.id, |id, t| {
                 Message::Synthetic(oc_schema::SyntheticMessage {
-                    base: MessageBase { id, metadata: None, time: MessageTime { created: t } },
+                    base: MessageBase {
+                        id,
+                        metadata: None,
+                        time: MessageTime { created: t },
+                    },
                     text: "second".into(),
                     description: None,
                 })
             })
             .unwrap();
         let list = store.messages(&s.id).unwrap();
-        let texts: Vec<_> = list.iter().map(|m| match m {
-            Message::Synthetic(s) => s.text.as_str(),
-            _ => "",
-        }).collect();
+        let texts: Vec<_> = list
+            .iter()
+            .map(|m| match m {
+                Message::Synthetic(s) => s.text.as_str(),
+                _ => "",
+            })
+            .collect();
         assert_eq!(texts, ["first", "second"]);
-        assert_eq!(message_key(&m1), message_key(&list[0]));
-        assert_eq!(message_key(&m2), message_key(&list[1]));
+        assert_eq!(message_base(&m1).id, message_base(&list[0]).id);
+        assert_eq!(message_base(&m2).id, message_base(&list[1]).id);
         assert!(store.messages("ses_missing0000000000000000000").is_err());
     }
 
     #[test]
     fn outcome_sets_idle_and_active_list_shrinks() {
-        let mut store = Store::new();
+        let store = Store::new();
         let s = store.create_session(mk("/a")).unwrap();
         assert_eq!(store.active_sessions().len(), 1);
         store.set_outcome(&s.id, Outcome::Succeeded).unwrap();
@@ -604,12 +745,16 @@ mod tests {
     fn file_persistence_roundtrip() {
         let dir = std::env::temp_dir().join(format!("oc-store-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let mut store = Store::open(&dir).unwrap();
+        let store = Store::open(&dir).unwrap();
         let s = store.create_session(mk("/a")).unwrap();
         store
             .append_message(&s.id, |id, t| {
                 Message::Synthetic(oc_schema::SyntheticMessage {
-                    base: MessageBase { id, metadata: None, time: MessageTime { created: t } },
+                    base: MessageBase {
+                        id,
+                        metadata: None,
+                        time: MessageTime { created: t },
+                    },
                     text: "durable".into(),
                     description: None,
                 })
@@ -622,11 +767,20 @@ mod tests {
             syn.text = "edited".into();
         }
         store.replace_message(&s.id, edited).unwrap();
-        let assistant = store.append_message(&s.id, |id, created| assistant_message(
-            "build", oc_schema::ModelRef::parse("local/test").unwrap(),
-            vec![oc_schema::AssistantContent::Text(oc_schema::AssistantText { text: "Café 東京".into() })],
-            id, created,
-        )).unwrap();
+        // An assistant message (its own time shape) must read back exactly.
+        let assistant = store
+            .append_message(&s.id, |id, created| {
+                crate::assistant_message(
+                    "build",
+                    oc_schema::ModelRef::parse("local/test").unwrap(),
+                    vec![oc_schema::AssistantContent::Text(oc_schema::AssistantText {
+                        text: "Café 東京".into(),
+                    })],
+                    id,
+                    created,
+                )
+            })
+            .unwrap();
         drop(store);
 
         let reopened = Store::open(&dir).unwrap();
@@ -639,15 +793,23 @@ mod tests {
             other => panic!("wrong variant: {other:?}"),
         }
         assert!(dir.join("session").join("sessions.json").exists());
-        assert!(dir.join("session").join("message").join(format!("{}.json", s.id)).exists());
+        assert!(dir
+            .join("session")
+            .join("message")
+            .join(format!("{}.json", s.id))
+            .exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn usage_folds_into_session_totals() {
-        let mut store = Store::new();
+        let store = Store::new();
         let s = store.create_session(mk("/a")).unwrap();
-        let u = oc_schema::LlmUsage { input: 10.0, output: 5.0, ..Default::default() };
+        let u = oc_schema::LlmUsage {
+            input: 10.0,
+            output: 5.0,
+            ..Default::default()
+        };
         store.add_usage(&s.id, 0.01, &u).unwrap();
         store.add_usage(&s.id, 0.02, &u).unwrap();
         let out = store.get_session(&s.id).unwrap();

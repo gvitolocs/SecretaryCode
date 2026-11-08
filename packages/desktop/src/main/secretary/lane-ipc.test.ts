@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test"
-import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises"
+import { chmod, mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { handleLaneRequest } from "./lane-ipc"
@@ -37,38 +37,16 @@ os.write(1,b'\xa9"}}\n')
 `)
   await chmod(join(root.path, "fragmented-engine"), 0o755)
 
-  // The Rust preview lane: a stand-in oc-server that records its environment, and an oc-cli that echoes what
-  // it was actually given. The real server is a separate process from the CLI, exactly as here.
+  // The Rust preview lane: a stand-in oc-cli that reports what it was actually given. The real one runs the
+  // turn itself in embedded mode (`--local`), so there is no server process beside it.
   const binaries = join(root.path, "engine-rs")
   await mkdir(binaries, { recursive: true })
   await writeFile(
-    join(binaries, "oc-server"),
-    String.raw`#!/usr/bin/env python3
-import json, os, signal, sys
-from http.server import BaseHTTPRequestHandler, HTTPServer
-host, port = os.environ["OC_BIND"].split(":")
-os.makedirs(os.environ["OC_DATA"], exist_ok=True)
-record = {k: os.environ.get(k) for k in ("OC_BIND", "OC_WORKTREE", "OC_DATA", "OC_PROVIDER", "OC_MODEL", "OC_API_KEY")}
-record["pid"] = os.getpid()
-with open(os.path.join(os.environ["OC_DATA"], "server-env.json"), "w") as f:
-    json.dump(record, f)
-class Handler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        if self.path == "/health":
-            body = json.dumps({"status": "ok", "version": "9.9.9"}).encode()
-            self.send_response(200); self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
-            return
-        self.send_response(404); self.end_headers()
-    def log_message(self, *args): pass
-signal.signal(signal.SIGTERM, lambda *args: sys.exit(0))
-HTTPServer((host, int(port)), Handler).serve_forever()
-`,
-  )
-  await writeFile(
     join(binaries, "oc-cli"),
-    '#!/bin/sh\necho "argv:$*"\necho "base:$OC_BASE"\necho "worktree:$OC_WORKTREE"\necho "key:${OC_API_KEY-unset}"\n',
+    '#!/bin/sh\nfor a in "$@"; do echo "arg:[$a]"; done\necho "base:${OC_BASE-unset}"\necho "cwd:$OC_CWD"\necho "data:$OC_DATA"\n' +
+      'echo "provider:$OC_PROVIDER $OC_MODEL"\necho "permissions:$OC_PERMISSIONS"\n' +
+      'if [ "$OC_API_KEY" = "' + RUST_SECRET + '" ]; then echo "key:passed"; else echo "key:missing"; fi\n',
   )
-  await chmod(join(binaries, "oc-server"), 0o755)
   await chmod(join(binaries, "oc-cli"), 0o755)
   await mkdir(join(root.path, "config", "opencode"), { recursive: true })
   await mkdir(join(root.path, "data", "opencode"), { recursive: true })
@@ -229,41 +207,25 @@ describe("lane IPC", () => {
     expect((await status()).running).toBe(false)
   })
 
-  test("the Rust preview lane runs oc-cli against its own server with the key kept out of argv", async () => {
+  test("the Rust preview lane runs oc-cli --local ask itself, with the key in its environment and not in argv", async () => {
     await setRustEnvironment(openaiRustConfig)
-    expect(await handleLaneRequest("launch", { lane: "rust", project: root.path, prompt: "Review the diff" })).toMatchObject({
+    expect(await handleLaneRequest("launch", { lane: "rust", project: root.path, prompt: "--review the diff" })).toMatchObject({
       ok: true,
     })
     await until(async () => (await status()).exitCode !== undefined)
 
     const done = await status()
     expect(done).toMatchObject({ running: false, status: "Completed", exitCode: 0 })
-    expect(done.output).toContain(`argv:ask Review the diff ${root.path}`)
-    expect(done.output).toContain("base:http://127.0.0.1:")
-    expect(done.output).toContain(`worktree:${root.path}`)
-    // The CLI is a client of the server; it never receives the provider key.
-    expect(done.output).toContain("key:unset")
+    // A dash-led prompt gets one leading space, so oc-cli can never read it as a flag.
+    expect(done.output).toContain(`arg:[--local]\narg:[ask]\narg:[ --review the diff]\narg:[${root.path}]\n`)
+    expect(done.output).toContain("base:unset")
+    expect(done.output).toContain(`cwd:${root.path}`)
+    expect(done.output).toContain(`data:${join(root.path, "engine-rs-data", "lane")}`)
+    expect(done.output).toContain("provider:openai openai/gpt-4o-mini")
+    expect(done.output).toContain('permissions:[{"action":"*","resource":"*","effect":"allow"}]')
+    // Embedded mode calls the provider itself, so the CLI gets the key, never through argv or the lane log.
+    expect(done.output).toContain("key:passed")
     expect(done.output).not.toContain(RUST_SECRET)
-
-    const server = JSON.parse(
-      await readFile(join(root.path, "engine-rs-data", "server-env.json"), "utf8"),
-    ) as Record<string, string | number>
-    expect(server).toMatchObject({
-      OC_WORKTREE: root.path,
-      OC_PROVIDER: "openai",
-      OC_MODEL: "openai/gpt-4o-mini",
-      OC_API_KEY: RUST_SECRET,
-      OC_DATA: join(root.path, "engine-rs-data"),
-    })
-    // The lane's private server stops with it instead of lingering beside the TypeScript engine.
-    await until(async () => {
-      try {
-        process.kill(Number(server.pid), 0)
-        return false
-      } catch {
-        return true
-      }
-    })
   })
 
   test.each([

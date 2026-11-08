@@ -3,15 +3,16 @@
 // "Rust engine (preview)" settings toggle, which keeps a bundled `oc-server` running beside the TypeScript
 // engine on its own loopback port. The TypeScript engine is never replaced or reconfigured here.
 //
-// `oc-cli` is an HTTP client for `oc-server`, so a lane run starts a private server for that project first
-// (OC_WORKTREE/OC_DATA/provider env), waits for its health route, then runs the CLI against it. The API key
-// travels only in the server's environment: never in argv, never in the CLI's environment, never logged.
+// A lane run uses `oc-cli --local ask`, the embedded mode: the runner lives in the CLI process, so it calls the
+// provider itself and loads the project as Claude Code would (CLAUDE.md, .claude/settings*.json, hooks,
+// skills, commands, subagents, .mcp.json, plus the owner's ~/.claude). The API key therefore travels in the
+// CLI's environment; it never appears in argv and is never logged. The preview server keeps the HTTP routes.
 import { spawn } from "node:child_process"
 import type { ChildProcess } from "node:child_process"
 import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { createServer } from "node:net"
 import { homedir } from "node:os"
-import { dirname, join } from "node:path"
+import { dirname, isAbsolute, join, resolve } from "node:path"
 import { setTimeout as sleep } from "node:timers/promises"
 import type { RustEngineLatency, RustEngineStatus } from "../../shared/ipc-rpc/engine-rs"
 import { routeCoverage } from "./engine-rs-routes"
@@ -28,13 +29,20 @@ export interface RustProvider {
   model: string
   baseURL?: string
   apiKey?: string
+  /** A `{file:...}` key reference, handed to the engine as `OC_API_KEY_FILE` so the app never reads the key. */
+  apiKeyFile?: string
 }
 
 export interface RustEnginePlan {
-  server: { executable: string; args: string[]; env: Record<string, string> }
   cli: { executable: string; args: string[]; env: Record<string, string> }
-  url: string
 }
+
+/**
+ * The lane's ruleset: allow what Claude Code settings do not decide. A lane run is headless, so nothing could
+ * answer an `ask`; this keeps the 2.1.4 lane's behaviour (its private server ran allow-all), while a project's
+ * own deny and ask rules, permission mode and PreToolUse hooks are still applied first by the engine.
+ */
+export const RUST_LANE_PERMISSIONS = JSON.stringify([{ action: "*", resource: "*", effect: "allow" }])
 
 // Providers whose wire protocol is not one of the two `oc-provider` implements. Everything else is treated
 // as OpenAI-compatible, which is what nearly every provider actually ships, including local servers.
@@ -75,7 +83,11 @@ export function rustEngineExecutable(name: "oc-server" | "oc-cli", env: NodeJS.P
  * Reads the model the TypeScript engine would use and classifies its provider. Never includes the key in an
  * error message, and never returns it to a caller that puts it in argv.
  */
-export function resolveRustProvider(config: unknown, auth: unknown): RustProvider {
+export function resolveRustProvider(
+  config: unknown,
+  auth: unknown,
+  context: { configDir?: string; env?: NodeJS.ProcessEnv } = {},
+): RustProvider {
   const settings = object(config)
   const selection = modelSelection(settings?.model)
   if (!selection) throw new LaneError("unsupported_provider", "Select a model in Secretary Code before using the Rust engine: its provider and base URL come from the engine config.")
@@ -84,14 +96,43 @@ export function resolveRustProvider(config: unknown, auth: unknown): RustProvide
   if (!protocol)
     throw new LaneError("unsupported_provider", `The Rust engine speaks the OpenAI-compatible and Anthropic protocols; ${selection.providerID} is neither.`)
   const baseURL = baseURLFor(providerConfig)
-  const apiKey = apiKeyFor(auth, selection.providerID)
+  // auth.json first, as before; then the provider's own `apiKey` option, which is where a config that points
+  // at a key file (`{file:~/secrets/...}`) or a variable (`{env:NAME}`) keeps it.
+  const stored = apiKeyFor(auth, selection.providerID)
+  const configured = stored ? undefined : configuredKey(providerConfig, context.configDir, context.env ?? process.env)
   return {
     providerID: selection.providerID,
     protocol,
     model: selection.model,
     ...(baseURL ? { baseURL } : {}),
-    ...(apiKey ? { apiKey } : {}),
+    ...(stored ? { apiKey: stored } : {}),
+    ...(configured ?? {}),
   }
+}
+
+/**
+ * The `apiKey` option as the TypeScript engine substitutes it: a literal, a whole `{env:NAME}` or a whole
+ * `{file:path}` (`~/` expanded, relative paths from the config's directory). Anything else is not a key the
+ * Rust engine can use, so it is left unset rather than sent verbatim.
+ */
+function configuredKey(config: Record<string, unknown> | undefined, configDir: string | undefined, env: NodeJS.ProcessEnv) {
+  for (const candidate of [object(config?.settings)?.apiKey, object(config?.options)?.apiKey]) {
+    if (typeof candidate !== "string" || !candidate.trim()) continue
+    const value = candidate.trim()
+    const file = /^\{file:([^}]+)\}$/u.exec(value)?.[1]
+    if (file) {
+      const expanded = file.startsWith("~/") ? join(homedir(), file.slice(2)) : file
+      if (isAbsolute(expanded)) return { apiKeyFile: expanded }
+      return configDir ? { apiKeyFile: resolve(configDir, expanded) } : undefined
+    }
+    const variable = /^\{env:([^}]+)\}$/u.exec(value)?.[1]
+    if (variable) {
+      const resolved = env[variable]?.trim()
+      return resolved ? { apiKey: resolved } : undefined
+    }
+    return value.includes("{env:") || value.includes("{file:") ? undefined : { apiKey: value }
+  }
+  return undefined
 }
 
 function protocolFor(providerID: string, config: Record<string, unknown> | undefined): RustProtocol | undefined {
@@ -156,7 +197,7 @@ export async function readRustProvider(paths = engineConfigPaths()) {
     }
   }
   const [config, auth] = await Promise.all([read(paths.config), read(paths.auth)])
-  return resolveRustProvider(config, auth)
+  return resolveRustProvider(config, auth, { configDir: dirname(paths.config) })
 }
 
 function providerEnvironment(provider: RustProvider) {
@@ -165,45 +206,38 @@ function providerEnvironment(provider: RustProvider) {
     OC_MODEL: provider.model,
     ...(provider.baseURL ? { OC_BASE_URL: provider.baseURL } : {}),
     ...(provider.apiKey ? { OC_API_KEY: provider.apiKey } : {}),
+    ...(provider.apiKeyFile && !provider.apiKey ? { OC_API_KEY_FILE: provider.apiKeyFile } : {}),
   }
 }
 
 /**
- * The two processes a lane run needs. The server gets the project, the data directory and the provider (its
- * key included); the CLI gets only the endpoint, because the server is what calls the provider.
+ * The one process a lane run needs: `oc-cli --local ask <prompt> <project>`. It gets the project, its own data
+ * directory and the provider (key included) in its environment, and runs the turn itself.
  */
-export function rustLanePlan(input: {
-  server: string
-  cli: string
-  project: string
-  prompt: string
-  data: string
-  port: number
-  provider?: RustProvider
-}): RustEnginePlan {
-  if (!Number.isInteger(input.port) || input.port < 1 || input.port > 65_535) throw new LaneError("invalid_port", "The Rust engine needs a valid loopback port")
-  const url = `http://127.0.0.1:${input.port}`
+export function rustLanePlan(input: { cli: string; project: string; prompt: string; data: string; provider?: RustProvider }): RustEnginePlan {
   return {
-    server: {
-      executable: input.server,
-      args: [],
+    cli: {
+      executable: input.cli,
+      args: ["--local", "ask", flagSafe(input.prompt), input.project],
       env: {
-        OC_BIND: `127.0.0.1:${input.port}`,
         OC_DATA: input.data,
-        OC_WORKTREE: input.project,
+        OC_CWD: input.project,
+        OC_PERMISSIONS: RUST_LANE_PERMISSIONS,
         ...(input.provider ? providerEnvironment(input.provider) : {}),
       },
     },
-    cli: {
-      executable: input.cli,
-      args: ["ask", input.prompt, input.project],
-      env: { OC_BASE: url, OC_DATA: input.data, OC_WORKTREE: input.project },
-    },
-    url,
   }
 }
 
-/** An ephemeral loopback port, used for the lane's private server and the preview server. */
+/**
+ * oc-cli reads `--local` and Claude Code's flags (`--settings`, `--plugin-dir`, `--permission-mode`, ...) from
+ * anywhere in argv, so a prompt that starts with a dash gets one leading space and always stays the prompt.
+ */
+function flagSafe(prompt: string) {
+  return prompt.startsWith("-") ? ` ${prompt}` : prompt
+}
+
+/** An ephemeral loopback port, used for the preview server. */
 export async function freeLoopbackPort(): Promise<number> {
   const server = createServer()
   await new Promise<void>((resolve, reject) => {

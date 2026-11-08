@@ -12,7 +12,7 @@ import path from "node:path"
 const desktop = path.resolve(import.meta.dirname, "..")
 const cli = path.resolve(desktop, "../cli")
 const stamp = new Date().toISOString().replace(/[-:T]/g, "").slice(0, 12)
-const version = process.env.OPENCODE_VERSION ?? `2.1.4-secretary.${stamp}`
+const version = process.env.OPENCODE_VERSION ?? `2.1.5-secretary.${stamp}`
 const identity =
   process.env.SECRETARY_SIGN_IDENTITY ??
   (await $`security find-identity -v -p codesigning`.text())

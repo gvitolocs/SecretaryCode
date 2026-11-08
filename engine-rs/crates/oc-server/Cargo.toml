@@ -10,7 +10,7 @@ path = "src/main.rs"
 [dependencies]
 oc-schema = { workspace = true }
 oc-bus = { workspace = true }
-oc-store = { workspace = true }
+oc-store = { workspace = true, features = ["sqlite"] }
 oc-tools = { workspace = true }
 oc-provider = { workspace = true }
 oc-agent = { workspace = true }

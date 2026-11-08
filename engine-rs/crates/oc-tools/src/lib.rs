@@ -1,18 +1,20 @@
 //! oc-tools: the built-in tool registry — port of
-//! `packages/core/src/tool/plugin/*.ts` (shell/bash, read, write, edit,
-//! glob, grep, todowrite, webfetch). Names and descriptions are copied
-//! verbatim from the upstream plugins; the descriptions are prompt material
-//! and must not be reworded.
+//! `packages/core/src/tool/plugin/*.ts` (shell, read, write, edit,
+//! glob, grep, todowrite, webfetch). Descriptions follow the upstream prompt
+//! material, with the port's inline-truncation behaviour stated explicitly.
 //!
-//! Documented deltas: no permission gating (implicit allow — upstream goes
-//! through `Permission.assert`), no background-shell mode, no
+//! Documented deltas: permission checks live in `oc-agent` before the tool
+//! runs, background jobs have process-local registry lifetime, no
 //! large-output-to-file spooling (output is truncated inline), webfetch
 //! strips HTML with a regex (upstream converts to markdown), grep shells to
 //! `rg` when present with a regex-walk fallback.
 
+use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
+
+mod jobs;
 
 use async_trait::async_trait;
 use oc_schema::{ToolContent, ToolDef};
@@ -41,16 +43,24 @@ pub struct ToolOutput {
 
 impl ToolOutput {
     pub fn text(s: impl Into<String>) -> Self {
-        Self { content: vec![ToolContent::Text { text: s.into() }], metadata: None }
+        Self {
+            content: vec![ToolContent::Text { text: s.into() }],
+            metadata: None,
+        }
     }
 }
 
 #[async_trait]
 pub trait Tool: Send + Sync {
     fn def(&self) -> ToolDef;
-    async fn execute(&self, input: &serde_json::Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError>;
+    async fn execute(
+        &self,
+        input: &serde_json::Value,
+        ctx: &ToolContext,
+    ) -> Result<ToolOutput, ToolError>;
 }
 
+#[derive(Clone)]
 pub struct Registry {
     tools: Vec<Arc<dyn Tool>>,
 }
@@ -58,9 +68,15 @@ pub struct Registry {
 impl Registry {
     /// All builtins, in registration order.
     pub fn builtin(_worktree: &Path) -> Self {
+        let shell = select_shell(std::env::var("PATH").ok().as_deref());
+        let jobs = Arc::new(jobs::JobManager::default());
         Self {
             tools: vec![
-                Arc::new(BashTool),
+                Arc::new(BashTool {
+                    shell,
+                    jobs: jobs.clone(),
+                }),
+                Arc::new(jobs::JobTool { jobs }),
                 Arc::new(ReadTool),
                 Arc::new(WriteTool),
                 Arc::new(EditTool),
@@ -83,6 +99,16 @@ impl Registry {
             self.tools.push(tool);
         }
         self
+    }
+
+    /// Keep only the tools whose name passes `keep` (a subagent's tool list).
+    pub fn retain(mut self, keep: impl Fn(&str) -> bool) -> Self {
+        self.tools.retain(|t| keep(&t.def().name));
+        self
+    }
+
+    pub fn names(&self) -> Vec<String> {
+        self.tools.iter().map(|t| t.def().name).collect()
     }
 
     pub fn defs(&self) -> Vec<ToolDef> {
@@ -114,7 +140,10 @@ fn req_str(input: &serde_json::Value, field: &str) -> Result<String, ToolError> 
 }
 
 fn opt_str(input: &serde_json::Value, field: &str) -> Option<String> {
-    input.get(field).and_then(|v| v.as_str()).map(str::to_string)
+    input
+        .get(field)
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
 }
 
 fn opt_u64(input: &serde_json::Value, field: &str) -> Option<u64> {
@@ -133,7 +162,11 @@ fn resolve(ctx: &ToolContext, path: Option<&str>) -> Result<PathBuf, ToolError> 
         None | Some("") => Ok(base),
         Some(p) => {
             let cand = Path::new(p);
-            let joined = if cand.is_absolute() { cand.to_path_buf() } else { base.join(cand) };
+            let joined = if cand.is_absolute() {
+                cand.to_path_buf()
+            } else {
+                base.join(cand)
+            };
             let norm = normalize(&joined);
             if !norm.starts_with(&base) {
                 return Err(ToolError::Failed(format!(
@@ -169,47 +202,229 @@ const SHELL_NAME: &str = "shell";
 const DEFAULT_TIMEOUT_MS: u64 = 2 * 60 * 1_000;
 const MAX_OUTPUT_BYTES: usize = 30_000;
 
-struct BashTool;
+#[derive(Debug, Clone)]
+struct Shell {
+    path: PathBuf,
+    name: String,
+}
+
+fn shell_denied(name: &str) -> bool {
+    matches!(name, "fish" | "nu" | "powershell" | "pwsh")
+}
+
+fn shell_name(path: &Path) -> String {
+    path.file_name()
+        .map(|n| n.to_string_lossy().to_lowercase())
+        .unwrap_or_default()
+}
+
+fn executable(file: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    file.is_file()
+        && std::fs::metadata(file)
+            .map(|meta| meta.permissions().mode() & 0o111 != 0)
+            .unwrap_or(false)
+}
+
+fn which(name: &str, path_env: Option<&str>) -> Option<PathBuf> {
+    let candidate = Path::new(name);
+    if candidate.components().count() > 1 {
+        return executable(candidate).then(|| candidate.to_path_buf());
+    }
+    let path = path_env.unwrap_or("");
+    std::env::split_paths(path)
+        .map(|dir| dir.join(name))
+        .find(|file| executable(file))
+}
+
+fn select_shell(path_env: Option<&str>) -> Shell {
+    let from_env = std::env::var("SHELL")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .and_then(|value| {
+            let name = shell_name(Path::new(&value));
+            if shell_denied(&name) {
+                None
+            } else {
+                which(&value, path_env).map(|path| Shell { path, name })
+            }
+        });
+    if let Some(shell) = from_env {
+        return shell;
+    }
+    for name in ["bash", "sh"] {
+        if let Some(path) = which(name, path_env) {
+            return Shell {
+                path,
+                name: name.to_string(),
+            };
+        }
+    }
+    Shell {
+        path: PathBuf::from("/bin/sh"),
+        name: "sh".into(),
+    }
+}
+
+fn shell_description(shell: &Shell) -> String {
+    let os = match std::env::consts::OS {
+        "macos" => "macOS",
+        "windows" => "Windows",
+        "linux" => "Linux",
+        other => other,
+    };
+    [
+        "Execute a shell command and return its output.".to_string(),
+        format!("Commands run on {os} using {}.", shell.name),
+        "Quote file paths containing spaces or special characters.".into(),
+        "Prefer dedicated tools over shell commands when possible.".into(),
+        "Large output is truncated to its head and tail; filter the command when you need a specific part.".into(),
+        "Rely on automatic truncation unless filtering the output is more useful.".into(),
+        "Commands accept an optional timeout. Set background:true to return a job_id promptly, then use job status/output/list/cancel in the same session. Background jobs default to no timeout. Jobs and retained output are process-local, survive only while this registry is owned, and are killed when it is dropped. At most 128 jobs are retained per registry.".into(),
+    ]
+    .join(" ")
+}
+
+struct BashTool {
+    shell: Shell,
+    jobs: Arc<jobs::JobManager>,
+}
+
+/// Shared spawn path preserves shell cwd, stdio and process-group semantics.
+fn spawn_shell(
+    shell: &Shell,
+    command: &str,
+    workdir: &Path,
+) -> Result<tokio::process::Child, ToolError> {
+    let mut cmd = tokio::process::Command::new(&shell.path);
+    cmd.arg("-c").arg(command).current_dir(workdir);
+    cmd.stdin(std::process::Stdio::null());
+    cmd.stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    cmd.kill_on_drop(true);
+    cmd.process_group(0);
+    cmd.spawn()
+        .map_err(|e| ToolError::Failed(format!("spawn failed: {e}")))
+}
+
+/// Kills the whole process group when the tool future is dropped or times out.
+struct KillGroup(Option<i32>);
+
+impl KillGroup {
+    fn disarm(&mut self) {
+        self.0 = None;
+    }
+
+    fn kill_now(&mut self) {
+        if let Some(pgid) = self.0.take() {
+            unsafe {
+                libc::kill(-pgid, libc::SIGKILL);
+            }
+        }
+    }
+}
+
+impl Drop for KillGroup {
+    fn drop(&mut self) {
+        self.kill_now();
+    }
+}
+
+fn truncate_middle(text: &str) -> (String, bool) {
+    if text.len() <= MAX_OUTPUT_BYTES {
+        return (text.to_string(), false);
+    }
+    let budget = MAX_OUTPUT_BYTES.saturating_sub(160);
+    let mut head = budget / 2;
+    while !text.is_char_boundary(head) {
+        head -= 1;
+    }
+    let mut tail = text.len() - budget / 2;
+    while !text.is_char_boundary(tail) {
+        tail += 1;
+    }
+    let omitted = tail - head;
+    (
+        format!(
+            "{}\n... (output truncated: {} bytes omitted, showing the first {} and last {} bytes)\n{}",
+            &text[..head],
+            omitted,
+            head,
+            text.len() - tail,
+            &text[tail..]
+        ),
+        true,
+    )
+}
 
 #[async_trait]
 impl Tool for BashTool {
     fn def(&self) -> ToolDef {
         ToolDef {
             name: SHELL_NAME.into(),
-            description: "Execute a shell command and return its output. Quote file paths containing spaces or special characters. Prefer dedicated tools over shell commands when possible. When output is large, the full result is saved to a file and a truncated preview is returned. Rely on automatic truncation unless filtering the output is more useful. Commands accept an optional timeout, background commands have no timeout by default.".into(),
+            description: shell_description(&self.shell),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "command": {"type": "string", "description": "Shell command string to execute"},
-                    "description": {"type": "string", "description": "Why this command is being run, one short sentence"},
-                    "timeout": {"type": "number", "description": "Timeout in milliseconds. Set to 0 to disable the timeout. Defaults to 120000 for foreground commands."}
+                    "background": {"type": "boolean", "description": "Launch a session-scoped, process-local managed job and return its job_id immediately (default false). Use the job tool to collect or cancel it."},
+                    "workdir": {"type": "string", "description": "Working directory to execute the command in. Defaults to the current working directory. When possible, avoid changing directories in the command and set the working directory here instead."},
+                    "timeout": {"type": "number", "description": format!("Timeout in milliseconds. Set to 0 to disable the timeout. Defaults to {DEFAULT_TIMEOUT_MS} for foreground commands.")}
                 },
                 "required": ["command"]
             }),
         }
     }
 
-    async fn execute(&self, input: &serde_json::Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
+    async fn execute(
+        &self,
+        input: &serde_json::Value,
+        ctx: &ToolContext,
+    ) -> Result<ToolOutput, ToolError> {
         let command = req_str(input, "command")?;
-        let timeout = opt_u64(input, "timeout").unwrap_or(DEFAULT_TIMEOUT_MS);
-        let mut cmd = tokio::process::Command::new("bash");
-        cmd.arg("-c").arg(&command).current_dir(&ctx.worktree);
-        cmd.stdin(std::process::Stdio::null());
-        cmd.stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
-        let child = cmd.spawn().map_err(|e| ToolError::Failed(format!("spawn failed: {e}")))?;
+        let background = opt_bool(input, "background").unwrap_or(false);
+        let timeout =
+            opt_u64(input, "timeout").unwrap_or(if background { 0 } else { DEFAULT_TIMEOUT_MS });
+        let workdir = match opt_str(input, "workdir") {
+            Some(dir) => resolve(ctx, Some(&dir))?,
+            None => ctx.worktree.clone(),
+        };
+        if !workdir.is_dir() {
+            return Err(ToolError::Failed(format!(
+                "working directory does not exist: {}",
+                workdir.display()
+            )));
+        }
+        if background {
+            return self
+                .jobs
+                .launch(&self.shell, &command, &workdir, timeout, &ctx.session_id);
+        }
+        let child = spawn_shell(&self.shell, &command, &workdir)?;
+        let mut kill = KillGroup(child.id().map(|pid| pid as i32));
         let wait = async {
-            let out = child.wait_with_output().await.map_err(|e| ToolError::Failed(e.to_string()))?;
+            let out = child
+                .wait_with_output()
+                .await
+                .map_err(|e| ToolError::Failed(e.to_string()))?;
             Ok::<_, ToolError>(out)
         };
         let out = if timeout == 0 {
-            wait.await?
+            let out = wait.await?;
+            kill.disarm();
+            out
         } else {
             match tokio::time::timeout(Duration::from_millis(timeout), wait).await {
-                Ok(r) => r?,
+                Ok(r) => {
+                    let out = r?;
+                    kill.disarm();
+                    out
+                }
                 Err(_) => {
+                    kill.kill_now();
                     return Err(ToolError::Failed(format!(
                         "command timed out after {timeout}ms"
-                    )))
+                    )));
                 }
             }
         };
@@ -221,18 +436,10 @@ impl Tool for BashTool {
             }
             text.push_str(&stderr);
         }
-        // truncation preview, like the upstream description promises
-        let truncated = text.len() > MAX_OUTPUT_BYTES;
-        if truncated {
-            let mut cut = MAX_OUTPUT_BYTES;
-            while !text.is_char_boundary(cut) {
-                cut -= 1;
-            }
-            text.truncate(cut);
-            text.push_str("\n... (output truncated; filter the command's output to see more)");
-        }
+        let (mut text, truncated) = truncate_middle(&text);
         let exit = out.status.code().unwrap_or(-1);
-        let meta = serde_json::json!({ "exit": exit, "truncated": truncated });
+        let signal = out.status.signal().map(|s| format!("{s}"));
+        let meta = serde_json::json!({ "exit": exit, "truncated": truncated, "signal": signal });
         if exit != 0 {
             text.push_str(&format!("\n(exit code {exit})"));
         }
@@ -258,7 +465,10 @@ fn clamp_line(line: &str) -> String {
         while !line.is_char_boundary(cut) {
             cut -= 1;
         }
-        format!("{}... (line truncated to {MAX_LINE_LENGTH} chars)", &line[..cut])
+        format!(
+            "{}... (line truncated to {MAX_LINE_LENGTH} chars)",
+            &line[..cut]
+        )
     } else {
         line.to_string()
     }
@@ -282,20 +492,28 @@ impl Tool for ReadTool {
         }
     }
 
-    async fn execute(&self, input: &serde_json::Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
+    async fn execute(
+        &self,
+        input: &serde_json::Value,
+        ctx: &ToolContext,
+    ) -> Result<ToolOutput, ToolError> {
         let path = resolve(ctx, opt_str(input, "path").as_deref())?;
         let meta = std::fs::metadata(&path)
             .map_err(|_| ToolError::Failed(format!("file not found: {}", path.display())))?;
         let offset = opt_u64(input, "offset").unwrap_or(1).max(1) as usize;
-        let limit = (opt_u64(input, "limit").unwrap_or(MAX_READ_LINES as u64) as usize)
-            .min(MAX_READ_LINES);
+        let limit =
+            (opt_u64(input, "limit").unwrap_or(MAX_READ_LINES as u64) as usize).min(MAX_READ_LINES);
         if meta.is_dir() {
             let mut entries: Vec<String> = std::fs::read_dir(&path)
                 .map_err(|e| ToolError::Failed(e.to_string()))?
                 .flatten()
                 .map(|e| {
                     let name = e.file_name().to_string_lossy().into_owned();
-                    if e.path().is_dir() { format!("{name}/") } else { name }
+                    if e.path().is_dir() {
+                        format!("{name}/")
+                    } else {
+                        name
+                    }
                 })
                 .collect();
             entries.sort();
@@ -365,7 +583,11 @@ impl Tool for WriteTool {
         }
     }
 
-    async fn execute(&self, input: &serde_json::Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
+    async fn execute(
+        &self,
+        input: &serde_json::Value,
+        ctx: &ToolContext,
+    ) -> Result<ToolOutput, ToolError> {
         let path = resolve(ctx, opt_str(input, "path").as_deref())?;
         let content = req_str(input, "content")?;
         if let Some(parent) = path.parent() {
@@ -404,13 +626,19 @@ impl Tool for EditTool {
         }
     }
 
-    async fn execute(&self, input: &serde_json::Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
+    async fn execute(
+        &self,
+        input: &serde_json::Value,
+        ctx: &ToolContext,
+    ) -> Result<ToolOutput, ToolError> {
         let path = resolve(ctx, opt_str(input, "path").as_deref())?;
         let old_string = req_str(input, "oldString")?;
         let new_string = req_str(input, "newString")?;
         let replace_all = opt_bool(input, "replaceAll").unwrap_or(false);
         if old_string == new_string {
-            return Err(ToolError::Failed("newString must differ from oldString".into()));
+            return Err(ToolError::Failed(
+                "newString must differ from oldString".into(),
+            ));
         }
         let bytes = std::fs::read(&path)
             .map_err(|_| ToolError::Failed(format!("file not found: {}", path.display())))?;
@@ -499,7 +727,9 @@ impl Tool for GlobTool {
     fn def(&self) -> ToolDef {
         ToolDef {
             name: GLOB_NAME.into(),
-            description: "Search file paths using a glob pattern (examples: \"**/*.ts\", \"src/**/*.tsx\").".into(),
+            description:
+                "Search file paths using a glob pattern (examples: \"**/*.ts\", \"src/**/*.tsx\")."
+                    .into(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -513,7 +743,11 @@ impl Tool for GlobTool {
         }
     }
 
-    async fn execute(&self, input: &serde_json::Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
+    async fn execute(
+        &self,
+        input: &serde_json::Value,
+        ctx: &ToolContext,
+    ) -> Result<ToolOutput, ToolError> {
         let pattern = req_str(input, "pattern")?;
         let base = resolve(ctx, opt_str(input, "path").as_deref())?;
         let hidden = opt_bool(input, "hidden").unwrap_or(false);
@@ -590,7 +824,11 @@ impl Tool for GrepTool {
         }
     }
 
-    async fn execute(&self, input: &serde_json::Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
+    async fn execute(
+        &self,
+        input: &serde_json::Value,
+        ctx: &ToolContext,
+    ) -> Result<ToolOutput, ToolError> {
         let pattern = req_str(input, "pattern")?;
         let base = resolve(ctx, opt_str(input, "path").as_deref())?;
         let literal = opt_bool(input, "literal").unwrap_or(false);
@@ -598,7 +836,10 @@ impl Tool for GrepTool {
         let include = opt_str(input, "include");
 
         let mut cmd = tokio::process::Command::new("rg");
-        cmd.arg("--no-heading").arg("-n").arg("--max-count").arg("200");
+        cmd.arg("--no-heading")
+            .arg("-n")
+            .arg("--max-count")
+            .arg("200");
         if literal {
             cmd.arg("--fixed-strings");
         }
@@ -610,16 +851,24 @@ impl Tool for GrepTool {
         }
         cmd.arg("--").arg(&pattern).arg(&base);
         cmd.current_dir(&ctx.worktree);
-        cmd.stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+        cmd.stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
         let Ok(child) = cmd.spawn() else {
-            return self.fallback(&pattern, &base, &include, literal, case_sensitive).await;
+            return self
+                .fallback(&pattern, &base, &include, literal, case_sensitive)
+                .await;
         };
-        let out = child.wait_with_output().await.map_err(|e| ToolError::Failed(e.to_string()))?;
+        let out = child
+            .wait_with_output()
+            .await
+            .map_err(|e| ToolError::Failed(e.to_string()))?;
         match out.status.code() {
             Some(0) | Some(1) => {} // 0 = matches, 1 = no matches
             _ => {
                 // rg missing or unusable → walk fallback
-                return self.fallback(&pattern, &base, &include, literal, case_sensitive).await;
+                return self
+                    .fallback(&pattern, &base, &include, literal, case_sensitive)
+                    .await;
             }
         }
         let text = String::from_utf8_lossy(&out.stdout).into_owned();
@@ -651,7 +900,11 @@ impl GrepTool {
         literal: bool,
         case_sensitive: bool,
     ) -> Result<ToolOutput, ToolError> {
-        let pattern = if literal { regex::escape(pattern) } else { pattern.to_string() };
+        let pattern = if literal {
+            regex::escape(pattern)
+        } else {
+            pattern.to_string()
+        };
         let mut builder = regex::RegexBuilder::new(&pattern);
         builder.case_insensitive(!case_sensitive);
         let re = builder
@@ -662,7 +915,10 @@ impl GrepTool {
             regex::Regex::new(&glob_to_regex(name_only)).ok()
         });
         let mut out: Vec<String> = Vec::new();
-        for entry in walkdir::WalkDir::new(base).into_iter().filter_map(Result::ok) {
+        for entry in walkdir::WalkDir::new(base)
+            .into_iter()
+            .filter_map(Result::ok)
+        {
             if !entry.file_type().is_file() {
                 continue;
             }
@@ -672,12 +928,14 @@ impl GrepTool {
                     continue;
                 }
             }
-            let Ok(bytes) = std::fs::read(entry.path()) else { continue };
+            let Ok(bytes) = std::fs::read(entry.path()) else {
+                continue;
+            };
             let text = String::from_utf8_lossy(&bytes);
             for (i, line) in text.lines().enumerate().take(5000) {
                 if re.is_match(line) {
                     out.push(format!(
-                        "{}:{}: {}",
+                        "{}:{}:{}",
                         entry.path().display(),
                         i + 1,
                         clamp_line(line)
@@ -729,7 +987,11 @@ impl Tool for TodoWriteTool {
         }
     }
 
-    async fn execute(&self, input: &serde_json::Value, _ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
+    async fn execute(
+        &self,
+        input: &serde_json::Value,
+        _ctx: &ToolContext,
+    ) -> Result<ToolOutput, ToolError> {
         let todos = input
             .get("todos")
             .and_then(|v| v.as_array())
@@ -744,7 +1006,10 @@ impl Tool for TodoWriteTool {
                 .get("status")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| ToolError::Failed("todo is missing status".into()))?;
-            if !matches!(status, "pending" | "in_progress" | "completed" | "cancelled") {
+            if !matches!(
+                status,
+                "pending" | "in_progress" | "completed" | "cancelled"
+            ) {
                 return Err(ToolError::Failed(format!(
                     "invalid status {status:?}: expected pending, in_progress, completed or cancelled"
                 )));
@@ -790,12 +1055,18 @@ impl Tool for WebfetchTool {
         }
     }
 
-    async fn execute(&self, input: &serde_json::Value, _ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
+    async fn execute(
+        &self,
+        input: &serde_json::Value,
+        _ctx: &ToolContext,
+    ) -> Result<ToolOutput, ToolError> {
         let url = req_str(input, "url")?;
         if !url.starts_with("http://") && !url.starts_with("https://") {
             return Err(ToolError::Failed(format!("unsupported URL scheme: {url}")));
         }
-        let timeout = opt_u64(input, "timeout").unwrap_or(30).clamp(1, MAX_TIMEOUT_SECONDS);
+        let timeout = opt_u64(input, "timeout")
+            .unwrap_or(30)
+            .clamp(1, MAX_TIMEOUT_SECONDS);
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(timeout))
             .build()
@@ -812,7 +1083,10 @@ impl Tool for WebfetchTool {
             .and_then(|v| v.to_str().ok())
             .unwrap_or("")
             .to_string();
-        let body = res.bytes().await.map_err(|e| ToolError::Failed(e.to_string()))?;
+        let body = res
+            .bytes()
+            .await
+            .map_err(|e| ToolError::Failed(e.to_string()))?;
         if !(200..300).contains(&status) {
             return Err(ToolError::Failed(format!("http {status} for {url}")));
         }

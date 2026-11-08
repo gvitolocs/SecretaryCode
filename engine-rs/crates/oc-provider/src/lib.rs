@@ -6,18 +6,23 @@
 //! - Anthropic Messages (`anthropic-messages.ts`): `POST {base}/v1/messages`
 //!
 //! `Client::complete` is the non-streaming path (single JSON document);
-//! `drive_sse` decodes SSE streaming with
+//! `Client::complete_streaming` adds SSE streaming (`stream: true`) with
 //! protocol-neutral [`StreamEvent`]s and the same `LlmResponse` result. The
 //! upstream protocols are stream-first (`stream: true` is hardcoded in both
-//! `fromRequest`s); this port's HTTP client still uses non-streaming requests.
-//! The SSE driver is available separately for future transport integration.
+//! `fromRequest`s); this port makes streaming opt-in and keeps the
+//! non-streaming path for transports that cannot stream.
+//!
+//! `Client::with_extra_body` merges a JSON object into the top level of every
+//! outgoing chat body (the `OC_EXTRA_BODY` knob for endpoints that need
+//! vendor fields such as `chat_template_kwargs`).
 //!
 //! Documented deltas vs upstream (all upstream file references are
 //! `packages/ai/src/protocols/{openai-chat,anthropic-messages}.ts`):
 //! - Non-streaming: no `stream`, `stream_options`, `tool_stream`; no SSE
 //!   parsing. Bodies are the upstream shape minus streaming fields.
-//!   HTTP streaming request bodies and zai's `tool_stream` are not ported.
-//!   Standalone streaming deltas and semantics are documented in the
+//!   Streaming bodies add `stream: true` (plus `stream_options`:
+//!   `{"include_usage": true}` for OpenAI); zai's `tool_stream` is not
+//!   ported. Streaming deltas and semantics are documented in the
 //!   `streaming` module.
 //! - OpenAI tool-result text parts are joined with `\n\n` (task contract);
 //!   upstream `lowerToolMessages` joins with `"\n"`.
@@ -48,6 +53,7 @@
 
 use std::sync::Arc;
 
+use futures_util::TryStreamExt;
 use oc_schema::{FinishReason, LlmResponse, LlmToolCall, LlmUsage, ToolContent, ToolDef};
 use serde_json::{json, Map, Value};
 
@@ -83,7 +89,7 @@ pub struct Endpoint {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ChatMessage {
     User { text: String },
-    Assistant { text: Option<String>, tool_calls: Vec<LlmToolCall> },
+    Assistant { text: Option<String>, reasoning: Option<String>, tool_calls: Vec<LlmToolCall> },
     ToolResult { call_id: String, name: String, content: Vec<ToolContent> },
 }
 
@@ -117,7 +123,7 @@ pub enum ProviderError {
 /// The HTTP boundary. `Client` builds URL/headers/body; the transport does
 /// the POST and hands back the decoded JSON document. Transports that can
 /// stream also implement `post_stream`; implementors that do not keep the
-/// default. HTTP streaming is not wired into `Client` yet.
+/// default (streaming then falls back to `post_json` via `complete`).
 #[async_trait::async_trait]
 pub trait Transport: Send + Sync {
     async fn post_json(
@@ -140,13 +146,14 @@ pub trait Transport: Send + Sync {
 }
 
 /// The `ProviderError::Transport` message a transport without streaming
-/// support produces. The HTTP client currently uses non-streaming completion.
+/// support produces; `complete_streaming` falls back to `complete` on it.
 pub const STREAMING_UNSUPPORTED: &str = "streaming not supported by this transport";
 
 /// One protocol client over one endpoint.
 pub struct Client {
     endpoint: Endpoint,
     transport: Arc<dyn Transport>,
+    extra_body: Option<Value>,
 }
 
 // =============================================================================
@@ -161,7 +168,16 @@ impl Client {
 
     /// Client over a caller-supplied transport (tests, proxies).
     pub fn with_transport(endpoint: Endpoint, transport: Arc<dyn Transport>) -> Self {
-        Self { endpoint, transport }
+        Self { endpoint, transport, extra_body: None }
+    }
+
+    /// Merge `extra` into the top level of every request body. Non-object
+    /// values are ignored; object keys overwrite the generated body's keys.
+    pub fn with_extra_body(mut self, extra: Value) -> Self {
+        if extra.is_object() {
+            self.extra_body = Some(extra);
+        }
+        self
     }
 
     pub fn endpoint(&self) -> &Endpoint {
@@ -170,8 +186,103 @@ impl Client {
 
     /// Run one completion. `model_id` wins over `req.model` when non-empty.
     pub async fn complete(&self, model_id: &str, req: &ChatRequest) -> Result<LlmResponse, ProviderError> {
+        let (url, headers, body) = self.prepare(model_id, req, false);
+        let response = self.transport.post_json(&url, headers, body).await?;
+        match self.endpoint.protocol {
+            Protocol::OpenAI => parse_openai_response(&response),
+            Protocol::Anthropic => parse_anthropic_response(&response),
+        }
+    }
+
+    /// Run one completion over SSE, reporting deltas through `on_event` and
+    /// returning the accumulated [`LlmResponse`] (same shape `complete`
+    /// returns). The request bodies are `complete`'s plus `stream: true`
+    /// (and `stream_options: {"include_usage": true}` for OpenAI).
+    ///
+    /// If the transport does not implement `post_stream` (it returns the
+    /// [`STREAMING_UNSUPPORTED`] error), this falls back to `complete` and no
+    /// content events are emitted (request metadata is still reported). `Finished` marks the protocol's terminal SSE
+    /// event (`data: [DONE]` for OpenAI, `message_stop` for Anthropic); a
+    /// stream that ends without it still produces a response.
+    pub async fn complete_streaming(
+        &self,
+        model_id: &str,
+        req: &ChatRequest,
+        on_event: OnEvent,
+    ) -> Result<LlmResponse, ProviderError> {
+        let (url, headers, body) = self.prepare(model_id, req, true);
+        let messages = body.get("messages").and_then(Value::as_array);
+        let generation: Map<String, Value> = [
+            "temperature",
+            "top_p",
+            "top_k",
+            "min_p",
+            "presence_penalty",
+            "frequency_penalty",
+            "seed",
+            "max_tokens",
+            "max_completion_tokens",
+            "reasoning_effort",
+        ]
+        .iter()
+        .filter_map(|key| {
+            body.get(*key)
+                .filter(|v| {
+                    v.is_number()
+                        || matches!(
+                            v.as_str(),
+                            Some("none" | "off" | "low" | "medium" | "high" | "max")
+                        )
+                })
+                .map(|v| ((*key).into(), v.clone()))
+        })
+        .collect();
+        let template: Map<String, Value> =
+            ["enable_thinking", "preserve_thinking", "reasoning_effort"]
+                .iter()
+                .filter_map(|key| {
+                    body.get("chat_template_kwargs")
+                        .and_then(|v| v.get(*key))
+                        .filter(|v| {
+                            v.is_boolean()
+                                || matches!(
+                                    v.as_str(),
+                                    Some("none" | "off" | "low" | "medium" | "high" | "max")
+                                )
+                        })
+                        .map(|v| ((*key).into(), v.clone()))
+                })
+                .collect();
+        on_event(StreamEvent::RequestPrepared {
+            metadata: json!({
+                "model": body.get("model"),
+                "protocol": match self.endpoint.protocol { Protocol::OpenAI => "openai-chat", Protocol::Anthropic => "anthropic-messages" },
+                "generation": generation,
+                "chat_template_kwargs": template,
+                "tool_names": req.tools.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(),
+                "body_bytes": serde_json::to_vec(&body).map(|v| v.len()).unwrap_or(0),
+                "messages": messages.map(|v| v.len()),
+                "tool_schema_bytes": body.get("tools").map(|v| v.to_string().len()).unwrap_or(0),
+                "system_bytes": req.system.as_ref().map(|v| v.len()).unwrap_or(0),
+            }),
+        });
+        match self.transport.post_stream(&url, headers, body).await {
+            Ok(stream) => {
+                on_event(StreamEvent::ResponseStarted);
+                streaming::drive_sse(stream, self.endpoint.protocol, on_event).await
+            }
+            Err(ProviderError::Transport(message)) if message == STREAMING_UNSUPPORTED => {
+                self.complete(model_id, req).await
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Build the POST target: URL, headers, and body (`stream` fields added
+    /// when `streaming`).
+    fn prepare(&self, model_id: &str, req: &ChatRequest, streaming: bool) -> (String, Vec<(String, String)>, Value) {
         let model = if model_id.is_empty() { req.model.as_str() } else { model_id };
-        let (url, headers, body) = match self.endpoint.protocol {
+        let mut body = match self.endpoint.protocol {
             Protocol::OpenAI => (
                 format!("{}/chat/completions", self.endpoint.base_url.trim_end_matches('/')),
                 openai_headers(&self.endpoint),
@@ -183,11 +294,20 @@ impl Client {
                 build_anthropic_request(model, req),
             ),
         };
-        let response = self.transport.post_json(&url, headers, body).await?;
-        match self.endpoint.protocol {
-            Protocol::OpenAI => parse_openai_response(&response),
-            Protocol::Anthropic => parse_anthropic_response(&response),
+        if let Some(extra) = self.extra_body.as_ref().and_then(Value::as_object) {
+            let object = body.2.as_object_mut().expect("request body is an object");
+            for (key, value) in extra {
+                object.insert(key.clone(), value.clone());
+            }
         }
+        if streaming {
+            let object = body.2.as_object_mut().expect("request body is an object");
+            object.insert("stream".into(), json!(true));
+            if self.endpoint.protocol == Protocol::OpenAI {
+                object.insert("stream_options".into(), json!({ "include_usage": true }));
+            }
+        }
+        body
     }
 }
 
@@ -218,6 +338,47 @@ struct ReqwestTransport {
 #[async_trait::async_trait]
 impl Transport for ReqwestTransport {
     async fn post_json(&self, url: &str, headers: Vec<(String, String)>, body: Value) -> Result<Value, ProviderError> {
+        let text = self.post_for_text(url, headers, &body).await?;
+        serde_json::from_str(&text).map_err(|e| ProviderError::Malformed(e.to_string()))
+    }
+
+    async fn post_stream(&self, url: &str, headers: Vec<(String, String)>, body: Value) -> Result<ByteStream, ProviderError> {
+        let response = self.post(url, headers, &body).await?;
+        let status = response.status().as_u16();
+        if !(200..300).contains(&status) {
+            let body = response.text().await.map_err(|e| ProviderError::Transport(e.to_string()))?;
+            return Err(ProviderError::Http { status, body });
+        }
+        Ok(Box::pin(
+            response
+                .bytes_stream()
+                .map_err(|e| ProviderError::Transport(e.to_string())),
+        ))
+    }
+}
+
+impl ReqwestTransport {
+    async fn post_for_text(
+        &self,
+        url: &str,
+        headers: Vec<(String, String)>,
+        body: &Value,
+    ) -> Result<String, ProviderError> {
+        let response = self.post(url, headers, body).await?;
+        let status = response.status().as_u16();
+        let text = response.text().await.map_err(|e| ProviderError::Transport(e.to_string()))?;
+        if !(200..300).contains(&status) {
+            return Err(ProviderError::Http { status, body: text });
+        }
+        Ok(text)
+    }
+
+    async fn post(
+        &self,
+        url: &str,
+        headers: Vec<(String, String)>,
+        body: &Value,
+    ) -> Result<reqwest::Response, ProviderError> {
         let mut request = self
             .http
             .post(url)
@@ -229,20 +390,11 @@ impl Transport for ReqwestTransport {
                 .map_err(|e| ProviderError::Transport(format!("invalid header value {value:?}: {e}")))?;
             request = request.header(name, value);
         }
-        let response = request
-            .json(&body)
+        request
+            .json(body)
             .send()
             .await
-            .map_err(|e| ProviderError::Transport(e.to_string()))?;
-        let status = response.status().as_u16();
-        let text = response
-            .text()
-            .await
-            .map_err(|e| ProviderError::Transport(e.to_string()))?;
-        if !(200..300).contains(&status) {
-            return Err(ProviderError::Http { status, body: text });
-        }
-        serde_json::from_str(&text).map_err(|e| ProviderError::Malformed(e.to_string()))
+            .map_err(|e| ProviderError::Transport(e.to_string()))
     }
 }
 
@@ -302,19 +454,30 @@ pub fn build_openai_request(model: &str, req: &ChatRequest) -> Value {
     for message in &req.messages {
         match message {
             ChatMessage::User { text } => messages.push(json!({ "role": "user", "content": text })),
-            ChatMessage::Assistant { text, tool_calls } => {
+            ChatMessage::Assistant { text, reasoning, tool_calls } => {
                 // Drop fully empty assistant turns (upstream skips blank
-                // assistant messages); keep the turn when it carries calls.
+                // assistant messages); keep the turn when it carries calls or
+                // readable reasoning (upstream's "meaningful" parts).
                 let text = non_empty(text);
-                if text.is_none() && tool_calls.is_empty() {
+                let reasoning = non_empty(reasoning);
+                if text.is_none() && tool_calls.is_empty() && reasoning.is_none() {
                     continue;
                 }
                 let mut entry = Map::new();
                 entry.insert("role".into(), json!("assistant"));
+                if let Some(reasoning) = reasoning {
+                    // protocols/openai-chat.ts lowers readable reasoning parts
+                    // to `reasoning_content`; llama.cpp hands it to the chat
+                    // template, which decides which turns keep it.
+                    entry.insert("reasoning_content".into(), json!(reasoning));
+                }
                 if let Some(text) = text {
                     // Verbatim text; `content` is omitted when None + calls
                     // are present (upstream sends `content: null`).
                     entry.insert("content".into(), json!(text));
+                } else if tool_calls.is_empty() {
+                    // Reasoning only: upstream sends `content: ""`.
+                    entry.insert("content".into(), json!(""));
                 }
                 if !tool_calls.is_empty() {
                     entry.insert(
@@ -431,13 +594,27 @@ pub fn parse_openai_response(v: &Value) -> Result<LlmResponse, ProviderError> {
     };
 
     let (finish, raw_finish) = openai_finish_reason(choice.get("finish_reason").and_then(Value::as_str));
-    let usage = v.get("usage").filter(|u| !u.is_null()).map(openai_usage);
 
-    Ok(LlmResponse { text, reasoning: None, tool_calls, finish, raw_finish, usage })
+    let usage = match v.get("usage") {
+        None | Some(Value::Null) => None,
+        Some(u) => Some(openai_usage(u)),
+    };
+
+    // The same reasoning fields the streaming parse reads (openai-chat.ts
+    // decodes them on whole responses too).
+    let reasoning = ["reasoning_content", "reasoning", "reasoning_text"]
+        .iter()
+        .find_map(|field| message.get(*field).and_then(Value::as_str))
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned);
+
+    Ok(LlmResponse { text, reasoning, tool_calls, finish, raw_finish, usage })
 }
 
-fn openai_finish_reason(reason: Option<&str>) -> (FinishReason, Option<String>) {
-    match reason {
+/// OpenAI `finish_reason` → union mapping (shared by the non-streaming and
+/// streaming parses).
+fn openai_finish_reason(raw: Option<&str>) -> (FinishReason, Option<String>) {
+    match raw {
         Some("stop") | Some("end") => (FinishReason::Stop, None),
         Some("length") => (FinishReason::Length, None),
         Some("tool_calls") | Some("function_call") => (FinishReason::ToolCalls, None),
@@ -449,6 +626,7 @@ fn openai_finish_reason(reason: Option<&str>) -> (FinishReason, Option<String>) 
     }
 }
 
+/// OpenAI usage object → `LlmUsage` (shared by both parse paths).
 fn openai_usage(u: &Value) -> LlmUsage {
     LlmUsage {
         input: json_f64(u.get("prompt_tokens")),
@@ -506,7 +684,7 @@ pub fn build_anthropic_request(model: &str, req: &ChatRequest) -> Value {
                 flush_results(&mut messages, &mut pending_results);
                 messages.push(json!({ "role": "user", "content": [ { "type": "text", "text": text } ] }));
             }
-            ChatMessage::Assistant { text, tool_calls } => {
+            ChatMessage::Assistant { text, tool_calls, .. } => {
                 flush_results(&mut messages, &mut pending_results);
                 let mut blocks = Vec::new();
                 if let Some(text) = non_empty(text) {
@@ -633,13 +811,19 @@ pub fn parse_anthropic_response(v: &Value) -> Result<LlmResponse, ProviderError>
     let reasoning = if thinkings.is_empty() { None } else { Some(thinkings.join("\n")) };
 
     let (finish, raw_finish) = anthropic_finish_reason(v.get("stop_reason").and_then(Value::as_str));
-    let usage = v.get("usage").filter(|u| !u.is_null()).map(anthropic_usage);
+
+    let usage = match v.get("usage") {
+        None | Some(Value::Null) => None,
+        Some(u) => Some(anthropic_usage(u)),
+    };
 
     Ok(LlmResponse { text, reasoning, tool_calls, finish, raw_finish, usage })
 }
 
-fn anthropic_finish_reason(reason: Option<&str>) -> (FinishReason, Option<String>) {
-    match reason {
+/// Anthropic `stop_reason` → union mapping (shared by the non-streaming and
+/// streaming parses).
+fn anthropic_finish_reason(raw: Option<&str>) -> (FinishReason, Option<String>) {
+    match raw {
         Some("end_turn") | Some("stop_sequence") | Some("pause_turn") => (FinishReason::Stop, None),
         Some("max_tokens") | Some("model_context_window_exceeded") => (FinishReason::Length, None),
         Some("tool_use") => (FinishReason::ToolCalls, None),
@@ -650,11 +834,12 @@ fn anthropic_finish_reason(reason: Option<&str>) -> (FinishReason, Option<String
     }
 }
 
+/// Anthropic usage object → `LlmUsage` (shared by both parse paths).
 fn anthropic_usage(u: &Value) -> LlmUsage {
     LlmUsage {
         // Raw disjoint fields: `input_tokens` is the *non-cached* count
-        // (upstream sums cache into an inclusive total; this port keeps
-        // the split so totals are not double-counted downstream).
+        // (upstream sums cache into an inclusive total; this port keeps the
+        // split so totals are not double-counted downstream).
         input: json_f64(u.get("input_tokens")),
         output: json_f64(u.get("output_tokens")),
         reasoning: json_f64(

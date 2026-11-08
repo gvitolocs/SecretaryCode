@@ -9,6 +9,9 @@ members = [
     "crates/oc-agent",
     "crates/oc-server",
     "crates/oc-cli",
+    "crates/oc-mcp",
+    "crates/oc-tunnel",
+    "crates/oc-claude",
 ]
 
 [workspace.package]
@@ -16,13 +19,24 @@ version = "0.2.0"
 edition = "2021"
 license = "MIT"
 
+[profile.juno-app]
+inherits = "release"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+opt-level = "s"
+
 [workspace.dependencies]
 oc-schema = { path = "crates/oc-schema" }
 oc-bus = { path = "crates/oc-bus" }
-oc-store = { path = "crates/oc-store" }
+oc-store = { path = "crates/oc-store", default-features = false }
 oc-tools = { path = "crates/oc-tools" }
 oc-provider = { path = "crates/oc-provider" }
 oc-agent = { path = "crates/oc-agent" }
+oc-mcp = { path = "crates/oc-mcp" }
+oc-tunnel = { path = "crates/oc-tunnel" }
+oc-claude = { path = "crates/oc-claude" }
 tokio = { version = "1", features = ["full"] }
 axum = "0.8"
 serde = { version = "1", features = ["derive"] }

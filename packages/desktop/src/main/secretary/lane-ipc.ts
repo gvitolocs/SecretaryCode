@@ -2,7 +2,8 @@ import { spawn } from "node:child_process"
 import type { ChildProcess } from "node:child_process"
 import { stat } from "node:fs/promises"
 import { StringDecoder } from "node:string_decoder"
-import { freeLoopbackPort, readRustProvider, rustEngineDataDir, rustEngineExecutable, rustLanePlan, waitForHealth } from "./engine-rs"
+import { join } from "node:path"
+import { readRustProvider, rustEngineDataDir, rustEngineExecutable, rustLanePlan } from "./engine-rs"
 import { LANES, LaneError, ORCHESTRA_WORKERS, launchPlan, orchestraRequest, projectPath, sshHosts } from "./lanes"
 import type { QwenSlot } from "./lanes"
 import { engineOutput, reach, redactLaneOutput, supervisedSSH } from "./lane-process"
@@ -18,8 +19,6 @@ let processState:
   | undefined
 let starting = false
 let startCancelled = false
-// Set while the Rust preview lane's private oc-server is alive, so cancel and quit stop it with the CLI.
-let stopRustServer: (() => void) | undefined
 
 /** Answers one raw `(action, input)` request; errors carry a stable `code` for callers to branch on. */
 export async function handleLaneRequest(action: unknown, input: unknown): Promise<LaneResult> {
@@ -36,7 +35,6 @@ export async function handleLaneRequest(action: unknown, input: unknown): Promis
 
 export function cancelLane() {
   if (starting) startCancelled = true
-  stopRustServer?.()
   if (!processState || processState.exitCode !== undefined || processState.cancel) return
   processState.cancel = true
   processState.status = "Cancelling — waiting for the worker to stop"
@@ -163,8 +161,9 @@ async function perform(action: string, input: unknown) {
 }
 
 /**
- * `oc-cli` talks HTTP to `oc-server`, so a lane run needs a private server for this project: it carries the
- * worktree, the app's engine-rs data directory and the selected provider, and the CLI is pointed at it.
+ * One turn in `oc-cli --local ask`: the embedded runner calls the provider itself and runs the project as Claude
+ * Code would (CLAUDE.md, settings, hooks, skills, commands, subagents, MCP). Cancel sends SIGTERM to its process
+ * group, which the CLI turns into an interrupted turn (SessionEnd hooks still run).
  */
 async function startRustLane(project: string, prompt: string) {
   // The prompt becomes one argv entry for oc-cli, so apply the same control-character rule as the other lanes.
@@ -172,48 +171,13 @@ async function startRustLane(project: string, prompt: string) {
     throw new LaneError("invalid_input", "Prompt must not contain unsupported control characters")
   // The preview reuses the TypeScript engine's selected model; the lane offers no model override.
   const provider = await readRustProvider()
-  const serverPath = rustEngineExecutable("oc-server")
   const cliPath = rustEngineExecutable("oc-cli")
-  for (const executable of [serverPath, cliPath])
-    if (!(await stat(executable).catch(() => undefined))?.isFile())
-      throw new LaneError("engine_unavailable", `The bundled Rust engine binary is missing: ${executable}. Rebuild the app or set SECRETARY_ENGINE_RS_DIR.`)
-  const port = await freeLoopbackPort()
-  const plan = rustLanePlan({
-    server: serverPath,
-    cli: cliPath,
-    project,
-    prompt,
-    data: rustEngineDataDir(),
-    port,
-    provider,
-  })
-  const server = spawn(plan.server.executable, plan.server.args, {
-    cwd: project,
-    env: { ...process.env, PWD: project, ...plan.server.env },
-    shell: false,
-    detached: true,
-    stdio: ["ignore", "pipe", "pipe"],
-  })
-  const stop = () => stopRustProcess(server)
-  stopRustServer = stop
-  server.stdout?.resume()
-  server.stderr?.resume()
-  server.on("error", () => {
-    // waitForHealth reports the unreachable server; the spawn error itself has no useful surface here.
-  })
-  try {
-    await waitForHealth(port)
-  } catch (error) {
-    stop()
-    stopRustServer = undefined
-    throw error
-  }
-  if (startCancelled) {
-    stop()
-    stopRustServer = undefined
-    throw new LaneError("cancelled", "Task launch cancelled")
-  }
-  const run = collect(
+  if (!(await stat(cliPath).catch(() => undefined))?.isFile())
+    throw new LaneError("engine_unavailable", `The bundled Rust engine binary is missing: ${cliPath}. Rebuild the app or set SECRETARY_ENGINE_RS_DIR.`)
+  // Lane transcripts get their own store, so a running preview server never rewrites them under the CLI.
+  const plan = rustLanePlan({ cli: cliPath, project, prompt, data: join(rustEngineDataDir(), "lane"), provider })
+  if (startCancelled) throw new LaneError("cancelled", "Task launch cancelled")
+  collect(
     spawn(plan.cli.executable, plan.cli.args, {
       cwd: project,
       env: { ...process.env, PWD: project, ...plan.cli.env },
@@ -222,27 +186,7 @@ async function startRustLane(project: string, prompt: string) {
       stdio: ["ignore", "pipe", "pipe"],
     }),
   )
-  run.child.once("close", () => {
-    stop()
-    if (stopRustServer === stop) stopRustServer = undefined
-  })
   return { started: true }
-}
-
-function stopRustProcess(child: ChildProcess) {
-  const signal = (name: NodeJS.Signals) => {
-    try {
-      if (child.pid) process.kill(-child.pid, name)
-      else child.kill(name)
-    } catch {
-      // Already gone.
-    }
-  }
-  if (child.exitCode !== null || child.signalCode !== null) return
-  signal("SIGTERM")
-  setTimeout(() => {
-    if (child.exitCode === null && child.signalCode === null) signal("SIGKILL")
-  }, 1_000).unref()
 }
 
 function collect(child: ChildProcess, interruptSignal: 'SIGINT' | 'SIGTERM' = 'SIGTERM', outputFormat?: 'opencode-json') {

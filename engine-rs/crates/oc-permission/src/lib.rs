@@ -3,7 +3,10 @@
 //! plus `util/wildcard.ts`'s matcher. Upstream: "Evaluated after the agent's
 //! rules; the last matching rule wins."
 
-use serde::{Deserialize, Serialize};
+pub mod claude;
+pub mod claude_bash;
+
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 /// `Permission.Effect`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -22,16 +25,28 @@ pub struct Rule {
     pub effect: Effect,
 }
 
-/// `Permission.Ruleset` — ordered; the LAST matching rule decides.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(transparent)]
+/// `Permission.Ruleset` — ordered; the LAST matching rule decides. On the
+/// wire it is the upstream array of rules (not a `{rules: [...]}` object).
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Ruleset {
     pub rules: Vec<Rule>,
 }
 
+impl Serialize for Ruleset {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.rules.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for Ruleset {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Vec::<Rule>::deserialize(deserializer).map(|rules| Self { rules })
+    }
+}
+
 impl Ruleset {
     /// The effect for `action` + `resource`: the last matching rule wins;
-    /// no match requires approval, as in upstream `Permission.evaluate`.
+    /// no match asks, matching upstream `Permission.evaluate`'s fallback.
     pub fn decide(&self, action: &str, resource: &str) -> Effect {
         let mut effect = Effect::Ask;
         for rule in &self.rules {
@@ -58,6 +73,8 @@ pub fn wildcard_match(input: &str, pattern: &str) -> bool {
         let cut = escaped.len() - 3;
         escaped = format!("{}( .*)?", &escaped[..cut]);
     }
+    // `util/wildcard.ts` compiles with the `s` flag (and `i` on Windows): `*` spans newlines, so a multi-line
+    // bash command still meets the deny rule written for its first line.
     regex::RegexBuilder::new(&format!("^{escaped}$"))
         .dot_matches_new_line(true)
         .case_insensitive(cfg!(windows))
@@ -79,30 +96,50 @@ mod tests {
         assert!(!wildcard_match("other/main.rs", "src/*"));
         assert!(wildcard_match("a/b/c", "a/*")); // `*` spans `/` like upstream
         assert!(!wildcard_match("file.txt ", "file.txt"));
+        // A trailing " *" also matches the bare command and spans newlines (`bash` resources).
         assert!(wildcard_match("git", "git *"));
         assert!(wildcard_match("git status\nnext", "git *"));
+    }
+
+    #[test]
+    fn action_wildcards_match() {
+        let rs = Ruleset {
+            rules: vec![Rule {
+                action: "*".into(),
+                resource: "*".into(),
+                effect: Effect::Ask,
+            }],
+        };
+        assert_eq!(rs.decide("shell", "ls"), Effect::Ask);
+        assert_eq!(rs.decide("question", "ok?"), Effect::Ask);
     }
 
     #[test]
     fn last_matching_rule_wins() {
         let rs = Ruleset {
             rules: vec![
-                Rule { action: "bash".into(), resource: "*".into(), effect: Effect::Deny },
-                Rule { action: "bash".into(), resource: "git *".into(), effect: Effect::Allow },
+                Rule {
+                    action: "bash".into(),
+                    resource: "*".into(),
+                    effect: Effect::Deny,
+                },
+                Rule {
+                    action: "bash".into(),
+                    resource: "git *".into(),
+                    effect: Effect::Allow,
+                },
             ],
         };
         assert_eq!(rs.decide("bash", "git status"), Effect::Allow);
         assert_eq!(rs.decide("bash", "rm -rf /"), Effect::Deny);
-        assert_eq!(rs.decide("read", "anything"), Effect::Ask); // unmatched actions need approval
-        assert_eq!(Ruleset { rules: vec![Rule { action: "*".into(), resource: "*".into(), effect: Effect::Deny }] }.decide("read", "anything"), Effect::Deny);
+        assert_eq!(rs.decide("read", "anything"), Effect::Ask); // no rule → ask
     }
 
     #[test]
     fn ask_effect_and_ruleset_json() {
-        let rs: Ruleset = serde_json::from_str(
-            r#"[{"action":"webfetch","resource":"*","effect":"ask"}]"#,
-        )
-        .unwrap();
+        let rs: Ruleset =
+            serde_json::from_str(r#"[{"action":"webfetch","resource":"*","effect":"ask"}]"#)
+                .unwrap();
         assert_eq!(rs.decide("webfetch", "https://x"), Effect::Ask);
     }
 }
