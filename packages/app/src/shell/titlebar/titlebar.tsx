@@ -815,7 +815,7 @@ export function Titlebar(props: { verticalTabs?: { mount?: HTMLElement } }) {
                   <button
                     type="button"
                     data-action="titlebar-exit-focus"
-                    class="flex h-[26px] shrink-0 items-center gap-1.5 rounded-[7px] border border-v2-border-border-base bg-v2-background-bg-layer-01 px-2.5 text-[12.5px] leading-4 text-v2-text-text-base [font-weight:600] hover:bg-v2-background-bg-layer-02 focus-visible:outline-none focus-visible:bg-v2-background-bg-layer-02 [app-region:no-drag]"
+                    class="flex h-[30px] shrink-0 items-center gap-1.5 rounded-[8px] border border-v2-border-border-base bg-v2-background-bg-layer-01 px-2.5 text-[12.5px] leading-4 text-v2-text-text-base [font-weight:600] hover:bg-v2-background-bg-layer-02 focus-visible:outline-none focus-visible:bg-v2-background-bg-layer-02 [app-region:no-drag]"
                     onClick={() => workspace.focus.exit()}
                   >
                     {language.t("shell.exitFocus")}
@@ -828,7 +828,7 @@ export function Titlebar(props: { verticalTabs?: { mount?: HTMLElement } }) {
                     <button
                       type="button"
                       data-action="titlebar-notifications"
-                      class="flex size-[30px] shrink-0 items-center justify-center rounded-[7px] text-v2-icon-icon-muted hover:bg-v2-background-bg-layer-02 focus-visible:outline-none focus-visible:bg-v2-background-bg-layer-02 [app-region:no-drag]"
+                      class="flex size-[30px] shrink-0 items-center justify-center rounded-[8px] text-v2-icon-icon-muted hover:bg-v2-background-bg-layer-02 focus-visible:outline-none focus-visible:bg-v2-background-bg-layer-02 [app-region:no-drag]"
                       onClick={() => workspace.view.open("lucina", NOTIFICATIONS_ROUTE)}
                       aria-label={language.t("shell.notifications")}
                     >
@@ -881,7 +881,7 @@ export function Titlebar(props: { verticalTabs?: { mount?: HTMLElement } }) {
                   <button
                     type="button"
                     data-action="titlebar-new-chat"
-                    class="flex h-[26px] shrink-0 items-center gap-1 rounded-[7px] bg-v2-background-bg-accent ps-2 pe-3 text-[13px] leading-4 text-v2-text-text-contrast [font-weight:650] hover:brightness-110 focus-visible:outline-none focus-visible:brightness-110 [app-region:no-drag]"
+                    class="flex h-[30px] shrink-0 items-center gap-1 rounded-[8px] bg-v2-background-bg-accent ps-2.5 pe-3 text-[13px] leading-4 text-v2-text-text-contrast [font-weight:650] hover:brightness-110 focus-visible:outline-none focus-visible:brightness-110 [app-region:no-drag]"
                     onClick={newChat}
                   >
                     <Icon name="plus" size="small" class="shrink-0" />

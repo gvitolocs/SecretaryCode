@@ -33,6 +33,23 @@
   display: none;
 }
 
+/* More items above or below (rail.tsx sets these while it scrolls): that edge fades instead of cutting an item. */
+[data-slot="shell-rail"] {
+  --rail-fade-top: #000;
+  --rail-fade-bottom: #000;
+  scroll-padding-block: 28px;
+  -webkit-mask-image: linear-gradient(var(--rail-fade-top), #000 28px, #000 calc(100% - 28px), var(--rail-fade-bottom));
+  mask-image: linear-gradient(var(--rail-fade-top), #000 28px, #000 calc(100% - 28px), var(--rail-fade-bottom));
+}
+
+[data-slot="shell-rail"][data-more-above="true"] {
+  --rail-fade-top: transparent;
+}
+
+[data-slot="shell-rail"][data-more-below="true"] {
+  --rail-fade-bottom: transparent;
+}
+
 :root[data-color-scheme="light"] [data-slot="shell-rail"] {
   --rail-ring: #4a5bb5;
   --rail-ring-glow: #4a5bb514;
@@ -179,6 +196,44 @@
 
   [data-slot="rail-sep"] {
     margin-block: 3px;
+  }
+}
+
+/* Laptop windows (the owner's MacBook Air, about 640-780 px tall): a third, denser step, so most of the rail fits. */
+@media (max-height: 800px) {
+  [data-slot="shell-rail"] {
+    gap: 0;
+    padding: 8px 4px;
+  }
+
+  [data-slot="rail-group"] {
+    gap: 0;
+  }
+
+  [data-slot="rail-item"] {
+    min-height: 46px;
+    gap: 2px;
+    padding: 2px;
+    font-size: 8.5px;
+  }
+
+  [data-slot="rail-well"] {
+    width: 32px;
+    height: 32px;
+  }
+
+  [data-slot="rail-well"] img {
+    width: 28px;
+    height: 28px;
+  }
+
+  [data-slot="rail-well"] svg {
+    width: 16px;
+    height: 16px;
+  }
+
+  [data-slot="rail-sep"] {
+    margin-block: 2px;
   }
 }
 
