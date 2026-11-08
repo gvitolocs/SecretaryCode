@@ -73,7 +73,12 @@ pub fn wildcard_match(input: &str, pattern: &str) -> bool {
         let cut = escaped.len() - 3;
         escaped = format!("{}( .*)?", &escaped[..cut]);
     }
-    regex::Regex::new(&format!("^{escaped}$"))
+    // `util/wildcard.ts` compiles with the `s` flag (and `i` on Windows): `*` spans newlines, so a multi-line
+    // bash command still meets the deny rule written for its first line.
+    regex::RegexBuilder::new(&format!("^{escaped}$"))
+        .dot_matches_new_line(true)
+        .case_insensitive(cfg!(windows))
+        .build()
         .map(|re| re.is_match(&normalized))
         .unwrap_or(false)
 }
@@ -91,6 +96,9 @@ mod tests {
         assert!(!wildcard_match("other/main.rs", "src/*"));
         assert!(wildcard_match("a/b/c", "a/*")); // `*` spans `/` like upstream
         assert!(!wildcard_match("file.txt ", "file.txt"));
+        // A trailing " *" also matches the bare command and spans newlines (`bash` resources).
+        assert!(wildcard_match("git", "git *"));
+        assert!(wildcard_match("git status\nnext", "git *"));
     }
 
     #[test]

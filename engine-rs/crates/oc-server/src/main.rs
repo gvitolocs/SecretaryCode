@@ -651,6 +651,9 @@ mod tests {
             "interrupted"
         );
         assert!(state.aborts.lock().unwrap().is_empty());
+        // Once the turn is over there is nothing left to abort.
+        let again = session_abort(State(state.clone()), Path(info.id.clone())).await;
+        assert_eq!(again.0["aborted"], false);
         provider.abort();
     }
 

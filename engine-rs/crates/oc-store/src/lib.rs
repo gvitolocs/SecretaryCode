@@ -767,12 +767,27 @@ mod tests {
             syn.text = "edited".into();
         }
         store.replace_message(&s.id, edited).unwrap();
+        // An assistant message (its own time shape) must read back exactly.
+        let assistant = store
+            .append_message(&s.id, |id, created| {
+                crate::assistant_message(
+                    "build",
+                    oc_schema::ModelRef::parse("local/test").unwrap(),
+                    vec![oc_schema::AssistantContent::Text(oc_schema::AssistantText {
+                        text: "Café 東京".into(),
+                    })],
+                    id,
+                    created,
+                )
+            })
+            .unwrap();
         drop(store);
 
         let reopened = Store::open(&dir).unwrap();
         assert_eq!(reopened.get_session(&s.id).unwrap().id, s.id);
         let msgs = reopened.messages(&s.id).unwrap();
-        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[1], assistant);
         match &msgs[0] {
             Message::Synthetic(syn) => assert_eq!(syn.text, "edited"),
             other => panic!("wrong variant: {other:?}"),
