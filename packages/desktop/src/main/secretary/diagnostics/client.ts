@@ -1,4 +1,5 @@
 import { gzipSync } from "node:zlib"
+import { SECRETARY_CLIENT } from "../secretary-client"
 import type { Attachment } from "./collect"
 import type { DiagnosticReport } from "./report"
 
@@ -74,7 +75,7 @@ export async function sendReport(
     signal: endpoint.signal ? AbortSignal.any([endpoint.signal, timeout]) : timeout,
     headers: {
       Authorization: `Bearer ${endpoint.token}`,
-      "X-Secretary-Client": "web",
+      "X-Secretary-Client": SECRETARY_CLIENT,
       Accept: "application/json",
     },
     body: form,

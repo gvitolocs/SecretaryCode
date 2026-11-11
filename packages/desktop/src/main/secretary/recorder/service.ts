@@ -5,6 +5,7 @@ import path from "node:path"
 import copy from "../../../renderer/secretary-recorder/en.json"
 import { reportRecorderFailure } from "../diagnostics"
 import { secretaryToken } from "../index"
+import { SECRETARY_CLIENT } from "../secretary-client"
 import { currentEvent, parseEvents, type CalendarEvent } from "./calendar"
 import { HelperError, RecorderHelper } from "./helper"
 import { RecorderInputError } from "./input"
@@ -564,7 +565,7 @@ export class RecorderService {
     })
 
     const response = await fetch(`${SECRETARY_ORIGIN}/v1/calendar/events?${query}`, {
-      headers: { Authorization: `Bearer ${token}`, "X-Secretary-Client": "web" },
+      headers: { Authorization: `Bearer ${token}`, "X-Secretary-Client": SECRETARY_CLIENT },
       signal: AbortSignal.timeout(15_000),
     }).catch(() => undefined)
 

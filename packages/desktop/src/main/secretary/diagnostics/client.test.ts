@@ -63,7 +63,7 @@ describe("sending a report to Lucina", () => {
     expect(lucina.received.method).toBe("POST")
     expect(lucina.received.url).toBe(DIAGNOSTICS_PATH)
     expect(lucina.received.authorization).toBe(`Bearer ${lucina.token}`)
-    expect(lucina.received.client).toBe("web")
+    expect(lucina.received.client).toBe("mac")
 
     const form = lucina.received.form!
     // The server reads the report from one JSON part and rejects any other plain field.

@@ -3,7 +3,7 @@
 What Secretary Code's recorder sends to the server and expects back. The transcription pipeline (SecretaryIOS, branch `meetings`) implements the server side; both must match this file.
 
 - Base URL: `https://getsecretary.tech`
-- Auth: the companion's device token, `Authorization: Bearer sec_…`, plus `X-Secretary-Client: web`.
+- Auth: the companion's device token, `Authorization: Bearer sec_…`, plus `X-Secretary-Client: mac`.
 - `401` means the token is no longer valid: the app stops and asks the owner to sign in again.
 - `408`, `429` and `5xx`, and lost connections, are retried with backoff (0 s, 1 s, 2 s, 5 s, 10 s, 30 s, then every 60 s).
 - Any other `4xx` fails the upload; the owner can retry it from the Recordings list.

@@ -1,5 +1,6 @@
 import { open } from "node:fs/promises"
 import path from "node:path"
+import { SECRETARY_CLIENT } from "../secretary-client"
 import { record } from "./input"
 import { meetingRequest, type Manifest, type ManifestTrack } from "./manifest"
 
@@ -231,7 +232,7 @@ async function call(
     // 308 means "resume incomplete" here, never a redirect to follow.
     redirect: "manual",
     signal: AbortSignal.any([context.signal, AbortSignal.timeout(120_000)]),
-    headers: { ...init.headers, Authorization: `Bearer ${token}`, "X-Secretary-Client": "web" },
+    headers: { ...init.headers, Authorization: `Bearer ${token}`, "X-Secretary-Client": SECRETARY_CLIENT },
   }).catch((error: unknown) => {
     if (context.signal.aborted) throw new UploadError("aborted", "Upload stopped")
     throw new TransientError(error instanceof Error ? error.message : "Network error")

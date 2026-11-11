@@ -1,5 +1,6 @@
 import { app, net, session, type WebContents } from "electron"
 import { LUCINA_ORIGIN, LUCINA_PARTITION } from "./lucina-web-policy"
+import { SECRETARY_CLIENT } from "./secretary-client"
 import { endWebSession as signOut, ensure, shared, throttled, webLanguages, type WebSessionResult } from "./web-session-core"
 
 export type { WebSessionResult } from "./web-session-core"
@@ -11,7 +12,7 @@ export type { WebSessionResult } from "./web-session-core"
 async function exchange(token: string) {
   const response = await net.fetch(`${LUCINA_ORIGIN}/v1/session`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", "X-Secretary-Client": "web" },
+    headers: { "Content-Type": "application/json", "X-Secretary-Client": SECRETARY_CLIENT },
     body: JSON.stringify({ token }),
     credentials: "omit",
     cache: "no-store",
