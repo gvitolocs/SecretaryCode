@@ -12,6 +12,7 @@ import stageHost from "../../renderer/secretary/stage-host.mjs?raw"
 import stageBundle from "../../renderer/secretary/lucina-stage.standalone.js?raw"
 import copy from "../../renderer/secretary/en.json"
 import { allowClipboardRead, allowMicrophone, lucinaWebView, navigateLucinaView } from "./lucina-web"
+import { SECRETARY_CLIENT } from "./secretary-client"
 
 const scheme = "secretary-companion"
 const origins = ["https://getsecretary.tech", "https://secretary-p1.tail75dcfc.ts.net"]
@@ -32,7 +33,7 @@ async function request(path: string, method = "GET", body?: unknown, authenticat
   for (const origin of origins) {
     const response = await fetch(origin + path, {
       method,
-      headers: { ...(authenticated && state.token ? { Authorization: `Bearer ${state.token}` } : {}), ...(body ? { "Content-Type": "application/json" } : {}), "X-Secretary-Client": "web", ...extraHeaders },
+      headers: { ...(authenticated && state.token ? { Authorization: `Bearer ${state.token}` } : {}), ...(body ? { "Content-Type": "application/json" } : {}), "X-Secretary-Client": SECRETARY_CLIENT, ...extraHeaders },
       ...(body ? { body: JSON.stringify(body) } : {}),
       signal: AbortSignal.timeout(path === "/v1/chat" || path.startsWith("/v1/assets/") ? 180000 : 60000),
     }).catch(() => undefined)

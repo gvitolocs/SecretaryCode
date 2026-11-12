@@ -9,6 +9,7 @@ import { localImagePolicy } from "./image-viewer/policy"
 import { bundlePath, contentType, isLucinaUrl, LUCINA_ORIGIN, LUCINA_PAGE_CSP, LUCINA_PARTITION } from "./lucina-web-policy"
 import { audioOnly } from "./prompter-overlay-core"
 import { withShellFlag } from "./shell-command"
+import { markMacClient } from "./secretary-client"
 import { applyWebLanguage } from "./web-session"
 
 // Lucina's web app in Secretary Code: the same app as getsecretary.tech and the iPhone, so the Mac gets the synced
@@ -96,6 +97,8 @@ export function lucinaWebSession() {
       if (local) return local
       // Lucina's API keeps the partition's cookies both ways: sent with the request, Set-Cookie stored (sign-in,
       // sign-out, refresh). Other hosts keep the page's own credentials mode.
+      // Her bundle sends its own `X-Secretary-Client: web`; this is the one place that knows it is the Mac app.
+      markMacClient(request.headers)
       return web.fetch(request, {
         bypassCustomProtocolHandlers: true,
         ...(isLucinaUrl(request.url) ? { credentials: "include" as const } : {}),

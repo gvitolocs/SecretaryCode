@@ -1,3 +1,4 @@
+import { SECRETARY_CLIENT } from "../secretary-client"
 import type {
   AgentCommand,
   AgentListItem,
@@ -72,7 +73,7 @@ export function createHttpTransport(options: HttpAgentsOptions): AgentsTransport
       signal: init.signal ? AbortSignal.any([init.signal, timeout]) : timeout,
       headers: {
         Authorization: `Bearer ${token}`,
-        "X-Secretary-Client": "web",
+        "X-Secretary-Client": SECRETARY_CLIENT,
         Accept: "application/json",
         ...(init.body === undefined ? {} : { "Content-Type": "application/json" }),
         ...init.headers,
@@ -113,7 +114,7 @@ export function createHttpTransport(options: HttpAgentsOptions): AgentsTransport
           signal,
           headers: {
             Authorization: `Bearer ${token}`,
-            "X-Secretary-Client": "web",
+            "X-Secretary-Client": SECRETARY_CLIENT,
             Accept: "text/event-stream",
             ...(lastEventId ? { "Last-Event-ID": lastEventId } : {}),
           },
